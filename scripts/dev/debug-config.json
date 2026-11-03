@@ -1,0 +1,21 @@
+﻿{
+    "app":  {
+                "windows":  [
+                                {
+                                    "decorations":  false,
+                                    "additionalBrowserArgs":  "--remote-debugging-port=9222 --remote-allow-origins=*",
+                                    "shadow":  true,
+                                    "width":  1160,
+                                    "transparent":  true,
+                                    "visible":  false,
+                                    "title":  "Claws",
+                                    "center":  true,
+                                    "height":  760,
+                                    "minWidth":  900,
+                                    "label":  "main",
+                                    "minHeight":  620,
+                                    "resizable":  true
+                                }
+                            ]
+            }
+}
