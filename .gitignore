@@ -1,0 +1,50 @@
+# ---- Dependencies and build output ------------------------------------------------
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+*.tsbuildinfo
+
+# ---- Fonts ------------------------------------------------------------------------
+# Legacy UI Display: Apple's licence does not allow redistributing it, so neither the
+# source files nor the web fonts built from them are committed. See README → Fonts.
+assets/fonts/
+public/fonts/
+
+# ---- Design tooling ---------------------------------------------------------------
+# Impeccable's machine-generated sidecar, hook cache and review captures.
+.impeccable/
+
+# ---- Secrets and signing material -------------------------------------------------
+# Nothing in the repo needs these today; a release pipeline would add them.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.cer
+*.crt
+*.jks
+tauri-signing*.key*
+
+# ---- Local tool and editor state --------------------------------------------------
+.claude/settings.local.json
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*~
+
+# ---- OS clutter -------------------------------------------------------------------
+Thumbs.db
+ehthumbs.db
+desktop.ini
+.DS_Store
+
+# ---- Logs and crash dumps ---------------------------------------------------------
+*.log
+npm-debug.log*
+*.dmp

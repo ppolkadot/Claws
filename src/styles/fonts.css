@@ -1,0 +1,32 @@
+/* Legacy UI Display, built by scripts/build-fonts.py into public/fonts/ (not committed;
+   see README). If the files are absent the family simply fails to load and the stack
+   in base.css falls back to Segoe UI Variable. `block` avoids a flash of the fallback:
+   the files are local, so they arrive before the window is shown. */
+@font-face {
+  font-family: "Legacy UI Display";
+  src: url("/fonts/Legacy UI Display-400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Legacy UI Display";
+  src: url("/fonts/Legacy UI Display-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Legacy UI Display";
+  src: url("/fonts/Legacy UI Display-600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Legacy UI Display";
+  src: url("/fonts/Legacy UI Display-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
