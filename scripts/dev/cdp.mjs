@@ -8,7 +8,8 @@ import fs from "node:fs";
 const [, , cmd, arg1, arg2, arg3] = process.argv;
 
 const targets = await (await fetch("http://127.0.0.1:9222/json")).json();
-const page = targets.find((t) => t.type === "page" && t.url.includes("localhost:1420"));
+// The dev server is localhost:1420; a release build is served from tauri.localhost.
+const page = targets.find((t) => t.type === "page" && t.url.includes("localhost"));
 if (!page) throw new Error("Claws page target not found");
 
 const ws = new WebSocket(page.webSocketDebuggerUrl);

@@ -19,6 +19,7 @@ public class GS {
   [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int a, out int v, int s);
+  [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int a, out RECT v, int s);
   // Windows above the target in z-order that are visible, not cloaked and overlap its rect.
   public static int OverlapsAbove(IntPtr target, RECT r) {
     int n = 0;
@@ -48,6 +49,10 @@ $h = [GS]::Find([uint32]$proc.Id)
 if ($h -eq [IntPtr]::Zero) { throw "Tauri window not found" }
 if ([GS]::IsIconic($h)) { [GS]::ShowWindow($h, 4) | Out-Null; Start-Sleep -Milliseconds 600 }
 $r = New-Object GS+RECT; [GS]::GetWindowRect($h, [ref]$r) | Out-Null
+# Capture only the visible frame (DWMWA_EXTENDED_FRAME_BOUNDS). The outer rectangle also
+# holds a transparent resize margin that shows whatever lies behind the window.
+$frame = New-Object GS+RECT
+if ([GS]::DwmGetWindowAttribute($h, 9, [ref]$frame, 16) -eq 0 -and ($frame.R - $frame.L) -gt 0) { $r = $frame }
 $w = $r.R - $r.L; $ht = $r.B - $r.T
 
 # The test pattern: bold colour bars, a white field, a black field and large text,

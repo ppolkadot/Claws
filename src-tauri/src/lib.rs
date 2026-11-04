@@ -1,4 +1,4 @@
-﻿mod commands;
+mod commands;
 mod desktop;
 mod downloader;
 mod error;
