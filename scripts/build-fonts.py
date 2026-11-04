@@ -1,19 +1,8 @@
-"""Builds the web fonts Claws ships.
+"""Rebuild the bundled Salted Flutters Polaris web fonts from committed sources.
 
-Two families: Salted Flutters Polaris, the main font (source .otf files in
-Salted-Flutters-Polaris/), and Legacy UI Display as a fallback (source in
-assets/fonts/Legacy UI Display/). A family whose source files are absent is skipped.
-Polaris is derived from Legacy UI (same metrics and features), so neither the sources nor
-the fonts built from them are committed; see README -> Fonts.
-
-The four weights the interface uses are subset to Latin, Greek, Cyrillic and common
-punctuation, keeping their OpenType features (tabular figures, kerning, ligatures) and
-every name record, and written as WOFF2 to public/fonts/, which Vite copies into the
-app as-is. Without any source files the app still builds and falls back to Segoe UI
-Variable.
-
-Usage (needs fontTools with WOFF2 support: pip install "fonttools[woff]"):
-    python scripts/build-fonts.py
+The four source weights and LICENSE.txt live in assets/fonts/polaris/. Outputs
+are committed in public/fonts/ so normal app builds do not require Python.
+Usage: pip install "fonttools[woff]" && python scripts/build-fonts.py
 """
 
 import shutil
@@ -29,14 +18,11 @@ WEIGHTS = {400: "Regular", 500: "Medium", 600: "Semibold", 700: "Bold"}
 
 # (family, source folder, source file pattern, output file pattern)
 FAMILIES = [
-    ("Salted Flutters Polaris", ROOT / "Salted-Flutters-Polaris",
+    ("Salted Flutters Polaris", ROOT / "assets" / "fonts" / "polaris",
      "SaltedFluttersPolaris-{style}.otf", "salted-flutters-polaris-{weight}.woff2"),
-    ("Legacy UI Display", ROOT / "assets" / "fonts" / "Legacy UI Display",
-     "Legacy UI Display-{style}.otf", "Legacy UI Display-{weight}.woff2"),
 ]
 
-# Titles come from sites all over the world, so the subset keeps every script Legacy UI
-# itself covers well. Anything outside it falls back to the system font per glyph.
+# Keep the scripts used by titles from sites around the world.
 UNICODES = [
     *range(0x0020, 0x0250),  # Basic Latin, Latin-1, Latin Extended-A and -B
     *range(0x0250, 0x02B0),  # IPA (used in some names)
@@ -63,7 +49,7 @@ def build(source: Path, target: Path) -> None:
     options.notdef_outline = True
     options.flavor = "woff2"
     options.desubroutinize = False
-    font = TTFont(source)
+    font = TTFont(source, recalcTimestamp=False)
     subsetter = subset.Subsetter(options)
     subsetter.populate(unicodes=UNICODES)
     subsetter.subset(font)
@@ -76,9 +62,10 @@ def main() -> None:
     for family, folder, source_pattern, target_pattern in FAMILIES:
         sources = {w: folder / source_pattern.format(style=s) for w, s in WEIGHTS.items()}
         missing = [p.name for p in sources.values() if not p.is_file()]
+        if not (folder / "LICENSE.txt").is_file():
+            missing.append("LICENSE.txt")
         if missing:
-            print(f"{family}: skipped, missing in {folder}: {', '.join(missing)}")
-            continue
+            raise SystemExit(f"{family}: missing sources in {folder}: {', '.join(missing)}")
         OUTPUT.mkdir(parents=True, exist_ok=True)
         for weight, source in sources.items():
             target = OUTPUT / target_pattern.format(weight=weight)
@@ -86,10 +73,10 @@ def main() -> None:
             print(f"{source.name:36} {source.stat().st_size // 1024:5} KB -> {target.stat().st_size // 1024:4} KB  {target.relative_to(ROOT)}")
         licence = folder / "LICENSE.txt"
         if licence.is_file():
-            shutil.copyfile(licence, OUTPUT / f"{target_pattern.split('-{')[0]}-LICENSE.txt")
+            shutil.copyfile(licence, OUTPUT / "LICENSE.txt")
         built += 1
     if not built:
-        raise SystemExit("No font sources found; the app will fall back to Segoe UI Variable.")
+        raise SystemExit("No Polaris font sources found.")
 
 
 if __name__ == "__main__":

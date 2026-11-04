@@ -167,7 +167,7 @@ What makes the difference:
 
 ## Fonts
 
-**Salted Flutters Polaris** is the interface font and is bundled with Claws, so users do not need to install it separately. To build its font files from the source files in `Salted-Flutters-Polaris/`, run:
+**Salted Flutters Polaris** is the interface font and is bundled with Claws, so users do not need to install it separately. The four web fonts and their `LICENSE.txt` are included in `public/fonts/`, so a fresh checkout bundles them automatically with `npm run build`. Python is only needed to regenerate them from the four source files and license committed in `assets/fonts/polaris/`:
 
 ```powershell
 pip install "fonttools[woff]"
@@ -195,7 +195,7 @@ npm run tauri build     # produce the installer in src-tauri/target/release/bund
 | `npm run build` | Type-checks and builds the frontend. |
 | `cargo clippy` (in `src-tauri/`) | Lints the backend. |
 | `cargo test` (in `src-tauri/`) | Runs the backend's unit tests. |
-| `python scripts/build-fonts.py` | Builds the bundled fonts (optional, see [Fonts](#fonts)). |
+| `python scripts/build-fonts.py` | Regenerates the committed Polaris web fonts (optional, see [Fonts](#fonts)). |
 
 `scripts/dev/` has the tools used to test the real app:
 - a DevTools driver for the WebView;
