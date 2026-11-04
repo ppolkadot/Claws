@@ -6,12 +6,10 @@ src-tauri/gen/
 *.tsbuildinfo
 
 # ---- Fonts ------------------------------------------------------------------------
-# Legacy UI Display: Apple's licence does not allow redistributing it, so neither the
-# source files nor the web fonts built from them are committed. See README → Fonts.
-assets/fonts/
-public/fonts/
-# Salted Flutters Polaris is derived from Legacy UI (same metrics and features), so its
-# source files are kept out of the repo for the same reason.
+# Keep optional local font checkouts out of version control. Polaris sources and
+# bundled web fonts in assets/fonts/polaris/ and public/fonts/ are project assets.
+assets/fonts/*
+!assets/fonts/polaris/
 Salted-Flutters-Polaris/
 
 # ---- Design tooling ---------------------------------------------------------------
