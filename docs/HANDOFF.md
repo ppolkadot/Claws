@@ -38,14 +38,14 @@ The first request, answered in a Q&A at the start:
 Second request:
 
 - Glass "must have desktop transparency simulating a liquid glass effect present on Apple devices; it must not display a background image as substitute".
-- Use Apple's **Legacy UI Display** as the main font.
+- Use **Salted Flutters Polaris** as the main font (current requirement).
 - Follow Apple's design philosophy, add fluid Apple-like animations, and avoid AI-looking design patterns.
 - Make the sidebar collapsible.
 - Focus on download speed, then look for any other optimizations.
 
 Third request:
 
-- Use the Legacy UI Display files the owner dropped into the repo as the default font. Choose the best-fitting weights, relocate the folder where appropriate, and write this handoff.
+- Bundle the four required Polaris weights, keep the sources and license in the project, and document the build in this handoff.
 
 The owner also asked for a "testing release" (the installer is built, see section 10) but has not answered whether to commit and publish it.
 
@@ -56,7 +56,7 @@ The owner also asked for a "testing release" (the installer is built, see sectio
 | File | Responsibility |
 | --- | --- |
 | `lib.rs` | App setup: plugins (single-instance first, then dialog and opener), state, loads data files with recovery, restores the queue, prunes the probe cache, applies theme and window material, shows the window (4 s fallback), registers commands. On `RunEvent::Exit` it calls `downloader::shutdown`. |
-| `commands.rs` | Every `#[tauri::command]`. `bootstrap` returns settings/jobs/history only; tool status is separate and loaded after first paint. File actions open only paths the app recorded, never paths sent by the UI. `open_font_page` opens a fixed Apple URL. |
+| `commands.rs` | Every `#[tauri::command]`. `bootstrap` returns settings/jobs/history only; tool status is separate and loaded after first paint. File actions open only paths the app recorded, never paths sent by the UI. `open_font_page` opens the fixed Polaris project URL. |
 | `downloader.rs` | Queue + concurrency (`pump`), building yt-dlp args, progress parsing, pause/resume/cancel/remove, partial-file cleanup, cached-probe retry. |
 | `probe.rs` | `validate_url` (http/https only), runs `yt-dlp --dump-single-json --flat-playlist`, parses formats/heights/subtitles/playlist entries, and keeps the **probe cache**. |
 | `tools.rs` | Finds, installs and updates yt-dlp (folder build) and ffmpeg, verifying each against its published SHA-256. `common_args` sets cookies, ffmpeg location and the Node JS runtime. PATH lookups are cached. |
@@ -89,7 +89,7 @@ The owner also asked for a "testing release" (the installer is built, see sectio
 | `views/settings.ts` | Downloads, Appearance (theme, material, Transparency, Font status), Sign-in (cookies), Tools. |
 | `ui/motion.ts` | Spring physics (response/damping, SwiftUI-style) sampled into CSS `linear()` and published as `--spring-{smooth,snappy,bouncy}` and `--spring-*-d`. |
 | `ui/components.ts`, `ui/layout.ts`, `ui/icons.ts`, `ui/dom.ts` | Controls, rows/groups/progress/spinner, the authored SVG icon set (static strings only), and `h()`. Remote text is always inserted as text nodes. |
-| `styles/fonts.css` | `@font-face` for Legacy UI Display 400/500/600/700 from `/fonts/*.woff2`. |
+| `styles/fonts.css` | `@font-face` for Salted Flutters Polaris 400/500/600/700 from `/fonts/*.woff2`. |
 | `styles/base.css` | Tokens, materials, shell. |
 | `styles/components.css` | Glass panel rim, controls, toasts, sheet. |
 | `styles/views.css` | The four screens. |
@@ -113,16 +113,10 @@ The owner also asked for a "testing release" (the installer is built, see sectio
 
 ## 5. Fonts
 
-- Source files: `assets/fonts/Legacy UI Display/`. The full family of 18 `.otf` files supplied by the owner. I removed three byte-identical duplicates: `Thin(1)`, `Ultralight(1)` and a root-level copy of Regular.
-- `scripts/build-fonts.py` subsets **Regular 400, Medium 500, Semibold 600 and Bold 700** to Latin, Greek, Cyrillic and punctuation, keeping all OpenType features. Output goes to `public/fonts/` as WOFF2, about 107–128 KB each, down from about 2.2 MB. Vite copies it into `dist/fonts/`.
-  - Needs `pip install "fonttools[woff]"`.
-  - The dropped `MERG`, `meta` and `trak` tables are Apple-specific and unused by browsers.
-- Every CSS weight maps to a shipped file. `650` was replaced with `600`.
-- Body tracking is `+0.008em`, because Display is spaced for large sizes.
-- **Licence:**
-  - Apple's Legacy UI licence only covers mock-ups for Apple platforms. Both font folders are **gitignored** so the repo never redistributes them.
-  - **The installer built from this machine contains the font.** Publishing it would redistribute Legacy UI. That is the owner's decision; they were told.
-  - Without the files the build still works and falls back to Segoe UI Variable.
+- Current font: **Salted Flutters Polaris**. Four OTF sources and `LICENSE.txt` are committed under `assets/fonts/polaris/`; four WOFF2 files and the same license are committed under `public/fonts/`.
+- Normal builds use the committed web fonts. Optional regeneration uses `pip install "fonttools[woff]"` and `python scripts/build-fonts.py`.
+- The script preserves name records and OpenType features, subsets the supported character ranges, and fails if required sources or the license are missing.
+- Vite copies the web fonts and license to `dist/fonts/`; Tauri embeds them in the application. No separate font installation is required.
 
 ## 6. Speed work and measurements (this PC)
 
@@ -170,7 +164,7 @@ The cached-probe path retries once with a fresh extraction if a cached run fails
 - the scrolled toolbar;
 - the confirmation sheet;
 - the cached-probe speed path and the yt-dlp migration;
-- Legacy UI loaded (Settings reports "Built into this copy of Claws").
+- The font available in that historical build loaded successfully; current Polaris packaging checks are recorded above.
 
 **Not verified:**
 - sites other than YouTube;
@@ -204,18 +198,18 @@ The cached-probe path retries once with a fresh extraction if a cached run fails
 
 ```powershell
 npm install
-python scripts/build-fonts.py      # once, needs the Legacy UI source files
+python scripts/build-fonts.py      # optional: regenerate from committed Polaris sources
 npm run tauri dev                  # dev with hot reload
 npm run tauri build                # NSIS installer
 ```
 
 - The installer goes to `src-tauri/target/release/bundle/nsis/Claws_0.1.0_x64-setup.exe`.
 - It is unsigned, so SmartScreen warns on first run.
-- It contains the bundled Legacy UI.
+- Current installers include the bundled Polaris web fonts and license.
 - `npm run build` runs `tsc` and Vite.
 - `cargo clippy` was clean at the end of the session.
 
-**Release:** the owner asked for a release build to publish on GitHub themselves. Whether `Claws_<version>_x64-setup.exe` contains Legacy UI depends on the build machine: Vite copies `public/fonts/` into the app, so an installer built while that folder exists **redistributes the font** (the `Claws_1.0.2` build did, as `public/fonts/` was present). To build one without it, delete `public/fonts/` first; the app then uses an installed Legacy UI Display through the `local()` fallback in `fonts.css`, and Segoe UI Variable otherwise. Check `dist/fonts/` after building. Do not push or publish on the owner's behalf.
+**Release:** current releases bundle Polaris from `public/fonts/`. Keep that directory in release builds. The owner authorized publishing 1.0.4; its checks and artifact details are recorded at the top of this file.
 
 ## 11. Testing workflow (`scripts/dev/`)
 
@@ -243,7 +237,7 @@ The real WebView2 app can be driven over the local DevTools port. Never leave it
 
 ## 12. Suggested next steps
 
-- Commit the section 14 to 16 work and publish the 1.0.2 release (section 10). Remove `public/fonts/` before building the installer you publish, or it contains Legacy UI.
+- The work from sections 14–16 shipped in earlier releases. Current packaging and release status are recorded at the top of this file; retain `public/fonts/` in builds.
 - Test a non-YouTube site (Vimeo, an HLS site), a playlist download, and Firefox cookie import.
 - Install and run the NSIS build once.
 - Consider:
@@ -284,7 +278,7 @@ A review listed concrete defects; all of them were fixed, along with a few found
 | JS runtime availability was invisible. | `ToolsStatus.jsRuntime`, shown in Settings → Tools. |
 | Desktop-blur failures were swallowed; on Windows 10 the missing backdrop attribute aborted glass entirely. | The backdrop-type attribute only fails the call for Acrylic or Mica. An accent-policy failure is reported, as a startup notice or the `warning` of `save_settings`, which now returns `{ settings, warning }`. |
 | Subtitle downloads counted as a media stream, so progress jumped to 50%. | Side files (subtitles, thumbnails, info JSON) are tracked for cleanup but don't advance the stream counter. |
-| An installed Legacy UI was hidden whenever `public/fonts/` was absent. | `local()` fallbacks after each bundled `url()`. |
+| An installed font was hidden when its bundled files were absent. | Historical fix: `local()` fallbacks after bundled `url()` entries. |
 
 **Tests:** `cargo test` in `src-tauri/` runs 18 unit tests:
 - progress maths;
@@ -365,26 +359,10 @@ None was exploitable here, and both archives are also checked against their publ
 
 **Not covered:** the reports' proof-of-concept archives were not run; the reachability analysis is from reading the code and the upstream write-ups. The installed app was not re-run after this change, only the extraction code against the real archives.
 
-## 17. 1.0.2 installer and font verification (2026-11-04)
+## 17. Historical 1.0.2 installer verification (2026-11-04)
 
-**Installer:** `src-tauri/target/release/bundle/nsis/Claws_1.0.2_x64-setup.exe`, 2.51 MB, built 2026-11-04 09:52, sha256 `A0F8AAFA69F98B1172BB8020E5BB098904B92268785A0CBE1DCA806F31C91AD3`. Unsigned. It was built while `public/fonts/` existed, so it **contains Legacy UI**; the owner asked for the font to be bundled. Apple's licence only covers mock-ups, so this installer is for private use, not public distribution.
+Archived artifact: `src-tauri/target/release/bundle/nsis/Claws_1.0.2_x64-setup.exe`, built 2026-11-04 09:52, SHA-256 `A0F8AAFA69F98B1172BB8020E5BB098904B92268785A0CBE1DCA806F31C91AD3`. This predates the current Polaris packaging.
 
-**How the font reaches the app:** `scripts/build-fonts.py` writes `public/fonts/*.woff2` (not committed), Vite copies them to `dist/fonts/`, `generate_context!` embeds `dist/` in `claws.exe`, and the packaged app serves them from `http://tauri.localhost/fonts/...`. `src/styles/fonts.css` points at `/fonts/...` (with `local()` fallbacks), and the CSP's `font-src 'self'` allows it.
+That session checked embedded font delivery through a release build with a temporary DevTools port. The page origin was `http://tauri.localhost/`, all four font weights loaded, and interface elements used embedded font files. The final installer binary contained the expected asset paths and no debugging-port argument. Those observations describe the historical build, not a runtime verification of the current installer.
 
-**Verified on a release build, not the dev server** (a release binary with the DevTools port enabled, built with `npx tauri build --no-bundle --config scripts/dev/debug-config.json`):
-- The page origin was `http://tauri.localhost/`, and all four `FontFace` entries (400, 500, 600, 700) reported `loaded`.
-- The engine's own answer, `CSS.getPlatformFontsForNode`, reported **Legacy UI Display with `isCustomFont=true`** (the app's embedded files, not a font installed on the PC) for every element checked:
-  - 400: body text, URL field, paths (`Legacy UI Display-Regular`)
-  - 500: nav labels, buttons, segmented control (`Legacy UI Display-Medium`)
-  - 600: section titles, stepper value (`Legacy UI Display-Semibold`)
-  - 700: page and empty-state titles (`Legacy UI Display-Bold`)
-- The filename template field is the one intended exception: it uses a monospace font (Cascadia Mono).
-- Settings → Appearance → Font reads "Legacy UI Display. In use throughout Claws."
-
-**Checked on the final installer's binary:** the app's asset table lists all four `/fonts/...woff2` paths (a path never built is absent), the build contains no `remote-debugging-port` argument, and a launch opens a responding window with port 9222 closed. Raw byte samples of the fonts were *not* a usable check: Tauri compresses embedded assets, and only the Regular file happened to match. The final binary itself was not inspected through DevTools (it has no port); the check above relies on it being built from the same `dist/` as the inspected build.
-
-**To verify a future release build:** build with the debug overlay as above (never ship that binary), run `src-tauri/target/release/claws.exe`, inspect it with `scripts/dev/cdp.mjs`, then run `cargo clean -p claws --release` and build the installer normally so no debug argument remains.
-
-**Tooling fixes:**
-- `scripts/dev/cdp.mjs` now also finds `tauri.localhost` pages (it only looked for the dev server, so it could not drive a release build).
-- `scripts/dev/glass-shot.ps1` now captures only the window's visible frame (`DWMWA_EXTENDED_FRAME_BOUNDS`). The old outer rectangle includes a transparent resize margin through which a window behind Claws showed; its overlap guard only looked at windows above Claws. An image with a sliver of another app was deleted at once.
+For the current release, use the checks and artifact details at the top of this file. The filename template field intentionally uses a monospace font.

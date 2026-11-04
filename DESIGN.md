@@ -38,40 +38,40 @@ colors:
   light-zoom: "#28c840"
 typography:
   large-title:
-    fontFamily: "'Legacy UI Display', 'Legacy UI', 'Legacy UI Text', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
+    fontFamily: "'Salted Flutters Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
     fontSize: "28px"
     fontWeight: 700
     lineHeight: 1.12
     letterSpacing: "-0.016em"
   headline:
-    fontFamily: "'Legacy UI Display', 'Legacy UI', 'Legacy UI Text', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
+    fontFamily: "'Salted Flutters Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
     fontSize: "20px"
     fontWeight: 700
     lineHeight: 1.24
     letterSpacing: "-0.014em"
   title:
-    fontFamily: "'Legacy UI Display', 'Legacy UI', 'Legacy UI Text', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
+    fontFamily: "'Salted Flutters Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
     fontSize: "14px"
     fontWeight: 650
     lineHeight: 1.3
     letterSpacing: "-0.01em"
   section-title:
-    fontFamily: "'Legacy UI Display', 'Legacy UI', 'Legacy UI Text', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
+    fontFamily: "'Salted Flutters Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
     fontSize: "13px"
     fontWeight: 650
     letterSpacing: "-0.005em"
   body:
-    fontFamily: "'Legacy UI Display', 'Legacy UI', 'Legacy UI Text', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
+    fontFamily: "'Salted Flutters Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
     fontSize: "13px"
     fontWeight: 400
     lineHeight: 1.42
     letterSpacing: "-0.003em"
   label:
-    fontFamily: "'Legacy UI Display', 'Legacy UI', 'Legacy UI Text', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
+    fontFamily: "'Salted Flutters Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
     fontSize: "12.5px"
     fontWeight: 500
   caption:
-    fontFamily: "'Legacy UI Display', 'Legacy UI', 'Legacy UI Text', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
+    fontFamily: "'Salted Flutters Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
     fontSize: "11.5px"
     fontWeight: 400
     lineHeight: 1.38
@@ -196,7 +196,7 @@ Claws is a pane of clear glass set on the user's own desktop. Nothing is painted
 
 It is a working tool. Density is compact and calm: 13px body, 28px controls, 46px rows, a 900px content column. Saturated colour is limited to one Apple blue and the system status hues. Motion is physical: transitions run on sampled springs, controls compress under the pointer and spring back, and selection travels as one shape.
 
-Legacy UI Display leads the type stack and is used when the user has installed it; Apple's licence forbids bundling it, so Windows lands on Segoe UI Variable, and Settings offers a link to get Legacy UI.
+Salted Flutters Polaris leads the type stack and is bundled with Claws in four weights. System fonts cover glyphs outside the bundled subset. Settings reports whether Polaris is available and links to its project page.
 
 **Key Characteristics:**
 - The window is the glass: the OS blurs the desktop, the UI only tints. In-app blur is reserved for chrome that sits over in-app content.
@@ -236,7 +236,7 @@ Neutral grey-white and graphite tints over whatever the desktop shows, with one 
 
 ## Typography
 
-**Display and Body Font:** Legacy UI Display when installed (with Segoe UI Variable Display/Text, Segoe UI, system-ui)
+**Display and Body Font:** Bundled Salted Flutters Polaris (with Segoe UI Variable Display/Text, Segoe UI, system-ui for missing glyphs)
 **Mono Font:** SF Mono (with ui-monospace, Cascadia Mono, Consolas)
 
 **Character:** One platform face throughout, set the way Apple sets it: heavy, tightly tracked titles over a small, slightly negative-tracked 13px body. Rank comes from size and weight, never from case.
@@ -252,7 +252,7 @@ Neutral grey-white and graphite tints over whatever the desktop shows, with one 
 - **Mono** (12px; inline code 11px on a fill chip): file paths, templates and tool versions.
 
 ### Named Rules
-**The Platform Face Rule.** Use the Legacy UI to Segoe UI Variable stack and nothing else; never bundle Legacy UI or add a webfont.
+**The Interface Font Rule.** Use bundled Salted Flutters Polaris for interface text, with system fallbacks for missing glyphs. Keep its four web font weights and license in the project.
 **The Tabular Rule.** Any number that updates or aligns (progress, speeds, counts, durations, dates, versions, stepper values) gets `font-variant-numeric: tabular-nums`.
 
 ## Layout
@@ -355,4 +355,4 @@ Apple's content-unavailable layout: one 46px symbol in secondary ink, a 19px / 7
 - **Don't** use fixed cubic-bezier curves for movement where a spring variable fits.
 - **Don't** put a tile, card or illustration behind an empty-state symbol.
 - **Don't** add hard offset shadows, stroked borders or flat saturated panel fills.
-- **Don't** bundle Legacy UI or add a webfont; use the platform stack.
+- **Use** the bundled Polaris web fonts for interface text and include their license.
