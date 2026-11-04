@@ -65,10 +65,9 @@ function buildSettings(container: HTMLElement): () => void {
       paintLocation();
     }
   }
-  // The segment can be ahead of the saved setting: File only takes effect once a file
-  // is chosen, so an empty path is never saved (the backend would reject it).
+  // File only takes effect once a file is chosen; an empty path would be rejected.
   let shownKind: CookieKind = s().cookieSource.kind;
-  // Switching away from Browser and back keeps the browser; it never inherits a path.
+  // Kept across switches, so Browser never inherits a file path.
   let lastBrowser = s().cookieSource.kind === "browser" && s().cookieSource.value ? s().cookieSource.value : "firefox";
 
   async function chooseCookies() {

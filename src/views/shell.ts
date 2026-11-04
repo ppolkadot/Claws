@@ -126,7 +126,7 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
       event.preventDefault();
       setSidebar(app.dataset.sidebar !== "open");
     } else if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "q") {
-      // Quit, as on a Mac: closing the window only puts Claws in the notification area.
+      // Quit, as on a Mac: closing only hides Claws.
       event.preventDefault();
       void Promise.race([store.flushSettings(), new Promise((resolve) => setTimeout(resolve, 1500))])
         .catch(() => undefined)

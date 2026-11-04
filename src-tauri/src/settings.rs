@@ -38,8 +38,7 @@ pub struct Settings {
     pub embed_metadata: bool,
     /// System-wide shortcut that brings Claws forward (one of `SHORTCUTS`).
     pub quick_open_shortcut: String,
-    /// Closing the window leaves Claws running in the notification area, so downloads
-    /// continue and the shortcut keeps working.
+    /// Closing the window leaves Claws in the notification area.
     pub keep_running: bool,
     /// Start (hidden, in the notification area) when the user signs in to Windows.
     pub open_at_login: bool,
@@ -126,9 +125,8 @@ impl Settings {
         Ok(())
     }
 
-    /// For settings loaded from disk: anything `validate` would reject is reset instead,
-    /// so a hand-edited file, or a cookies file that was since deleted, never reaches the
-    /// yt-dlp command line. Returns a message when something was reset.
+    /// For settings loaded from disk: resets what `validate` would reject (a hand-edited
+    /// file, a deleted cookies file). Returns a message when something was reset.
     pub fn repair(&mut self) -> Option<String> {
         let defaults = Settings::default();
         let mut reset = Vec::new();

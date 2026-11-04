@@ -61,9 +61,8 @@ class Store {
   private listeners = new Map<Topic, Set<Listener>>();
   private saveTimer: number | undefined;
 
-  // Settings saves. Every local edit bumps `revision`; saves run one at a time on
-  // `saveChain`, and a response is only adopted when no newer edit has happened since
-  // its request was sent, so a slow older save can never overwrite a newer edit.
+  // Every edit bumps `revision`; saves run one at a time on `saveChain`, and a response
+  // is only adopted if nothing was edited since, so an older save never wins.
   /** The last settings the backend accepted. */
   private confirmed: Settings = defaultSettings;
   private revision = 0;
@@ -193,7 +192,7 @@ class Store {
     }
   }
 
-  /** A link pasted anywhere in the window goes to the Download view, wherever it was. */
+  /** Sends a link pasted anywhere to the Download view. */
   pasteLink(url: string) {
     this.pastedLink = url;
     if (this.route === "download") this.emit("paste");
@@ -216,13 +215,8 @@ class Store {
     this.emit("toolProgress", progress);
   }
 
-  /**
-   * Runs an install or update for one tool. Runs queue behind each other (the backend
-   * refuses a second install while one is running), so a first-run yt-dlp install that
-   * arrives during an ffmpeg install waits instead of being dropped.
-   */
+  /** Installs queue (the backend refuses a second one), so none is dropped. */
   runTool(tool: "ytdlp" | "ffmpeg", action: () => Promise<ToolsStatus>, options: { quiet?: boolean } = {}): Promise<void> {
-    // Already waiting or running: a second request for the same tool adds nothing.
     if (this.toolPending.has(tool)) return this.toolChain;
     this.toolPending.add(tool);
     this.toolChain = this.toolChain.then(() => this.runToolNow(tool, action, options));

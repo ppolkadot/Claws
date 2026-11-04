@@ -29,8 +29,6 @@ pub struct HistoryItem {
     pub finished_at: i64,
 }
 
-/// Persists the library. The snapshot is taken under the store's write lock, so a later
-/// change can never be overwritten by an earlier, slower save.
 pub fn save(app: &AppHandle) -> crate::error::Result<()> {
     let state = app.state::<AppState>();
     let result = store::save_snapshot(&state.history_path(), || state.history.lock().unwrap().clone());
@@ -92,8 +90,7 @@ pub fn record(app: &AppHandle, job: &Job) {
 
 const THUMB_MAX_BYTES: usize = 5 * 1024 * 1024;
 
-/// Reads at most `limit` bytes. The declared length is checked first, then the body is
-/// streamed, so an oversized or lying response never gets buffered in full.
+/// At most `limit` bytes, checked against the declared length and while streaming.
 async fn read_capped(response: reqwest::Response, limit: usize) -> Option<Vec<u8>> {
     if response.content_length().is_some_and(|len| len > limit as u64) {
         return None;

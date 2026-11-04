@@ -147,8 +147,8 @@ fn is_managed(app: &AppHandle, path: &Path) -> bool {
 }
 
 pub async fn status(app: &AppHandle) -> ToolsStatus {
-    // Never run a tool while it is being replaced: the running exe would block the swap,
-    // and a half-swapped folder reads as "not installed".
+    // A running exe would block an install's swap, and a half-swapped folder reads as
+    // "not installed".
     let state = app.state::<AppState>();
     let _engine = state.engine.read().await;
     let (ytdlp, ffmpeg) = tokio::join!(ytdlp_info(app), ffmpeg_info(app));
@@ -171,9 +171,8 @@ pub fn js_runtime() -> Option<&'static str> {
     }
 }
 
-/// Exclusive use of the engine for an install. Fails at once (rather than waiting for
-/// downloads that may run for an hour) when anything is using yt-dlp, and also when
-/// another install is already in progress.
+/// Exclusive use of the engine for an install. Fails at once, rather than waiting for
+/// downloads that may run for an hour, when anything is using yt-dlp.
 fn reserve_engine(state: &AppState) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>> {
     state.engine.try_write().map_err(|_| {
         AppError::msg(
@@ -419,8 +418,7 @@ pub async fn install_ffmpeg(app: &AppHandle) -> Result<()> {
     let zip_for_task = zip_path.clone();
     let extracted = tokio::task::spawn_blocking(move || -> Result<()> {
         let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip_for_task)?)?;
-        // Both executables are unpacked to temp names first, then swapped in as a set
-        // with backups (`replace_all`), so a failure never leaves a mismatched pair.
+        // Unpacked to temp names first, then swapped in as a set by `replace_all`.
         let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
         let discard = |staged: &[(PathBuf, PathBuf)]| {
             for (tmp, _) in staged {
@@ -471,8 +469,8 @@ pub async fn install_ffmpeg(app: &AppHandle) -> Result<()> {
     extracted
 }
 
-/// Startup repair after an exit in the middle of an install: puts back a tool that was
-/// left renamed to `.old` and removes unpacked or downloaded `.part` leftovers.
+/// Startup repair after an exit mid-install: restores a tool left as `.old` and
+/// removes `.part` leftovers.
 pub fn recover_bin(bin: &Path) {
     for name in ["yt-dlp", "ffmpeg.exe", "ffprobe.exe"] {
         let target = bin.join(name);
@@ -497,10 +495,9 @@ fn backup_of(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Moves each `(staged, target)` into place as one unit. Every existing target is first
-/// renamed to `<target>.old` (Windows allows renaming a running executable, but not
-/// overwriting it). If any step fails, the targets already replaced get their old copy
-/// back, so the set is either all new or all old. Backups are removed on success.
+/// Moves each `(staged, target)` into place as one unit: all new or all old. Existing
+/// targets are renamed to `.old` first (Windows allows renaming a running exe, not
+/// overwriting it) and put back if any step fails.
 fn replace_all(pairs: &[(PathBuf, PathBuf)]) -> std::io::Result<()> {
     // (index, whether that target had an old copy that is now in its backup)
     let mut done: Vec<(usize, bool)> = Vec::new();

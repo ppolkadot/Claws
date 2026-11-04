@@ -27,9 +27,7 @@ use crate::state::AppState;
 pub fn run() {
     let app = tauri::Builder::default()
         // Must be registered first. A second launch would run its own queue against the
-        // same files, so it just brings the existing window forward instead.
-        // That includes opening Claws from the Start menu while it sits in the
-        // notification area.
+        // same files, so it brings the existing window forward instead.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             desktop::bring_forward(app);
         }))
@@ -82,8 +80,7 @@ pub fn run() {
                 live_jobs: Mutex::new(std::collections::HashSet::new()),
                 probes: Mutex::new(HashMap::new()),
                 recent_probes: Mutex::new(Vec::new()),
-                // Only with the notification-area icon: without it a hidden window
-                // could never be found again.
+                // Only with the notification-area icon, or a hidden window could not be found again.
                 start_hidden: AtomicBool::new(
                     settings.keep_running && std::env::args().any(|a| a == desktop::BACKGROUND_ARG),
                 ),
@@ -147,8 +144,7 @@ pub fn run() {
         .expect("error while starting Claws");
 
     app.run(|app, event| {
-        // Closing the window must not leave yt-dlp and ffmpeg running in the background
-        // or a queue that forgets which partial files belong to which job.
+        // Stop yt-dlp and ffmpeg and save the queue before exiting.
         if let tauri::RunEvent::Exit = event {
             downloader::shutdown(app);
         }

@@ -36,8 +36,7 @@ pub fn bootstrap(app: AppHandle, state: State<'_, AppState>) -> Bootstrap {
     }
 }
 
-/// Ctrl+Q and the notification-area menu: really quit. Exiting runs the shutdown path
-/// (stop downloads and lookups, save the queue).
+/// Ctrl+Q: really quit, through the shutdown path.
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
     app.exit(0);
@@ -56,14 +55,12 @@ pub async fn probe_url(app: AppHandle, url: String) -> Result<ProbeResult> {
     probe::probe(&app, &url).await
 }
 
-/// The saved details of a link downloaded before, for an instant preview.
 #[tauri::command]
 pub fn cached_link(app: AppHandle, url: String) -> Option<CachedLink> {
     links::lookup(&app, &url)
 }
 
-/// `source` is the link the user looked up; its details go into the link cache so the
-/// next lookup of it is instant.
+/// `source` is the link the user looked up; its details go into the link cache.
 #[tauri::command]
 pub fn enqueue(
     app: AppHandle,
@@ -119,8 +116,7 @@ pub fn save_settings(
     mut settings: Settings,
 ) -> Result<SavedSettings> {
     settings.validate()?;
-    // Disk and memory are updated under one lock, so two saves can never leave them
-    // holding different values.
+    // Disk and memory under one lock, so two saves cannot leave them disagreeing.
     store::save_then(&state.settings_path(), &settings, || {
         *state.settings.lock().unwrap() = settings.clone();
     })?;
@@ -202,8 +198,7 @@ pub fn delete_history(
     let Ok(item) = history_item(&state, &id) else {
         return Ok(()); // already removed
     };
-    // The file goes first: if it cannot be deleted, the entry stays so the user can
-    // still find it and try again.
+    // The file goes first: if it cannot be deleted, the entry stays.
     if delete_file {
         if let Some(path) = &item.file_path {
             match std::fs::remove_file(path) {

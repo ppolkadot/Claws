@@ -52,7 +52,7 @@ async function start() {
   void store.loadTools().then(() => {
     // Move installs from the slower single-file yt-dlp build to the folder build.
     const engine = store.tools.ytdlp;
-    // Quiet: if yt-dlp is busy (a lookup already started), it simply tries next launch.
+    // Quiet: if yt-dlp is busy, it tries again next launch.
     if (engine?.managed && !engine.fastStart && store.activeCount() === 0) {
       void store.runTool("ytdlp", api.installYtdlp, { quiet: true });
     }
@@ -71,7 +71,6 @@ async function start() {
   await onEvent<string>("job-removed", (id) => store.removeJob(id));
   await onEvent<null>("history-changed", () => void store.refreshHistory());
   await onEvent<ToolProgress>("tool-progress", (progress) => store.setToolProgress(progress));
-  // Problems from background work no command is waiting on, such as a failed save.
   await onEvent<string>("notice", (message) => toast(message, { tone: "error" }));
   notices.forEach((message) => toast(message, { tone: "error" }));
 
@@ -90,15 +89,13 @@ async function start() {
   if ("__TAURI_INTERNALS__" in window) {
     const win = getCurrentWindow();
     void win.onCloseRequested(async (event) => {
-      // A settings edit made just before closing is still waiting on its debounce; save
-      // it first. Bounded, and never throws, so closing always works.
+      // Save a pending settings edit first. Bounded and never throws, so closing always works.
       try {
         await Promise.race([store.flushSettings(), new Promise((resolve) => setTimeout(resolve, 1500))]);
       } catch {
         // Closing matters more than the last edit.
       }
-      // Like a Mac app: closing the window does not quit. Claws stays in the
-      // notification area, downloads continue and Quick Open keeps working.
+      // Like a Mac app, closing does not quit; Claws stays in the notification area.
       if (store.settings.keepRunning) {
         event.preventDefault();
         void win.hide();
@@ -106,8 +103,7 @@ async function start() {
     });
   }
 
-  // Quick Open (the system-wide shortcut) brought Claws forward. A link on the clipboard
-  // is looked up straight away; the same link is not looked up twice in a row.
+  // Quick Open looks up a link on the clipboard, but not the same one twice in a row.
   let lastQuickLink = "";
   await onEvent<null>("quick-open", () => {
     void (async () => {

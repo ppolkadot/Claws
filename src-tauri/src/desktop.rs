@@ -1,5 +1,4 @@
-//! Quick access from anywhere in Windows: the Quick Open shortcut, the notification-area
-//! icon that keeps Claws running when its window is closed, and opening at login.
+//! Quick Open shortcut, notification-area icon and open at login.
 
 use std::sync::atomic::Ordering;
 
@@ -16,7 +15,6 @@ const TRAY_ID: &str = "claws";
 /// Passed by the login entry, so Claws starts in the notification area.
 pub const BACKGROUND_ARG: &str = "--background";
 
-/// Shows, restores and focuses the main window.
 pub fn bring_forward(app: &AppHandle) {
     app.state::<AppState>().start_hidden.store(false, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("main") {
@@ -26,8 +24,7 @@ pub fn bring_forward(app: &AppHandle) {
     }
 }
 
-/// The shortcut toggles, like Spotlight: it brings Claws forward (and the UI looks up a
-/// link on the clipboard), or puts it away again when it is already in front.
+/// Toggles, like Spotlight: brings Claws forward, or puts it away when already in front.
 fn quick_open(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else { return };
     let in_front = window.is_visible().unwrap_or(false)
@@ -50,10 +47,8 @@ pub fn shortcut_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             if event.state() != ShortcutState::Pressed {
                 return;
             }
-            // Windows will not hand focus to a window while the shortcut's Ctrl/Alt/Shift
-            // are still held: the window would appear behind the active app, and the next
-            // press would bring it forward again instead of putting it away. So wait
-            // (briefly) for the keys to be let go, then act on the main thread.
+            // Raise the window once the shortcut's keys are released, on the main thread. With
+            // `take_foreground`, this made the window reliably take focus in testing.
             let app = app.clone();
             std::thread::spawn(move || {
                 wait_for_modifiers_released(std::time::Duration::from_millis(600));
@@ -114,7 +109,6 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Human-readable name of a shortcut choice, for messages.
 fn shortcut_label(choice: &str) -> String {
     choice
         .split('+')
@@ -129,9 +123,7 @@ fn shortcut_label(choice: &str) -> String {
         .join("+")
 }
 
-/// Applies the quick-access settings: registers the shortcut, shows or hides the
-/// notification-area icon, and adds or removes the login entry. Returns a message for
-/// whatever could not be applied; the settings themselves are already saved.
+/// Applies the quick-access settings. Returns a message for what could not be applied.
 pub fn apply(app: &AppHandle, settings: &Settings) -> Option<String> {
     let mut problems = Vec::new();
 
