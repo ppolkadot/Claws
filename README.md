@@ -66,6 +66,8 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 2. Run it. Releases are not code-signed yet, so Windows SmartScreen may warn on first run; choose **More info → Run anyway**.
 3. On first launch Claws downloads yt-dlp into its own folder and verifies it against the checksum yt-dlp publishes. This happens once and takes a few seconds.
 
+The 1.0.4 installer with the corrected Polaris spacing is also [included in this repository](installers/Claws_1.0.4_x64-setup.exe), alongside its [SHA-256 checksum](installers/Claws_1.0.4_x64-setup.exe.sha256).
+
 ### Requirements
 
 | | |
@@ -174,7 +176,7 @@ pip install "fonttools[woff]"
 python scripts/build-fonts.py
 ```
 
-The build script creates the four Polaris weights used by the interface (Regular, Medium, Semibold and Bold), subset to Latin, Greek, Cyrillic and common punctuation while preserving tabular figures, kerning and ligatures.
+The build script creates the four Polaris weights used by the interface (Regular, Medium, Semibold and Bold), subset to Latin, Greek, Cyrillic and common punctuation while preserving tabular figures, kerning and ligatures. It also synchronizes outline advance widths with the layout metrics so Chromium and WebView2 render proportional spacing correctly.
 
 ## Building from source
 

@@ -23,6 +23,12 @@ Validation: all 35 backend tests passed; cargo clippy --locked -- -D warnings pa
 
 At the owner's request, main and all four release tags were rewritten to remove obsolete interface font references from historical files. Commit IDs changed; historical references in current documentation now use the rewritten IDs. Existing clones should be replaced with a fresh checkout to avoid restoring the old history. A recovery bundle is stored outside the project. Release installer files and their checksums are unchanged.
 
+### Unreleased font spacing repair
+
+The supplied CFF outline programs inherit oversized default advances that disagree with the proportional widths in hmtx. Chromium/WebView2 uses those outline advances, spreading interface letters apart despite normal CSS tracking. The font builder now expands subroutines and writes each glyph's intended hmtx advance into its outline program while preserving the drawing instructions and name metadata. Regenerated WOFF2 files include this repair; source OTF files remain untouched. Font URLs include a cache version so older cached files are not reused.
+
+The issue was reproduced in the browser Settings screen: the 28 px heading measured 341.828 px before the repair and 103.453 px afterward. Regression checks cover every bundled glyph's outline advance, sampled outline geometry and preserved font metadata. Run `python -m unittest discover -s scripts -p test_font_metrics.py`. This is subsequent work after the published 1.0.4 release. A local installer was rebuilt successfully with the corrected fonts: Claws_1.0.4_x64-setup.exe, 2769214 bytes, SHA-256 9aadc5fedde599b89fc53e199366caac465a4c3ddcf4032b0c7454f07efce955. The repaired installer and its SHA-256 file are stored in `installers/` and committed with the font-spacing fix, as requested by the owner. The published release asset has not been replaced.
+
 ## Historical handoff (superseded where noted above)
 
 ## 1. What this is
