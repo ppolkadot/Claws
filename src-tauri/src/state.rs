@@ -1,13 +1,19 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Mutex;
 
 use crate::downloader::{Job, Running};
 use crate::history::HistoryItem;
+use crate::probe::ProbeResult;
 use crate::settings::Settings;
 
 /// Everything the commands share. Locks are only ever held for short, synchronous
 /// sections and never across an `.await`.
+///
+/// Lock order, outermost first: `store`'s write lock, `running`, `jobs`, `live_jobs`.
+/// `settings`, `history`, `probes` and `recent_probes` are leaf locks and are never held
+/// while another one is taken.
 pub struct AppState {
     pub data_dir: PathBuf,
     pub settings: Mutex<Settings>,
@@ -15,6 +21,29 @@ pub struct AppState {
     pub jobs: Mutex<Vec<Job>>,
     pub running: Mutex<HashMap<String, Running>>,
     pub http: reqwest::Client,
+    /// Held for reading by every yt-dlp run (probes and downloads) and for writing while
+    /// yt-dlp or ffmpeg is being installed, so a tool is never replaced while in use and
+    /// nothing starts on a half-installed tool.
+    pub engine: tokio::sync::RwLock<()>,
+    /// Problems found at startup (damaged files, no desktop blur) that the UI shows once.
+    pub notices: Mutex<Vec<String>>,
+    /// Set once, as the app exits. Checked under the `running` and `probes` locks before
+    /// any yt-dlp process starts, so nothing can start after shutdown has collected the
+    /// processes it must stop.
+    pub shutting_down: AtomicBool,
+    /// Download workers (`run_job`) still alive; shutdown waits for them to settle.
+    pub workers: AtomicUsize,
+    /// Jobs that have a live worker. `pump` never gives a job a second one, even when a
+    /// pause and resume put it back in the queue while its first worker still waits
+    /// (behind a tool install, say). Leaf lock, taken inside `jobs`.
+    pub live_jobs: Mutex<HashSet<String>>,
+    /// Running link lookups (probe id → process id), so shutdown can stop their trees.
+    pub probes: Mutex<HashMap<u64, u32>>,
+    /// The last few lookups, so a download can save the details it was started from in
+    /// the link cache without reading the link again.
+    pub recent_probes: Mutex<Vec<(String, ProbeResult)>>,
+    /// Launched by "Open at login": stay in the notification area until asked.
+    pub start_hidden: AtomicBool,
 }
 
 impl AppState {

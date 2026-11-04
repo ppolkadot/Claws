@@ -98,12 +98,11 @@
   --focus: rgba(10, 132, 255, 0.6);
 }
 
+/* Reduce transparency (Windows: Transparency effects off) works like Solid: --gi 0
+   for the tints, and the opaque surfaces from the Solid rules below. */
 @media (prefers-reduced-transparency: reduce) {
   :root {
     --gi: 0;
-  }
-  html {
-    background: var(--solid-base);
   }
 }
 
@@ -126,6 +125,12 @@ html {
 }
 html[data-backdrop="none"] {
   background: var(--solid-base);
+}
+/* After the html rule above, so it wins at equal specificity. */
+@media (prefers-reduced-transparency: reduce) {
+  html {
+    background: var(--solid-base);
+  }
 }
 
 body {
@@ -282,6 +287,11 @@ html.inactive .light {
 }
 html[data-backdrop="none"] .sidebar-panel {
   background: color-mix(in srgb, var(--solid-base) 88%, var(--text) 4%);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .sidebar-panel {
+    background: color-mix(in srgb, var(--solid-base) 88%, var(--text) 4%);
+  }
 }
 
 .sidebar-head {

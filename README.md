@@ -45,6 +45,12 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 - **Queue.** Several downloads at once, with live progress, speed and time left. Pause, resume, cancel and retry. Unfinished downloads survive a restart as paused, and cancelling cleans up the partial files.
 - **Library.** Finished downloads with artwork and search. Open them or show them in their folder.
 - **Sign-in.** Use cookies from your browser, or a `cookies.txt` file, for sites that need you to be logged in.
+- **Instant repeat lookups.** Links you have downloaded keep their details, so looking one up again shows it at once while Claws checks the site for changes. Pick any item under **Recent** to see it again.
+
+**Quick access**
+- **Quick Open.** Press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>D</kbd> in any app to bring Claws forward; a link on the clipboard is looked up straight away. Press it again to put Claws away. The shortcut can be changed or turned off.
+- **Keeps running.** Like a Mac app, closing the window leaves Claws in the notification area, so downloads continue. <kbd>Ctrl</kbd>+<kbd>Q</kbd> or the icon's menu quits.
+- **Open at login.** Optional: Claws starts quietly in the notification area when you sign in.
 
 **Interface**
 - **Desktop glass.** The desktop shows through the window, blurred by Windows itself. Apple-style materials sit on top, with no painted background.
@@ -57,17 +63,17 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 ### From a release
 
 1. Download `Claws_<version>_x64-setup.exe` from the [Releases](https://github.com/ppolkadot/Claws/releases) page.
-2. Run it. Test builds are not code-signed yet, so Windows SmartScreen may warn on first run; choose **More info → Run anyway**.
+2. Run it. Releases are not code-signed yet, so Windows SmartScreen may warn on first run; choose **More info → Run anyway**.
 3. On first launch Claws downloads yt-dlp into its own folder and verifies it against the checksum yt-dlp publishes. This happens once and takes a few seconds.
 
 ### Requirements
 
 | | |
 | --- | --- |
-| OS | Windows 11. Windows 10 works, but the glass effects depend on Windows 11. |
+| OS | Windows 11. Windows 10 has not been tested. |
 | Runtime | Microsoft Edge WebView2, included with Windows 11. |
 | ffmpeg | Needed to merge HD video with audio and to convert audio. Claws uses the copy on your `PATH`, or installs one from **Settings → Tools**. |
-| JavaScript runtime | Recent YouTube extraction needs Deno or Node.js. Claws finds either automatically. |
+| JavaScript runtime | Recent YouTube extraction needs Deno or Node.js. Claws finds either on your `PATH`; **Settings → Tools** shows which one it uses. |
 
 ## Using Claws
 
@@ -79,7 +85,9 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 
 | Shortcut | Action |
 | --- | --- |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>D</kbd> | Quick Open, from any app (configurable) |
 | <kbd>Ctrl</kbd>+<kbd>V</kbd> | Paste a link and look it up, from anywhere in the window |
+| <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit Claws (closing the window keeps it running) |
 | <kbd>Ctrl</kbd>+<kbd>1</kbd> … <kbd>4</kbd> | Download, Queue, Library, Settings |
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>S</kbd> | Show or hide the sidebar |
 | <kbd>Enter</kbd> | Look up the link in the URL field |
@@ -90,16 +98,17 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 | Section | Options |
 | --- | --- |
 | **Downloads** | Output folder (default `Downloads\Claws`), filename template (a yt-dlp output template), simultaneous downloads (1–8), embed metadata |
+| **Quick Access** | Quick Open shortcut (Ctrl+Alt+D, Ctrl+Alt+Space, Ctrl+Shift+Space or off), keep running when closed, open at login |
 | **Appearance** | Theme (System, Light, Dark), window material (Glass, Acrylic, Mica, Solid), transparency, font status |
 | **Sign-in** | Cookies from none, a browser (Firefox, Chrome, Edge, Brave, Opera, Vivaldi), or a `cookies.txt` file |
-| **Tools** | yt-dlp version and one-click update, ffmpeg status and install |
+| **Tools** | yt-dlp version and one-click update, ffmpeg status and install, and whether a JavaScript runtime (Deno or Node.js) was found |
 
 The window materials:
 - **Glass** is the default. It shows your desktop through the window, blurred.
 - **Acrylic** and **Mica** are the Windows system materials; Windows flattens them while the window is in the background.
 - **Solid** turns the material off.
 
-Settings and history are stored in `%APPDATA%\dev.claws.downloader\`.
+Settings, the library, the unfinished queue, the downloaded tools and the caches are stored in `%APPDATA%\dev.claws.downloader\`.
 
 ## How it works
 
@@ -109,18 +118,18 @@ Claws is a [Tauri 2](https://tauri.app) app. The backend is written in Rust and 
 - [**ffmpeg**](https://ffmpeg.org) merges video with audio, converts audio and embeds metadata.
 
 ```
-┌──────────────── Claws window (WebView2, TypeScript + CSS) ───────────────┐
-│  Download · Queue · Library · Settings                                  │
-└───────────────┬──────────────────────────────────────────▲─────────────┘
-          commands │                                  events │ progress, state
-┌───────────────▼──────────────────────────────────────────┴─────────────┐
-│  Rust backend: probe · queue & concurrency · progress parsing · history  │
-│                tool install & update · window material (DWM)            │
-└───────────────┬────────────────────────────────────────────────────────┘
-          spawns │  argument arrays, never a shell
-        ┌─────────▼─────────┐        ┌──────────────┐
-        │      yt-dlp       │──────▶ │    ffmpeg    │
-        └───────────────────┘        └──────────────┘
+┌─────────────────── Claws window (WebView2, TypeScript + CSS) ────────────────────┐
+│  Download · Queue · Library · Settings                                           │
+└─────────────┬────────────────────────────────────────────────▲───────────────────┘
+     commands │                                         events │ progress, state
+┌─────────────▼────────────────────────────────────────────────┴───────────────────┐
+│  Rust backend: link lookup & caches · queue & concurrency · history              │
+│                tool install & update · window material · tray & Quick Open       │
+└─────────────┬────────────────────────────────────────────────────────────────────┘
+       spawns │  argument arrays, never a shell
+    ┌─────────▼─────────┐        ┌──────────────┐
+    │       yt-dlp      │──────▶ │    ffmpeg    │
+    └───────────────────┘        └──────────────┘
 ```
 
 - **Reading a link** runs `yt-dlp --dump-single-json --flat-playlist` and turns the result into a preview, the available qualities, subtitles and playlist entries.
@@ -135,18 +144,18 @@ Measured on the development machine (SATA SSD, a connection of about 500 Mbit/s)
 | --- | --- | --- |
 | Press Download → first progress | ~4.7 s | **~0.8 s** |
 | yt-dlp start-up | ~1.4 s | **~0.4 s** |
-| Window ready to draw | ~500 ms | **~2 ms** |
+| Work before the first frame | ~500 ms | **~2 ms** |
 
 What makes the difference:
 - **No second read.** Reading a link keeps its result for 20 minutes, and the download starts straight from it instead of reading the page again. If the site's links have expired, Claws retries once with a fresh read.
 - **Faster start-up.** yt-dlp is installed as its folder build, which starts about three times faster than the single-file build.
-- **Parallel connections.** Each stream uses 8 connections, which helps on high-latency links and on sites that serve many small fragments.
+- **Parallel fragments.** Streams served in fragments (HLS and DASH) download 8 fragments at a time, which helps on high-latency links.
 - **No waiting at launch.** The window draws immediately, and tool checks run in the background.
 - **Embed metadata** costs one extra rewrite of each file after merging. Turn it off for the fastest finish on long videos.
 
 ## Privacy and security
 
-- **Local only.** Claws makes no telemetry, analytics or account calls. The only network traffic is to the sites you download from, and to GitHub when yt-dlp or ffmpeg is installed or updated.
+- **Local only.** Claws makes no telemetry, analytics or account calls. The only network traffic is to the sites you download from (including the servers their artwork comes from), and to GitHub when yt-dlp or ffmpeg is installed, updated or checked for updates.
 - **Verified tools.** yt-dlp and ffmpeg downloads are checked against the SHA-256 checksums their projects publish and discarded on a mismatch. Archives are extracted with path checks, so nothing can be written outside the tool folder.
 - **Untrusted input stays contained.**
   - Only `http` and `https` links are accepted.
@@ -154,7 +163,7 @@ What makes the difference:
   - Settings that end up on the command line, such as browser names, cookie files and filename templates, are validated first.
   - Titles and other text from sites are always rendered as text, never as HTML.
 - **Least privilege.** The interface can only open files and folders the app itself recorded, and the window runs under a strict Content Security Policy.
-- **Cookies** are read only when a download needs them and go only to the site they belong to.
+- **Cookies** are used only while a cookie source is set in **Settings → Sign-in**: yt-dlp then reads them each time it looks up or downloads a link, and sends each cookie only to the site it belongs to.
 
 ## Fonts
 
@@ -168,7 +177,7 @@ python scripts/build-fonts.py   # writes public/fonts/Legacy UI Display-{400,500
 The script subsets the four weights the interface uses (Regular, Medium, Semibold and Bold) to Latin, Greek, Cyrillic and common punctuation. That takes each from about 2.2 MB to about 120 KB, while keeping tabular figures, kerning and ligatures.
 
 > [!IMPORTANT]
-> Apple's licence for Legacy UI only covers creating mock-ups for Apple platforms. The font files and the fonts built from them are therefore **not committed** (see `.gitignore`), and an installer that contains them should not be distributed publicly. Without the files, Claws builds and runs normally and falls back to **Segoe UI Variable**. **Settings → Appearance → Font** shows which one is in use.
+> Apple's licence for Legacy UI only covers creating mock-ups for Apple platforms. The font files and the fonts built from them are therefore **not committed** (see `.gitignore`), and an installer that contains them should not be distributed publicly. Without the files, Claws builds and runs normally. It uses Legacy UI Display if it is installed in Windows, and otherwise falls back to **Segoe UI Variable**. Public release builds are made without the font files. **Settings → Appearance → Font** shows which one is in use.
 
 ## Building from source
 
@@ -188,6 +197,7 @@ npm run tauri build     # produce the installer in src-tauri/target/release/bund
 | `npm run dev` | Runs the interface in a browser with synthetic sample data. Useful for styling work without the backend. |
 | `npm run build` | Type-checks and builds the frontend. |
 | `cargo clippy` (in `src-tauri/`) | Lints the backend. |
+| `cargo test` (in `src-tauri/`) | Runs the backend's unit tests. |
 | `python scripts/build-fonts.py` | Builds the bundled fonts (optional, see [Fonts](#fonts)). |
 
 `scripts/dev/` has the tools used to test the real app:
@@ -208,8 +218,11 @@ claws/
 ├── src-tauri/                Backend (Rust)
 │   └── src/
 │       ├── downloader.rs     Queue, concurrency, progress, pause/resume/cancel
-│       ├── probe.rs          Reading links, and the probe cache
+│       ├── probe.rs          Reading links, and the 20-minute probe cache
+│       ├── links.rs          Saved details of downloaded links, for instant lookups
+│       ├── history.rs        The library and its artwork
 │       ├── tools.rs          Installing and updating yt-dlp and ffmpeg
+│       ├── desktop.rs        Quick Open shortcut, notification-area icon, open at login
 │       ├── window.rs         Desktop glass and the Windows materials
 │       └── commands.rs       Everything the interface can call
 ├── scripts/                  Font build, icon source, dev tools
@@ -242,6 +255,18 @@ Sites change often. Open **Settings → Tools** and press **Check for Updates** 
 </details>
 
 <details>
+<summary><b>Quick Open does nothing when I press the shortcut</b></summary>
+
+Another app may already use that key combination; Claws says so when it starts or when you change the shortcut. Choose a different one in **Settings → Quick Access**. The shortcut only works while Claws is running, so keep **Keep running when closed** on, and turn on **Open at login** if you want it available from the moment you sign in.
+</details>
+
+<details>
+<summary><b>Claws is still running after I closed its window</b></summary>
+
+That is on purpose, so downloads continue and Quick Open keeps working. Press <kbd>Ctrl</kbd>+<kbd>Q</kbd>, or choose **Quit Claws** from its icon in the notification area. To make closing the window quit, turn off **Settings → Quick Access → Keep running when closed**.
+</details>
+
+<details>
 <summary><b>The same video in another quality is skipped</b></summary>
 
 yt-dlp skips files that already exist under the same name. Add the quality to the filename template, for example `%(title).150B [%(id)s] %(height)sp.%(ext)s`, or move the earlier file.
@@ -251,7 +276,7 @@ yt-dlp skips files that already exist under the same name. Add the quality to th
 
 Issues and pull requests are welcome. Before opening a PR:
 
-- run `npm run build` and `cargo clippy`, and keep both clean;
+- run `npm run build`, `cargo clippy` and `cargo test`, and keep all three clean;
 - follow the existing style: plain TypeScript and CSS, with comments that explain *why*;
 - keep visual work consistent with [`DESIGN.md`](DESIGN.md).
 

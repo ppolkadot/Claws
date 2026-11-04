@@ -1,7 +1,9 @@
 ﻿mod commands;
+mod desktop;
 mod downloader;
 mod error;
 mod history;
+mod links;
 mod probe;
 mod settings;
 mod state;
@@ -10,25 +12,44 @@ mod tools;
 mod window;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use tauri::Manager;
 
+use crate::downloader::Job;
 use crate::history::HistoryItem;
 use crate::settings::Settings;
 use crate::state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        // Must be registered first. A second launch would run its own queue against the
+        // same files, so it just brings the existing window forward instead.
+        // That includes opening Claws from the Start menu while it sits in the
+        // notification area.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            desktop::bring_forward(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(desktop::shortcut_plugin())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![desktop::BACKGROUND_ARG]),
+        ))
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
 
-            let mut settings: Settings = store::load(&data_dir.join("settings.json"));
+            store::sweep_temp_files(&data_dir);
+            let mut notices = Vec::new();
+            let mut settings: Settings = store::load_or_recover(&data_dir.join("settings.json"), "settings", &mut notices);
+            if let Some(notice) = settings.repair() {
+                notices.push(notice);
+            }
             if settings.output_dir.trim().is_empty() {
                 settings.output_dir = app
                     .path()
@@ -37,7 +58,10 @@ pub fn run() {
                     .to_string_lossy()
                     .into_owned();
             }
-            let history: Vec<HistoryItem> = store::load(&data_dir.join("history.json"));
+            // An exit in the middle of a tool install can leave a half-swapped tool.
+            tools::recover_bin(&data_dir.join("bin"));
+            let history: Vec<HistoryItem> = store::load_or_recover(&data_dir.join("history.json"), "library", &mut notices);
+            let queue: Vec<Job> = store::load_or_recover(&data_dir.join("queue.json"), "download queue", &mut notices);
 
             let http = reqwest::Client::builder()
                 .user_agent(concat!("Claws/", env!("CARGO_PKG_VERSION")))
@@ -51,29 +75,54 @@ pub fn run() {
                 jobs: Mutex::new(Vec::new()),
                 running: Mutex::new(HashMap::new()),
                 http,
+                engine: tokio::sync::RwLock::new(()),
+                notices: Mutex::new(Vec::new()),
+                shutting_down: AtomicBool::new(false),
+                workers: AtomicUsize::new(0),
+                live_jobs: Mutex::new(std::collections::HashSet::new()),
+                probes: Mutex::new(HashMap::new()),
+                recent_probes: Mutex::new(Vec::new()),
+                // Only with the notification-area icon: without it a hidden window
+                // could never be found again.
+                start_hidden: AtomicBool::new(
+                    settings.keep_running && std::env::args().any(|a| a == desktop::BACKGROUND_ARG),
+                ),
             });
-            downloader::restore_queue(app.handle());
-            probe::prune_cache(&app.state::<AppState>().probe_cache_dir());
+            downloader::restore_queue(app.handle(), queue);
+            let state = app.state::<AppState>();
+            probe::prune_cache(&state.probe_cache_dir());
+            links::prune(&links::cache_dir(&state.data_dir));
+
+            desktop::create_tray(app.handle())?;
+            if let Some(problem) = desktop::apply(app.handle(), &settings) {
+                notices.push(problem);
+            }
 
             if let Some(main) = app.get_webview_window("main") {
                 window::apply_theme(&main, &settings.theme);
                 if let Err(e) = window::apply_backdrop(&main, &settings.backdrop) {
-                    eprintln!("could not apply the window backdrop: {e}");
+                    notices.push(e);
                 }
                 // The UI shows the window after its first paint; this is the fallback
                 // so a frontend failure can never leave the app invisible.
                 let fallback = main.clone();
+                let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(4)).await;
-                    let _ = fallback.show();
+                    if !handle.state::<AppState>().start_hidden.load(Ordering::SeqCst) {
+                        let _ = fallback.show();
+                    }
                 });
             }
+            *app.state::<AppState>().notices.lock().unwrap() = notices;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap,
             commands::app_ready,
+            commands::quit_app,
             commands::probe_url,
+            commands::cached_link,
             commands::enqueue,
             commands::pause_job,
             commands::resume_job,
@@ -94,6 +143,14 @@ pub fn run() {
             commands::default_output_dir,
             commands::open_font_page,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Claws");
+        .build(tauri::generate_context!())
+        .expect("error while starting Claws");
+
+    app.run(|app, event| {
+        // Closing the window must not leave yt-dlp and ffmpeg running in the background
+        // or a queue that forgets which partial files belong to which job.
+        if let tauri::RunEvent::Exit = event {
+            downloader::shutdown(app);
+        }
+    });
 }

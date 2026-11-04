@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::downloader::Job;
+use crate::error::notify;
 use crate::state::AppState;
 use crate::store;
 
@@ -27,11 +29,20 @@ pub struct HistoryItem {
     pub finished_at: i64,
 }
 
-pub fn save(app: &AppHandle) {
+/// Persists the library. The snapshot is taken under the store's write lock, so a later
+/// change can never be overwritten by an earlier, slower save.
+pub fn save(app: &AppHandle) -> crate::error::Result<()> {
     let state = app.state::<AppState>();
-    let history = state.history.lock().unwrap().clone();
-    let _ = store::save(&state.history_path(), &history);
+    let result = store::save_snapshot(&state.history_path(), || state.history.lock().unwrap().clone());
     let _ = app.emit("history-changed", ());
+    result
+}
+
+/// Background variant: a failure is shown to the user instead of being returned.
+pub fn save_reporting(app: &AppHandle) {
+    if let Err(e) = save(app) {
+        notify(app, format!("Claws could not save your library: {e}"));
+    }
 }
 
 pub fn record(app: &AppHandle, job: &Job) {
@@ -68,7 +79,7 @@ pub fn record(app: &AppHandle, job: &Job) {
         history.retain(|h| h.id != item.id);
         history.insert(0, item);
     }
-    save(app);
+    save_reporting(app);
 
     if let Some(url) = job.thumbnail.clone() {
         let app = app.clone();
@@ -79,9 +90,28 @@ pub fn record(app: &AppHandle, job: &Job) {
     }
 }
 
+const THUMB_MAX_BYTES: usize = 5 * 1024 * 1024;
+
+/// Reads at most `limit` bytes. The declared length is checked first, then the body is
+/// streamed, so an oversized or lying response never gets buffered in full.
+async fn read_capped(response: reqwest::Response, limit: usize) -> Option<Vec<u8>> {
+    if response.content_length().is_some_and(|len| len > limit as u64) {
+        return None;
+    }
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.ok()?;
+        if body.len() + chunk.len() > limit {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Some(body)
+}
+
 /// Best effort: keeps the library's artwork after the site's link expires.
 async fn cache_thumbnail(app: &AppHandle, id: &str, url: &str) {
-    const MAX_BYTES: usize = 5 * 1024 * 1024;
     let state = app.state::<AppState>();
     if !url.starts_with("https://") {
         return;
@@ -105,10 +135,7 @@ async fn cache_thumbnail(app: &AppHandle, id: &str, url: &str) {
             Some(t) if t.contains("webp") => "webp",
             _ => "jpg",
         };
-        let bytes = response.bytes().await.ok()?;
-        if bytes.len() > MAX_BYTES {
-            return None;
-        }
+        let bytes = read_capped(response, THUMB_MAX_BYTES).await?;
         let dir = state.thumbs_dir();
         tokio::fs::create_dir_all(&dir).await.ok()?;
         // The file name is our own uuid, never anything from the remote site.
@@ -118,14 +145,22 @@ async fn cache_thumbnail(app: &AppHandle, id: &str, url: &str) {
     }
     .await;
 
-    if let Some(path) = result {
-        {
-            let mut history = state.history.lock().unwrap();
-            if let Some(item) = history.iter_mut().find(|h| h.id == id) {
+    let Some(path) = result else { return };
+    let stored = {
+        let mut history = state.history.lock().unwrap();
+        match history.iter_mut().find(|h| h.id == id) {
+            Some(item) => {
                 item.thumbnail_local = Some(path.to_string_lossy().into_owned());
+                true
             }
+            None => false,
         }
-        save(app);
+    };
+    if stored {
+        save_reporting(app);
+    } else {
+        // The entry was removed while the artwork downloaded.
+        let _ = tokio::fs::remove_file(&path).await;
     }
 }
 

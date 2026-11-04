@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, Result};
 
+/// The system-wide shortcuts offered for Quick Open, in the global-shortcut syntax.
+/// Chosen to avoid combinations Windows, browsers and AltGr layouts already use.
+pub const SHORTCUTS: &[&str] = &["ctrl+alt+d", "ctrl+alt+space", "ctrl+shift+space", "off"];
+
 pub const BROWSERS: &[&str] = &[
     "chrome", "edge", "firefox", "brave", "opera", "vivaldi", "chromium", "whale",
 ];
@@ -32,6 +36,13 @@ pub struct Settings {
     pub max_concurrent: u8,
     /// Costs one extra full rewrite of each file after it is merged.
     pub embed_metadata: bool,
+    /// System-wide shortcut that brings Claws forward (one of `SHORTCUTS`).
+    pub quick_open_shortcut: String,
+    /// Closing the window leaves Claws running in the notification area, so downloads
+    /// continue and the shortcut keeps working.
+    pub keep_running: bool,
+    /// Start (hidden, in the notification area) when the user signs in to Windows.
+    pub open_at_login: bool,
 }
 
 impl Default for Settings {
@@ -48,6 +59,9 @@ impl Default for Settings {
             backdrop: "glass".into(),
             max_concurrent: 3,
             embed_metadata: true,
+            quick_open_shortcut: "ctrl+alt+d".into(),
+            keep_running: true,
+            open_at_login: false,
         }
     }
 }
@@ -64,6 +78,9 @@ impl Settings {
         }
         if !["glass", "acrylic", "mica", "tabbed", "none"].contains(&self.backdrop.as_str()) {
             self.backdrop = "glass".into();
+        }
+        if !SHORTCUTS.contains(&self.quick_open_shortcut.as_str()) {
+            self.quick_open_shortcut = Settings::default().quick_open_shortcut;
         }
 
         let template = self.filename_template.trim();
@@ -107,5 +124,93 @@ impl Settings {
             return Err(AppError::msg("Choose an output folder."));
         }
         Ok(())
+    }
+
+    /// For settings loaded from disk: anything `validate` would reject is reset instead,
+    /// so a hand-edited file, or a cookies file that was since deleted, never reaches the
+    /// yt-dlp command line. Returns a message when something was reset.
+    pub fn repair(&mut self) -> Option<String> {
+        let defaults = Settings::default();
+        let mut reset = Vec::new();
+        // The output folder is filled in by the caller when empty.
+        let placeholder = self.output_dir.trim().is_empty();
+        if placeholder {
+            self.output_dir = ".".into();
+        }
+        for _ in 0..3 {
+            let Err(e) = self.validate() else { break };
+            let message = e.to_string();
+            if message.contains("template") {
+                self.filename_template = defaults.filename_template.clone();
+                reset.push("the filename template");
+            } else if message.contains("cookie") || message.contains("browser") {
+                self.cookie_source = defaults.cookie_source.clone();
+                reset.push("the cookie source");
+            } else {
+                break;
+            }
+        }
+        if placeholder {
+            self.output_dir.clear();
+        }
+        (!reset.is_empty()).then(|| format!("Claws reset {} because the saved value could not be used.", reset.join(" and ")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid() -> Settings {
+        Settings {
+            output_dir: "C:\\Downloads".into(),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn templates_must_stay_inside_the_folder() {
+        for bad in ["../x.%(ext)s", "C:\\x.%(ext)s", "\\\\server\\x", "/x", "   "] {
+            let mut s = valid();
+            s.filename_template = bad.into();
+            assert!(s.validate().is_err(), "{bad} should be rejected");
+        }
+        let mut s = valid();
+        s.filename_template = "%(uploader)s/%(title)s.%(ext)s".into();
+        assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn every_offered_shortcut_parses() {
+        use tauri_plugin_global_shortcut::Shortcut;
+        for choice in SHORTCUTS.iter().filter(|c| **c != "off") {
+            assert!(choice.parse::<Shortcut>().is_ok(), "{choice} should parse");
+        }
+        let mut s = valid();
+        s.quick_open_shortcut = "win+l".into();
+        s.validate().unwrap();
+        assert_eq!(s.quick_open_shortcut, "ctrl+alt+d");
+    }
+
+    #[test]
+    fn browser_must_be_known() {
+        let mut s = valid();
+        s.cookie_source = CookieSource { kind: "browser".into(), value: "C:\\cookies.txt".into() };
+        assert!(s.validate().is_err());
+        s.cookie_source.value = "firefox".into();
+        assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn repair_resets_only_bad_values() {
+        let mut s = valid();
+        s.filename_template = "../escape".into();
+        s.cookie_source = CookieSource { kind: "file".into(), value: "Z:\\definitely\\missing.txt".into() };
+        s.max_concurrent = 8;
+        assert!(s.repair().is_some());
+        assert_eq!(s.filename_template, Settings::default().filename_template);
+        assert_eq!(s.cookie_source.kind, "none");
+        assert_eq!(s.max_concurrent, 8);
+        assert!(s.validate().is_ok());
     }
 }

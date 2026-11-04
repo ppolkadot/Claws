@@ -43,3 +43,12 @@ impl Serialize for AppError {
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;
+
+/// Shows a problem the user should know about but that no command is waiting on, such
+/// as a failed background save. The UI turns it into an error toast.
+pub fn notify(app: &tauri::AppHandle, message: impl Into<String>) {
+    use tauri::Emitter;
+    let message = message.into();
+    eprintln!("{message}");
+    let _ = app.emit("notice", message);
+}

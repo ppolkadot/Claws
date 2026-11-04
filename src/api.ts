@@ -14,7 +14,14 @@ export interface Settings {
   backdrop: Backdrop;
   maxConcurrent: number;
   embedMetadata: boolean;
+  /** System-wide Quick Open shortcut, e.g. "ctrl+alt+d", or "off". */
+  quickOpenShortcut: QuickOpenShortcut;
+  /** Closing the window leaves Claws in the notification area. */
+  keepRunning: boolean;
+  openAtLogin: boolean;
 }
+
+export type QuickOpenShortcut = "ctrl+alt+d" | "ctrl+alt+space" | "ctrl+shift+space" | "off";
 
 export type JobStatus =
   | "queued"
@@ -78,6 +85,8 @@ export interface ToolsStatus {
   ytdlp: ToolInfo | null;
   ffmpeg: ToolInfo | null;
   latestYtdlp: string | null;
+  /** "Deno" or "Node.js", the JavaScript runtime yt-dlp uses for sites like YouTube. */
+  jsRuntime: string | null;
 }
 
 export interface SubtitleLang {
@@ -88,6 +97,8 @@ export interface SubtitleLang {
 
 export interface EntrySummary {
   url: string;
+  /** Set when the entry had no link of its own; `url` is then the playlist's. */
+  playlistIndex: number | null;
   title: string;
   duration: number | null;
   thumbnail: string | null;
@@ -107,8 +118,15 @@ export interface ProbeResult {
   entries: EntrySummary[];
 }
 
+/** Saved details of a link downloaded before. */
+export interface CachedLink {
+  savedAt: number;
+  result: ProbeResult;
+}
+
 export interface EnqueueItem {
   url: string;
+  playlistIndex?: number | null;
   title: string;
   thumbnail: string | null;
   uploader: string | null;
@@ -126,20 +144,31 @@ interface Bootstrap {
   settings: Settings;
   jobs: Job[];
   history: HistoryItem[];
+  /** Startup problems to show once. */
+  notices: string[];
+}
+
+export interface SavedSettings {
+  settings: Settings;
+  /** Saved, but something did not take effect. */
+  warning: string | null;
 }
 
 export const api = {
   bootstrap: () => invoke<Bootstrap>("bootstrap"),
   appReady: () => invoke<void>("app_ready"),
+  quit: () => invoke<void>("quit_app"),
   probe: (url: string) => invoke<ProbeResult>("probe_url", { url }),
-  enqueue: (items: EnqueueItem[], options: DownloadOptions) =>
-    invoke<Job[]>("enqueue", { items, options }),
+  cachedLink: (url: string) => invoke<CachedLink | null>("cached_link", { url }),
+  /** `source` is the link that was looked up, saved so its next lookup is instant. */
+  enqueue: (items: EnqueueItem[], options: DownloadOptions, source: string | null) =>
+    invoke<Job[]>("enqueue", { items, options, source }),
   pause: (id: string) => invoke<void>("pause_job", { id }),
   resume: (id: string) => invoke<void>("resume_job", { id }),
   cancel: (id: string) => invoke<void>("cancel_job", { id }),
   remove: (id: string) => invoke<void>("remove_job", { id }),
   clearFinished: () => invoke<void>("clear_finished"),
-  saveSettings: (settings: Settings) => invoke<Settings>("save_settings", { settings }),
+  saveSettings: (settings: Settings) => invoke<SavedSettings>("save_settings", { settings }),
   listHistory: () => invoke<HistoryItem[]>("list_history"),
   openDownload: (id: string) => invoke<void>("open_download", { id }),
   revealDownload: (id: string) => invoke<void>("reveal_download", { id }),

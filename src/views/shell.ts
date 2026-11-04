@@ -1,5 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+import { api } from "../api";
 import { store, type Route } from "../store";
 import { h, clear } from "../ui/dom";
 import { icon, type IconName } from "../ui/icons";
@@ -124,6 +125,12 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
     if (event.ctrlKey && event.altKey && event.key.toLowerCase() === "s") {
       event.preventDefault();
       setSidebar(app.dataset.sidebar !== "open");
+    } else if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "q") {
+      // Quit, as on a Mac: closing the window only puts Claws in the notification area.
+      event.preventDefault();
+      void Promise.race([store.flushSettings(), new Promise((resolve) => setTimeout(resolve, 1500))])
+        .catch(() => undefined)
+        .then(() => api.quit());
     } else if (event.ctrlKey && !event.altKey && !event.shiftKey && /^[1-4]$/.test(event.key)) {
       event.preventDefault();
       store.go(NAV[Number(event.key) - 1].route);

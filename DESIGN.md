@@ -279,7 +279,7 @@ Depth is material thickness first, shadow second. The desktop blur happens once,
 
 ### Named Rules
 **The One Blur Rule.** Content panels and the sidebar never use backdrop-filter; behind them is only the window tint, and the desktop is already blurred. Blur in-app only where real in-app content passes underneath.
-**The Transparency Rule.** Material alphas are always derived from `--gi`. Transparency at 0 and the None backdrop drive it to 0; the reduced-transparency media query also replaces the window tint with the opaque solid base.
+**The Transparency Rule.** Material alphas are always derived from `--gi`. Transparency at 0 and the None backdrop drive it to 0; the reduced-transparency media query also makes the window, panels and sidebar opaque, exactly like Solid. Those overrides sit after the rules they replace, because a media query adds no specificity.
 **The Flat Ancestor Rule.** Never animate `opacity` or `filter` on an ancestor of a blurring element; it flattens the glass. The blurring element itself may fade (toolbar chrome, toasts, sheet).
 
 ## Shapes

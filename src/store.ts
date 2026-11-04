@@ -10,7 +10,22 @@ import {
 
 export type Route = "download" | "queue" | "library" | "settings";
 
-type Topic = "route" | "jobs" | "job" | "history" | "settings" | "tools" | "toolProgress";
+type Topic =
+  | "route"
+  | "jobs"
+  | "job"
+  | "history"
+  | "settings"
+  /** A save was rejected and some fields went back to their saved values. */
+  | "settingsReverted"
+  /** A link was pasted somewhere in the window; see `takePastedLink`. */
+  | "paste"
+  /** Quick Open without a link: put the cursor in the link field. */
+  | "focusLink"
+  | "tools"
+  | "toolProgress";
+
+const sameValue = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 type Listener = (detail?: unknown) => void;
 
 const defaultSettings: Settings = {
@@ -22,6 +37,9 @@ const defaultSettings: Settings = {
   backdrop: "glass",
   maxConcurrent: 3,
   embedMetadata: true,
+  quickOpenShortcut: "ctrl+alt+d",
+  keepRunning: true,
+  openAtLogin: false,
 };
 
 class Store {
@@ -29,7 +47,7 @@ class Store {
   settings: Settings = defaultSettings;
   jobs = new Map<string, Job>();
   history: HistoryItem[] = [];
-  tools: ToolsStatus = { ytdlp: null, ffmpeg: null, latestYtdlp: null };
+  tools: ToolsStatus = { ytdlp: null, ffmpeg: null, latestYtdlp: null, jsRuntime: null };
   toolProgress: Partial<Record<"ytdlp" | "ffmpeg", ToolProgress>> = {};
   toolBusy: Partial<Record<"ytdlp" | "ffmpeg", boolean>> = {};
   toolError: Partial<Record<"ytdlp" | "ffmpeg", string>> = {};
@@ -42,6 +60,19 @@ class Store {
 
   private listeners = new Map<Topic, Set<Listener>>();
   private saveTimer: number | undefined;
+
+  // Settings saves. Every local edit bumps `revision`; saves run one at a time on
+  // `saveChain`, and a response is only adopted when no newer edit has happened since
+  // its request was sent, so a slow older save can never overwrite a newer edit.
+  /** The last settings the backend accepted. */
+  private confirmed: Settings = defaultSettings;
+  private revision = 0;
+  private sentRevision = 0;
+  private saveChain: Promise<void> = Promise.resolve();
+  private onSaveError: (message: string) => void = () => undefined;
+  private lastWarning: string | null = null;
+
+  private pastedLink: string | null = null;
 
   on(topic: Topic, listener: Listener): () => void {
     let set = this.listeners.get(topic);
@@ -77,8 +108,10 @@ class Store {
   async load() {
     const data = await api.bootstrap();
     this.settings = data.settings;
+    this.confirmed = data.settings;
     this.jobs = new Map(data.jobs.map((job) => [job.id, job]));
     this.history = data.history;
+    return data.notices;
   }
 
   /** Checks the tools in the background; the first frame never waits for this. */
@@ -110,16 +143,67 @@ class Store {
 
   /** Applies a settings change right away and saves it shortly after. */
   updateSettings(patch: Partial<Settings>, onError: (message: string) => void) {
+    this.onSaveError = onError;
     this.settings = { ...this.settings, ...patch };
+    this.revision += 1;
     this.emit("settings");
     window.clearTimeout(this.saveTimer);
-    this.saveTimer = window.setTimeout(async () => {
-      try {
-        this.settings = await api.saveSettings(this.settings);
-      } catch (error) {
-        onError(errorMessage(error));
+    this.saveTimer = window.setTimeout(() => void this.flushSettings(), 350);
+  }
+
+  /** Saves any pending edit now. Resolves once every queued save has finished. */
+  flushSettings(): Promise<void> {
+    window.clearTimeout(this.saveTimer);
+    this.saveTimer = undefined;
+    this.saveChain = this.saveChain.then(() => this.saveOnce());
+    return this.saveChain;
+  }
+
+  private async saveOnce() {
+    if (this.sentRevision === this.revision) return; // nothing new since the last attempt
+    const revision = this.revision;
+    const sent = this.settings;
+    this.sentRevision = revision;
+    try {
+      const result = await api.saveSettings(sent);
+      this.confirmed = result.settings;
+      // The backend's copy may be normalised (trimmed, clamped); take it only when
+      // nothing was edited while this save was in flight.
+      if (this.revision === revision) {
+        this.settings = result.settings;
+        this.emit("settings");
       }
-    }, 350);
+      if (result.warning && result.warning !== this.lastWarning) this.onSaveError(result.warning);
+      this.lastWarning = result.warning;
+    } catch (error) {
+      // Rejected: put back the fields this request changed, unless they were edited
+      // again since (those edits go out with the next save).
+      const reverted: Partial<Record<keyof Settings, unknown>> = {};
+      for (const key of Object.keys(sent) as (keyof Settings)[]) {
+        if (!sameValue(sent[key], this.confirmed[key]) && sameValue(this.settings[key], sent[key])) {
+          reverted[key] = this.confirmed[key];
+        }
+      }
+      if (Object.keys(reverted).length > 0) {
+        this.settings = { ...this.settings, ...(reverted as Partial<Settings>) };
+        this.emit("settings");
+        this.emit("settingsReverted");
+      }
+      this.onSaveError(errorMessage(error));
+    }
+  }
+
+  /** A link pasted anywhere in the window goes to the Download view, wherever it was. */
+  pasteLink(url: string) {
+    this.pastedLink = url;
+    if (this.route === "download") this.emit("paste");
+    else this.go("download");
+  }
+
+  takePastedLink(): string | null {
+    const url = this.pastedLink;
+    this.pastedLink = null;
+    return url;
   }
 
   setTools(tools: ToolsStatus) {
@@ -132,8 +216,23 @@ class Store {
     this.emit("toolProgress", progress);
   }
 
-  /** Runs an install or update for one tool and tracks its busy and error state. */
-  async runTool(tool: "ytdlp" | "ffmpeg", action: () => Promise<ToolsStatus>) {
+  /**
+   * Runs an install or update for one tool. Runs queue behind each other (the backend
+   * refuses a second install while one is running), so a first-run yt-dlp install that
+   * arrives during an ffmpeg install waits instead of being dropped.
+   */
+  runTool(tool: "ytdlp" | "ffmpeg", action: () => Promise<ToolsStatus>, options: { quiet?: boolean } = {}): Promise<void> {
+    // Already waiting or running: a second request for the same tool adds nothing.
+    if (this.toolPending.has(tool)) return this.toolChain;
+    this.toolPending.add(tool);
+    this.toolChain = this.toolChain.then(() => this.runToolNow(tool, action, options));
+    return this.toolChain;
+  }
+
+  private toolChain: Promise<void> = Promise.resolve();
+  private toolPending = new Set<"ytdlp" | "ffmpeg">();
+
+  private async runToolNow(tool: "ytdlp" | "ffmpeg", action: () => Promise<ToolsStatus>, options: { quiet?: boolean }) {
     this.toolBusy[tool] = true;
     delete this.toolError[tool];
     delete this.toolProgress[tool];
@@ -141,9 +240,11 @@ class Store {
     try {
       this.setTools(await action());
     } catch (error) {
-      this.toolError[tool] = errorMessage(error);
+      // A quiet run (the background migration) just tries again another time.
+      if (!options.quiet) this.toolError[tool] = errorMessage(error);
     } finally {
       this.toolBusy[tool] = false;
+      this.toolPending.delete(tool);
       delete this.toolProgress[tool];
       this.emit("tools");
     }
