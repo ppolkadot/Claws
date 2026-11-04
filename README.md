@@ -167,17 +167,14 @@ What makes the difference:
 
 ## Fonts
 
-The interface is set in **Salted Flutters Polaris**, with **Legacy UI Display** as the fallback. Claws builds both into the app from their source files, `Salted-Flutters-Polaris/` and `assets/fonts/Legacy UI Display/`; a family whose files are missing is skipped:
+**Salted Flutters Polaris** is the interface font and is bundled with Claws, so users do not need to install it separately. To build its font files from the source files in `Salted-Flutters-Polaris/`, run:
 
 ```powershell
 pip install "fonttools[woff]"
-python scripts/build-fonts.py   # writes public/fonts/{salted-flutters-polaris,Legacy UI Display}-{400,500,600,700}.woff2
+python scripts/build-fonts.py
 ```
 
-The script subsets the four weights the interface uses (Regular, Medium, Semibold and Bold) to Latin, Greek, Cyrillic and common punctuation. That takes each Polaris weight from about 3.5 MB to about 160 KB, while keeping tabular figures, kerning and ligatures.
-
-> [!IMPORTANT]
-> Salted Flutters Polaris is derived from Legacy UI: it shares Legacy UI's metrics and OpenType features. Apple's licence for Legacy UI only covers creating mock-ups for Apple platforms, so the source files and the fonts built from them are **not committed** (see `.gitignore`), and an installer that contains them should not be distributed publicly. Without the files, Claws builds and runs normally, using either font if it is installed in Windows and otherwise **Segoe UI Variable**. Public release builds are made without the font files. **Settings → Appearance → Font** shows which one is in use.
+The build script creates the four Polaris weights used by the interface (Regular, Medium, Semibold and Bold), subset to Latin, Greek, Cyrillic and common punctuation while preserving tabular figures, kerning and ligatures.
 
 ## Building from source
 
@@ -282,7 +279,7 @@ Issues and pull requests are welcome. Before opening a PR:
 
 ## Acknowledgements
 
-Claws exists because of [yt-dlp](https://github.com/yt-dlp/yt-dlp), [FFmpeg](https://ffmpeg.org) and the [yt-dlp FFmpeg builds](https://github.com/yt-dlp/FFmpeg-Builds), and is built with [Tauri](https://tauri.app). Legacy UI is a typeface by Apple Inc.
+Claws exists because of [yt-dlp](https://github.com/yt-dlp/yt-dlp), [FFmpeg](https://ffmpeg.org) and the [yt-dlp FFmpeg builds](https://github.com/yt-dlp/FFmpeg-Builds), and is built with [Tauri](https://tauri.app).
 
 ## License
 
