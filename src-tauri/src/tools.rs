@@ -1,3 +1,4 @@
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -327,7 +328,7 @@ pub async fn install_ytdlp(app: &AppHandle) -> Result<()> {
         let staging = bin_for_task.join("yt-dlp.new");
         let _ = std::fs::remove_dir_all(&staging);
         std::fs::create_dir_all(&staging)?;
-        if let Err(e) = extract_all(&zip_for_task, &staging) {
+        if let Err(e) = extract_all(&zip_for_task, &staging, &YTDLP_LIMITS) {
             let _ = std::fs::remove_dir_all(&staging);
             return Err(e);
         }
@@ -344,12 +345,56 @@ pub async fn install_ytdlp(app: &AppHandle) -> Result<()> {
     result
 }
 
-fn extract_all(zip_path: &Path, staging: &Path) -> Result<()> {
+/// What a tool archive may contain. The archives are checksum-verified before they are
+/// opened, so these limits only matter if that check were ever bypassed or a publisher's
+/// release were compromised: they are far above the real sizes (yt-dlp unpacks to about
+/// 40 MB in 146 files) and far below anything that could fill a disk or memory.
+struct Limits {
+    entries: usize,
+    entry_bytes: u64,
+    total_bytes: u64,
+}
+
+const YTDLP_LIMITS: Limits = Limits {
+    entries: 2_000,
+    entry_bytes: 256 * 1024 * 1024,
+    total_bytes: 512 * 1024 * 1024,
+};
+const FFMPEG_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Entries no tool release contains. Encrypted entries cannot be read without a password
+/// and links could point out of the folder, so either means the archive is not ours.
+fn check_entry(entry: &zip::read::ZipFile<'_, impl Read>) -> Result<()> {
+    if entry.encrypted() {
+        return Err(AppError::msg("The archive contains an encrypted entry, so it was not used."));
+    }
+    if entry.is_symlink() {
+        return Err(AppError::msg("The archive contains a link, so it was not used."));
+    }
+    Ok(())
+}
+
+/// Copies at most `limit` bytes. The size an entry declares is not trusted: what counts
+/// is what is actually produced, so an archive that lies about its size is caught here.
+fn copy_limited(from: &mut impl Read, to: &mut impl Write, limit: u64) -> Result<u64> {
+    let copied = std::io::copy(&mut from.take(limit.saturating_add(1)), to)?;
+    if copied > limit {
+        return Err(AppError::msg("An entry in the archive is larger than allowed, so it was not used."));
+    }
+    Ok(copied)
+}
+
+fn extract_all(zip_path: &Path, staging: &Path, limits: &Limits) -> Result<()> {
     let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path)?)?;
+    if archive.len() > limits.entries {
+        return Err(AppError::msg("The archive has too many entries, so it was not used."));
+    }
+    let mut total = 0u64;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        // enclosed_name rejects absolute paths and "..", so nothing lands outside the
-        // staging folder.
+        check_entry(&entry)?;
+        // enclosed_name skips what could land outside the staging folder: absolute paths,
+        // "..", Windows device names and ':' (an NTFS alternate data stream).
         let Some(relative) = entry.enclosed_name() else { continue };
         let out = staging.join(relative);
         if entry.is_dir() {
@@ -359,7 +404,8 @@ fn extract_all(zip_path: &Path, staging: &Path) -> Result<()> {
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::io::copy(&mut entry, &mut std::fs::File::create(&out)?)?;
+        let budget = limits.entry_bytes.min(limits.total_bytes - total);
+        total += copy_limited(&mut entry, &mut std::fs::File::create(&out)?, budget)?;
     }
     if !staging.join("yt-dlp.exe").is_file() {
         return Err(AppError::msg("The yt-dlp archive did not contain yt-dlp.exe."));
@@ -391,6 +437,59 @@ fn swap_in(staging: &Path, target: &Path, backup: &Path) -> Result<()> {
     Ok(())
 }
 
+fn discard(staged: &[(PathBuf, PathBuf)]) {
+    for (tmp, _) in staged {
+        let _ = std::fs::remove_file(tmp);
+    }
+}
+
+/// Unpacks `ffmpeg.exe` and `ffprobe.exe` to temporary names beside their final ones,
+/// returning `(temporary, final)` pairs for `replace_all`. Nothing else in the archive is
+/// read, and a failure leaves no temporary files behind.
+fn stage_ffmpeg(zip_path: &Path, bin: &Path, entry_limit: u64) -> Result<Vec<(PathBuf, PathBuf)>> {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path)?)?;
+    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        // Only the two executables we need, picked by file name, never by the archive's
+        // own path.
+        let name = match entry.name() {
+            Ok(name) => name.replace('\\', "/"),
+            Err(_) => continue,
+        };
+        let file_name = match name.rsplit('/').next() {
+            Some(n) if name.contains("/bin/") => n.to_string(),
+            _ => continue,
+        };
+        if file_name != "ffmpeg.exe" && file_name != "ffprobe.exe" {
+            continue;
+        }
+        let out_path = bin.join(&file_name);
+        if staged.iter().any(|(_, out)| *out == out_path) {
+            continue;
+        }
+        if let Err(e) = check_entry(&entry) {
+            discard(&staged);
+            return Err(e);
+        }
+        let tmp = bin.join(format!("{file_name}.part"));
+        let copied = std::fs::File::create(&tmp)
+            .map_err(AppError::from)
+            .and_then(|mut f| copy_limited(&mut entry, &mut f, entry_limit));
+        if let Err(e) = copied {
+            let _ = std::fs::remove_file(&tmp);
+            discard(&staged);
+            return Err(e);
+        }
+        staged.push((tmp, out_path));
+    }
+    if staged.len() < 2 {
+        discard(&staged);
+        return Err(AppError::msg("The ffmpeg archive did not contain the expected files."));
+    }
+    Ok(staged)
+}
+
 /// Installs ffmpeg and ffprobe from the yt-dlp project's own FFmpeg builds.
 pub async fn install_ffmpeg(app: &AppHandle) -> Result<()> {
     let state = app.state::<AppState>();
@@ -417,43 +516,7 @@ pub async fn install_ffmpeg(app: &AppHandle) -> Result<()> {
     let bin_for_task = bin.clone();
     let zip_for_task = zip_path.clone();
     let extracted = tokio::task::spawn_blocking(move || -> Result<()> {
-        let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip_for_task)?)?;
-        // Unpacked to temp names first, then swapped in as a set by `replace_all`.
-        let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
-        let discard = |staged: &[(PathBuf, PathBuf)]| {
-            for (tmp, _) in staged {
-                let _ = std::fs::remove_file(tmp);
-            }
-        };
-        for index in 0..archive.len() {
-            let mut entry = archive.by_index(index)?;
-            // Only take the two executables we need, by file name, never by the
-            // archive's own path.
-            let name = entry.name().replace('\\', "/");
-            let file_name = match name.rsplit('/').next() {
-                Some(n) if name.contains("/bin/") => n.to_string(),
-                _ => continue,
-            };
-            if file_name != "ffmpeg.exe" && file_name != "ffprobe.exe" {
-                continue;
-            }
-            let out_path = bin_for_task.join(&file_name);
-            if staged.iter().any(|(_, out)| *out == out_path) {
-                continue;
-            }
-            let tmp = bin_for_task.join(format!("{file_name}.part"));
-            let copied = std::fs::File::create(&tmp).and_then(|mut f| std::io::copy(&mut entry, &mut f));
-            if let Err(e) = copied {
-                let _ = std::fs::remove_file(&tmp);
-                discard(&staged);
-                return Err(e.into());
-            }
-            staged.push((tmp, out_path));
-        }
-        if staged.len() < 2 {
-            discard(&staged);
-            return Err(AppError::msg("The ffmpeg archive did not contain the expected files."));
-        }
+        let staged = stage_ffmpeg(&zip_for_task, &bin_for_task, FFMPEG_ENTRY_BYTES)?;
         if let Err(e) = replace_all(&staged) {
             discard(&staged);
             return Err(AppError::msg(format!(
@@ -621,6 +684,163 @@ mod tests {
         std::fs::write(target.join("yt-dlp.exe"), b"old").unwrap();
         assert!(swap_in(&staging, &target, &backup).is_err());
         assert_eq!(std::fs::read(target.join("yt-dlp.exe")).unwrap(), b"old");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn opts() -> zip::write::SimpleFileOptions {
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated)
+    }
+
+    fn make_zip(dir: &Path, build: impl FnOnce(&mut zip::ZipWriter<std::fs::File>)) -> PathBuf {
+        let path = dir.join("archive.zip");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        build(&mut writer);
+        writer.finish().unwrap();
+        path
+    }
+
+    fn file(writer: &mut zip::ZipWriter<std::fs::File>, name: &str, data: &[u8]) {
+        writer.start_file(name, opts()).unwrap();
+        writer.write_all(data).unwrap();
+    }
+
+    const SMALL: Limits = Limits { entries: 10, entry_bytes: 1024, total_bytes: 4096 };
+
+    #[test]
+    fn extracts_an_ordinary_archive() {
+        let dir = temp_dir("zip-ok");
+        let archive = make_zip(&dir, |w| {
+            file(w, "yt-dlp.exe", b"exe");
+            file(w, "lib/python.dll", b"dll");
+        });
+        let staging = dir.join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        extract_all(&archive, &staging, &SMALL).unwrap();
+        assert_eq!(std::fs::read(staging.join("yt-dlp.exe")).unwrap(), b"exe");
+        assert_eq!(std::fs::read(staging.join("lib").join("python.dll")).unwrap(), b"dll");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn links_are_refused() {
+        let dir = temp_dir("zip-link");
+        let archive = make_zip(&dir, |w| {
+            file(w, "yt-dlp.exe", b"exe");
+            w.add_symlink("shortcut", "C:\\Windows\\System32", opts()).unwrap();
+        });
+        let staging = dir.join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        assert!(extract_all(&archive, &staging, &SMALL).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn names_that_escape_the_folder_are_skipped() {
+        let dir = temp_dir("zip-escape");
+        let archive = make_zip(&dir, |w| {
+            file(w, "../evil.txt", b"x");
+            file(w, "..\\evil2.txt", b"x");
+            file(w, "yt-dlp.exe", b"exe");
+        });
+        let staging = dir.join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        extract_all(&archive, &staging, &SMALL).unwrap();
+        assert!(!dir.join("evil.txt").exists() && !dir.join("evil2.txt").exists());
+        assert!(!staging.join("evil.txt").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hidden_streams_and_device_names_are_never_written() {
+        let dir = temp_dir("zip-ads");
+        let archive = make_zip(&dir, |w| {
+            file(w, "yt-dlp.exe", b"exe");
+            file(w, "yt-dlp.exe:hidden", b"x");
+            file(w, "con.txt", b"x");
+        });
+        let staging = dir.join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        extract_all(&archive, &staging, &SMALL).unwrap();
+        // A stream would not show up in a directory listing, so read it by name.
+        assert!(std::fs::read(staging.join("yt-dlp.exe:hidden")).is_err());
+        assert_eq!(std::fs::read(staging.join("yt-dlp.exe")).unwrap(), b"exe");
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn limits_count_what_is_actually_written() {
+        let dir = temp_dir("zip-size");
+        // Compresses to a few bytes, but unpacks past the per-entry limit.
+        let archive = make_zip(&dir, |w| {
+            file(w, "yt-dlp.exe", &vec![0u8; 2048]);
+        });
+        let staging = dir.join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        assert!(extract_all(&archive, &staging, &SMALL).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn total_size_and_entry_count_are_capped() {
+        let dir = temp_dir("zip-total");
+        let archive = make_zip(&dir, |w| {
+            for i in 0..5 {
+                file(w, &format!("f{i}.bin"), &[1u8; 1000]);
+            }
+            file(w, "yt-dlp.exe", b"exe");
+        });
+        let staging = dir.join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        let by_total = Limits { entries: 10, entry_bytes: 1024, total_bytes: 3000 };
+        assert!(extract_all(&archive, &staging, &by_total).is_err());
+        let by_count = Limits { entries: 3, entry_bytes: 1024, total_bytes: 1 << 20 };
+        assert!(extract_all(&archive, &staging, &by_count).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ffmpeg_stages_only_the_two_executables() {
+        let dir = temp_dir("ffmpeg-ok");
+        let archive = make_zip(&dir, |w| {
+            file(w, "build/bin/ffmpeg.exe", b"ffmpeg");
+            file(w, "build/bin/ffprobe.exe", b"ffprobe");
+            file(w, "build/bin/ffplay.exe", b"ffplay");
+            file(w, "build/doc/ffmpeg.exe", b"decoy");
+        });
+        let staged = stage_ffmpeg(&archive, &dir, 1024).unwrap();
+        assert_eq!(staged.len(), 2);
+        for (tmp, target) in &staged {
+            assert!(tmp.is_file());
+            assert!(target.ends_with("ffmpeg.exe") || target.ends_with("ffprobe.exe"));
+        }
+        assert!(!dir.join("ffplay.exe").exists() && !dir.join("ffplay.exe.part").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ffmpeg_oversize_entry_leaves_nothing_behind() {
+        let dir = temp_dir("ffmpeg-big");
+        let archive = make_zip(&dir, |w| {
+            file(w, "build/bin/ffmpeg.exe", b"ffmpeg");
+            file(w, "build/bin/ffprobe.exe", &vec![0u8; 4096]);
+        });
+        assert!(stage_ffmpeg(&archive, &dir, 1024).is_err());
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
+            .collect();
+        assert!(leftovers.is_empty(), "no temporary files should remain");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ffmpeg_archive_missing_a_tool_is_an_error() {
+        let dir = temp_dir("ffmpeg-missing");
+        let archive = make_zip(&dir, |w| file(w, "build/bin/ffmpeg.exe", b"ffmpeg"));
+        assert!(stage_ffmpeg(&archive, &dir, 1024).is_err());
+        assert!(!dir.join("ffmpeg.exe.part").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -6,7 +6,7 @@ Everything a new session (human or AI) needs to pick this project up. Lives at `
 
 Claws is a local Windows video downloader. You paste a link from almost any site, pick a quality, and the file is saved to disk. It is a **Rust (Tauri 2) app with a plain TypeScript + CSS frontend** that drives **yt-dlp** (site coverage) and **ffmpeg** (merging and conversion). The interface imitates Apple's design as closely as possible, with real desktop glass behind the window.
 
-Repo: `https://github.com/ppolkadot/Claws`, branch `main`. The first build was committed as `9e08d6b Claws 1.0.0`; the fix passes and features in sections 14 and 15 came after it. These changes are released as **1.0.1**, the version everywhere (`package.json`, `package-lock.json`, `Cargo.toml`, `Cargo.lock`, `tauri.conf.json`). See section 10.
+Repo: `https://github.com/ppolkadot/Claws`, branch `main`. The first build was committed as `9e08d6b Claws 1.0.0`; the fix passes and features in sections 14 and 15 shipped as **1.0.1**, and the security pass in section 16 is **1.0.2**, the version everywhere (`package.json`, `package-lock.json`, `Cargo.toml`, `Cargo.lock`, `tauri.conf.json`). See section 10.
 
 ## 2. What the owner asked for (binding requirements)
 
@@ -196,7 +196,7 @@ npm run tauri build                # NSIS installer
 - `npm run build` runs `tsc` and Vite.
 - `cargo clippy` was clean at the end of the session.
 
-**Release:** the owner asked for a release build to publish on GitHub themselves. `Claws_1.0.1_x64-setup.exe` is built **without** the Legacy UI files (`public/fonts/` is absent on this machine), so it does not redistribute the font. It uses an installed Legacy UI Display through the `local()` fallback in `fonts.css`, and Segoe UI Variable otherwise. Do not push or publish on the owner's behalf.
+**Release:** the owner asked for a release build to publish on GitHub themselves. Whether `Claws_<version>_x64-setup.exe` contains Legacy UI depends on the build machine: Vite copies `public/fonts/` into the app, so an installer built while that folder exists **redistributes the font** (the `Claws_1.0.2` build did, as `public/fonts/` was present). To build one without it, delete `public/fonts/` first; the app then uses an installed Legacy UI Display through the `local()` fallback in `fonts.css`, and Segoe UI Variable otherwise. Check `dist/fonts/` after building. Do not push or publish on the owner's behalf.
 
 ## 11. Testing workflow (`scripts/dev/`)
 
@@ -224,7 +224,7 @@ The real WebView2 app can be driven over the local DevTools port. Never leave it
 
 ## 12. Suggested next steps
 
-- Commit the section 14 and 15 work and publish the 1.0.1 release (section 10).
+- Commit the section 14 to 16 work and publish the 1.0.2 release (section 10). Remove `public/fonts/` before building the installer you publish, or it contains Legacy UI.
 - Test a non-YouTube site (Vimeo, an HLS site), a playlist download, and Firefox cookie import.
 - Install and run the NSIS build once.
 - Consider:
@@ -318,3 +318,54 @@ The P1 duplicate-worker, P2 pid-reuse and three P3 findings came from an indepen
 - `replace_all` (whole-set swap and restore-on-failure) and `recover_bin`;
 - link cache save, read, damage and prune;
 - shortcut parsing and labels.
+
+## 16. Security-report pass (2026-11-04): the `zip` crate
+
+Three advisory write-ups were dropped in the repo root as `sec-report-1.txt` to `sec-report-3.txt`. All three describe the `zip` crate, which Claws uses to unpack the yt-dlp and ffmpeg downloads. The files are still untracked; commit, move to `docs/` or delete them as preferred.
+
+| Report | Problem | Reachable in Claws? |
+| --- | --- | --- |
+| 1 | AES entries: the authentication code is skipped when an entry ends early or is empty, so tampered data is accepted | No. Claws never decrypts. The code was still compiled in. |
+| 2 | `ZipArchive::extract()` allocates from a declared symlink size and aborts the process | No. Claws never calls `extract()`; it copies entries itself. It did write symlink entries as plain files. |
+| 3 | `ZipStreamReader` trusts local headers while `ZipArchive` trusts the central directory, so an archive can show two different file lists | No. Claws only uses `ZipArchive`. |
+
+None was exploitable here, and both archives are also checked against their publisher's SHA-256 before they are opened. They were fixed anyway:
+
+- **Upgrade:** `zip` 4.6.1 to **9.3.0**, past the fixes for reports 2 (9.0.0) and 3 (9.0.5). Report 1's fix (a short read is an `UnexpectedEof`) is present in 9.3.0's source.
+- **Smaller attack surface:** `default-features = false, features = ["deflate"]`. The real archives use only stored and deflate entries (checked with Python on the actual files: none encrypted, no symlinks). This removes the AES, zstd, bzip2, lzma and ppmd code from the build, 11 crates in all, so report 1's code is no longer compiled.
+- **Stricter extraction in `tools.rs`:**
+  - `check_entry` refuses encrypted entries and symlinks.
+  - `copy_limited` counts the bytes actually produced and stops at the limit, so a lying declared size is harmless.
+  - `Limits` caps entry count (2,000), per-entry size (256 MiB) and total size (512 MiB) for yt-dlp; ffmpeg entries are capped at 512 MiB each.
+  - The ffmpeg unpacking moved into `stage_ffmpeg`, so it can be tested.
+- `enclosed_name()` in zip 9 already skips `..`, absolute paths, `:` (NTFS streams) and Windows device names; this was verified with a throwaway probe. An earlier extra `:` check of mine was dead code and was removed.
+
+**Verified:** the hardened extraction was run on the real, checksum-verified archives (143 yt-dlp files; ffmpeg and ffprobe at about 170 MB each). The extracted yt-dlp reports its version and the extracted ffmpeg runs. Tests: 35 pass (9 new, covering ordinary extraction, links, traversal, hidden streams and device names, per-entry/total/count caps, and the ffmpeg staging). `cargo clippy --all-targets` is clean and `npm audit` finds nothing.
+
+**`cargo audit`:** no vulnerabilities. It lists 5 informational notices (`proc-macro-error`, `zbus_names`, `zvariant`, `zvariant_derive` as unmaintained; `glib` as unsound). `cargo tree --target x86_64-pc-windows-msvc` finds none of them in the Windows build; they are Linux-only dependencies of Tauri in the lockfile.
+
+**Not covered:** the reports' proof-of-concept archives were not run; the reachability analysis is from reading the code and the upstream write-ups. The installed app was not re-run after this change, only the extraction code against the real archives.
+
+## 17. 1.0.2 installer and font verification (2026-11-04)
+
+**Installer:** `src-tauri/target/release/bundle/nsis/Claws_1.0.2_x64-setup.exe`, 2.51 MB, built 2026-11-04 09:52, sha256 `A0F8AAFA69F98B1172BB8020E5BB098904B92268785A0CBE1DCA806F31C91AD3`. Unsigned. It was built while `public/fonts/` existed, so it **contains Legacy UI**; the owner asked for the font to be bundled. Apple's licence only covers mock-ups, so this installer is for private use, not public distribution.
+
+**How the font reaches the app:** `scripts/build-fonts.py` writes `public/fonts/*.woff2` (not committed), Vite copies them to `dist/fonts/`, `generate_context!` embeds `dist/` in `claws.exe`, and the packaged app serves them from `http://tauri.localhost/fonts/...`. `src/styles/fonts.css` points at `/fonts/...` (with `local()` fallbacks), and the CSP's `font-src 'self'` allows it.
+
+**Verified on a release build, not the dev server** (a release binary with the DevTools port enabled, built with `npx tauri build --no-bundle --config scripts/dev/debug-config.json`):
+- The page origin was `http://tauri.localhost/`, and all four `FontFace` entries (400, 500, 600, 700) reported `loaded`.
+- The engine's own answer, `CSS.getPlatformFontsForNode`, reported **Legacy UI Display with `isCustomFont=true`** (the app's embedded files, not a font installed on the PC) for every element checked:
+  - 400: body text, URL field, paths (`Legacy UI Display-Regular`)
+  - 500: nav labels, buttons, segmented control (`Legacy UI Display-Medium`)
+  - 600: section titles, stepper value (`Legacy UI Display-Semibold`)
+  - 700: page and empty-state titles (`Legacy UI Display-Bold`)
+- The filename template field is the one intended exception: it uses a monospace font (Cascadia Mono).
+- Settings → Appearance → Font reads "Legacy UI Display. In use throughout Claws."
+
+**Checked on the final installer's binary:** the app's asset table lists all four `/fonts/...woff2` paths (a path never built is absent), the build contains no `remote-debugging-port` argument, and a launch opens a responding window with port 9222 closed. Raw byte samples of the fonts were *not* a usable check: Tauri compresses embedded assets, and only the Regular file happened to match. The final binary itself was not inspected through DevTools (it has no port); the check above relies on it being built from the same `dist/` as the inspected build.
+
+**To verify a future release build:** build with the debug overlay as above (never ship that binary), run `src-tauri/target/release/claws.exe`, inspect it with `scripts/dev/cdp.mjs`, then run `cargo clean -p claws --release` and build the installer normally so no debug argument remains.
+
+**Tooling fixes:**
+- `scripts/dev/cdp.mjs` now also finds `tauri.localhost` pages (it only looked for the dev server, so it could not drive a release build).
+- `scripts/dev/glass-shot.ps1` now captures only the window's visible frame (`DWMWA_EXTENDED_FRAME_BOUNDS`). The old outer rectangle includes a transparent resize margin through which a window behind Claws showed; its overlap guard only looked at windows above Claws. An image with a sliver of another app was deleted at once.

@@ -156,7 +156,7 @@ What makes the difference:
 ## Privacy and security
 
 - **Local only.** Claws makes no telemetry, analytics or account calls. The only network traffic is to the sites you download from (including the servers their artwork comes from), and to GitHub when yt-dlp or ffmpeg is installed, updated or checked for updates.
-- **Verified tools.** yt-dlp and ffmpeg downloads are checked against the SHA-256 checksums their projects publish and discarded on a mismatch. Archives are extracted with path checks, so nothing can be written outside the tool folder.
+- **Verified tools.** yt-dlp and ffmpeg downloads are checked against the SHA-256 checksums their projects publish and discarded on a mismatch. Archives are then unpacked defensively: names that could land outside the tool folder are skipped, encrypted entries and links are refused, and the number of entries and the bytes actually written are capped, whatever size an entry claims. The `zip` library is kept on a patched release with only the one compression method these archives use.
 - **Untrusted input stays contained.**
   - Only `http` and `https` links are accepted.
   - They reach yt-dlp as plain arguments after `--`, never through a shell.
