@@ -41,6 +41,35 @@ UNICODES = [
 ]
 
 
+def repair_outline_advances(font: TTFont) -> None:
+    """Keep CFF outline widths consistent with hmtx for Chromium's font sanitizer.
+
+    The supplied outlines often omit their advance and inherit one oversized
+    default. hmtx has the intended proportional widths. Expand subroutines first
+    so each initial width can be replaced without changing drawing instructions.
+    """
+    cff = font["CFF "].cff
+    cff.desubroutinize()
+    charstrings = cff.topDictIndex[0].CharStrings
+    width_parity = {"rmoveto": 0, "hmoveto": 1, "vmoveto": 1,
+                    "hstem": 0, "vstem": 0, "hstemhm": 0, "vstemhm": 0,
+                    "endchar": 0}
+    for name in font.getGlyphOrder():
+        charstring = charstrings[name]
+        charstring.decompile()
+        program = list(charstring.program)
+        operator_index = next(i for i, value in enumerate(program) if isinstance(value, str))
+        operator = program[operator_index]
+        if operator not in width_parity:
+            raise ValueError(f"Unsupported initial CFF operator {operator!r} in {name}")
+        if (operator_index % 2) ^ width_parity[operator]:
+            program.pop(0)  # Remove an explicitly encoded advance, if present.
+        advance = font["hmtx"][name][0]
+        if advance != charstring.private.defaultWidthX:
+            program.insert(0, advance - charstring.private.nominalWidthX)
+        charstring.program = program
+
+
 def build(source: Path, target: Path) -> None:
     options = subset.Options()
     options.layout_features = ["*"]  # keep tnum, kern, liga, case, ss0x...
@@ -53,6 +82,7 @@ def build(source: Path, target: Path) -> None:
     subsetter = subset.Subsetter(options)
     subsetter.populate(unicodes=UNICODES)
     subsetter.subset(font)
+    repair_outline_advances(font)
     font.flavor = "woff2"
     font.save(target)
 

@@ -4,6 +4,7 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 *.tsbuildinfo
+__pycache__/
 
 # ---- Fonts ------------------------------------------------------------------------
 # Keep optional local font checkouts out of version control. Polaris sources and
