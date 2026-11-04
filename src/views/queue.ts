@@ -70,7 +70,16 @@ function buildRow(job: Job): RowRefs {
 
 function paintActions(refs: RowRefs, job: Job) {
   const items: Node[] = [];
-  const act = (run: () => Promise<unknown>) => () => void run().catch(fail);
+  // One action per state: the row's buttons stay disabled until the job reports its
+  // new status (which repaints them), so a double click cannot act on a job that is
+  // already pausing or cancelling. If nothing changes, they come back after a moment.
+  const act = (run: () => Promise<unknown>) => () => {
+    const buttons = [...refs.actions.querySelectorAll<HTMLButtonElement>("button")];
+    buttons.forEach((b) => (b.disabled = true));
+    void run()
+      .catch(fail)
+      .finally(() => window.setTimeout(() => buttons.forEach((b) => (b.disabled = false)), 1500));
+  };
   switch (job.status) {
     case "downloading":
       items.push(button({ icon: "pause", title: "Pause", variant: "plain", onClick: act(() => api.pause(job.id)) }));

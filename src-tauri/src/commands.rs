@@ -2,7 +2,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 use tauri_plugin_opener::OpenerExt;
 
+use crate::desktop;
 use crate::downloader::{self, DownloadOptions, EnqueueItem, Job};
+use crate::links::{self, CachedLink};
 use crate::error::{AppError, Result};
 use crate::history::{self, HistoryItem};
 use crate::probe::{self, ProbeResult};
@@ -20,6 +22,8 @@ pub struct Bootstrap {
     pub settings: Settings,
     pub jobs: Vec<Job>,
     pub history: Vec<HistoryItem>,
+    /// Startup problems to show once (damaged data files, no desktop blur).
+    pub notices: Vec<String>,
 }
 
 #[tauri::command]
@@ -28,12 +32,23 @@ pub fn bootstrap(app: AppHandle, state: State<'_, AppState>) -> Bootstrap {
         settings: state.settings.lock().unwrap().clone(),
         jobs: downloader::list(&app),
         history: state.history.lock().unwrap().clone(),
+        notices: std::mem::take(&mut *state.notices.lock().unwrap()),
     }
 }
 
+/// Ctrl+Q and the notification-area menu: really quit. Exiting runs the shutdown path
+/// (stop downloads and lookups, save the queue).
 #[tauri::command]
-pub fn app_ready(window: WebviewWindow) {
-    let _ = window.show();
+pub fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
+#[tauri::command]
+pub fn app_ready(window: WebviewWindow, state: State<'_, AppState>) {
+    // Opened at login: stay in the notification area until the user asks for Claws.
+    if !state.start_hidden.load(std::sync::atomic::Ordering::SeqCst) {
+        let _ = window.show();
+    }
 }
 
 #[tauri::command]
@@ -41,13 +56,26 @@ pub async fn probe_url(app: AppHandle, url: String) -> Result<ProbeResult> {
     probe::probe(&app, &url).await
 }
 
+/// The saved details of a link downloaded before, for an instant preview.
+#[tauri::command]
+pub fn cached_link(app: AppHandle, url: String) -> Option<CachedLink> {
+    links::lookup(&app, &url)
+}
+
+/// `source` is the link the user looked up; its details go into the link cache so the
+/// next lookup of it is instant.
 #[tauri::command]
 pub fn enqueue(
     app: AppHandle,
     items: Vec<EnqueueItem>,
     options: DownloadOptions,
+    source: Option<String>,
 ) -> Result<Vec<Job>> {
-    downloader::enqueue(&app, items, options)
+    let jobs = downloader::enqueue(&app, items, options)?;
+    if let Some(source) = source {
+        links::remember_download(&app, &source);
+    }
+    Ok(jobs)
 }
 
 #[tauri::command]
@@ -75,22 +103,40 @@ pub fn clear_finished(app: AppHandle) {
     downloader::clear_finished(&app);
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSettings {
+    pub settings: Settings,
+    /// Saved fine, but something did not take effect (such as the desktop blur).
+    pub warning: Option<String>,
+}
+
 #[tauri::command]
 pub fn save_settings(
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
     mut settings: Settings,
-) -> Result<Settings> {
+) -> Result<SavedSettings> {
     settings.validate()?;
-    store::save(&state.settings_path(), &settings)?;
-    *state.settings.lock().unwrap() = settings.clone();
+    // Disk and memory are updated under one lock, so two saves can never leave them
+    // holding different values.
+    store::save_then(&state.settings_path(), &settings, || {
+        *state.settings.lock().unwrap() = settings.clone();
+    })?;
 
     window::apply_theme(&window, &settings.theme);
-    window::apply_backdrop(&window, &settings.backdrop).map_err(AppError::msg)?;
+    let warnings: Vec<String> = [
+        window::apply_backdrop(&window, &settings.backdrop).err(),
+        desktop::apply(&app, &settings),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let warning = (!warnings.is_empty()).then(|| warnings.join(" "));
     // A higher concurrency limit can start waiting jobs right away.
     downloader::pump(&app);
-    Ok(settings)
+    Ok(SavedSettings { settings, warning })
 }
 
 #[tauri::command]
@@ -153,30 +199,35 @@ pub fn delete_history(
     id: String,
     delete_file: bool,
 ) -> Result<()> {
-    let removed = {
-        let mut history = state.history.lock().unwrap();
-        let index = history.iter().position(|h| h.id == id);
-        index.map(|i| history.remove(i))
+    let Ok(item) = history_item(&state, &id) else {
+        return Ok(()); // already removed
     };
-    if let Some(item) = removed {
-        history::remove_thumbnail(&item);
-        if delete_file {
-            if let Some(path) = &item.file_path {
+    // The file goes first: if it cannot be deleted, the entry stays so the user can
+    // still find it and try again.
+    if delete_file {
+        if let Some(path) = &item.file_path {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
                 // A file that is already gone is not an error.
-                let _ = std::fs::remove_file(path);
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(AppError::msg(format!(
+                        "The file could not be deleted ({e}), so it is still in your library. Close any app using it and try again."
+                    )))
+                }
             }
         }
     }
-    history::save(&app);
-    Ok(())
+    state.history.lock().unwrap().retain(|h| h.id != id);
+    history::remove_thumbnail(&item);
+    history::save(&app)
 }
 
 #[tauri::command]
 pub fn clear_history(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
     let removed: Vec<HistoryItem> = std::mem::take(&mut *state.history.lock().unwrap());
     removed.iter().for_each(history::remove_thumbnail);
-    history::save(&app);
-    Ok(())
+    history::save(&app)
 }
 
 #[tauri::command]

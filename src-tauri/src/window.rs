@@ -35,13 +35,20 @@ pub fn apply_backdrop(window: &WebviewWindow, kind: &str) -> Result<(), String> 
             cyBottomHeight: margin,
         };
         DwmExtendFrameIntoClientArea(hwnd, &margins).map_err(|e| e.to_string())?;
-        DwmSetWindowAttribute(
+        let system = DwmSetWindowAttribute(
             hwnd,
             SYSTEM_BACKDROP_TYPE,
             &backdrop as *const i32 as *const c_void,
             std::mem::size_of::<i32>() as u32,
-        )
-        .map_err(|e| e.to_string())?;
+        );
+        // Builds before Windows 11 22H2 lack this attribute. That only matters when a
+        // system material was asked for; glass and solid must still be applied below.
+        if system.is_err() && backdrop != 1 {
+            set_accent(hwnd, 0);
+            return Err(
+                "This version of Windows does not support Acrylic or Mica. Choose Glass instead.".into(),
+            );
+        }
         // Rounded corners are best effort: older builds simply ignore the call.
         let _ = DwmSetWindowAttribute(
             hwnd,
@@ -53,14 +60,18 @@ pub fn apply_backdrop(window: &WebviewWindow, kind: &str) -> Result<(), String> 
 
     // ACCENT_ENABLE_BLURBEHIND for glass, ACCENT_DISABLED otherwise so switching
     // materials never stacks two blurs.
-    set_accent(hwnd, if kind == "glass" { 3 } else { 0 });
+    let applied = set_accent(hwnd, if kind == "glass" { 3 } else { 0 });
+    if kind == "glass" && !applied {
+        return Err("Windows did not turn on the desktop blur for Claws. Check that Transparency effects is on in Windows Settings → Personalization → Colors.".into());
+    }
     Ok(())
 }
 
 /// SetWindowCompositionAttribute is exported by user32 but missing from its import
-/// library, so it is looked up at runtime. Failure only means no blur.
+/// library, so it is looked up at runtime. Returns false when Windows refused it, which
+/// means no blur.
 #[cfg(windows)]
-fn set_accent(hwnd: windows::Win32::Foundation::HWND, state: u32) {
+fn set_accent(hwnd: windows::Win32::Foundation::HWND, state: u32) -> bool {
     use std::ffi::c_void;
     use windows::core::{s, BOOL};
     use windows::Win32::Foundation::HWND;
@@ -83,9 +94,9 @@ fn set_accent(hwnd: windows::Win32::Foundation::HWND, state: u32) {
     type SetWindowCompositionAttribute = unsafe extern "system" fn(HWND, *mut CompositionData) -> BOOL;
 
     unsafe {
-        let Ok(user32) = GetModuleHandleA(s!("user32.dll")) else { return };
+        let Ok(user32) = GetModuleHandleA(s!("user32.dll")) else { return false };
         let Some(proc) = GetProcAddress(user32, s!("SetWindowCompositionAttribute")) else {
-            return;
+            return false;
         };
         let set: SetWindowCompositionAttribute = std::mem::transmute(proc);
         let mut policy = AccentPolicy {
@@ -99,9 +110,43 @@ fn set_accent(hwnd: windows::Win32::Foundation::HWND, state: u32) {
             data: &mut policy as *mut AccentPolicy as *mut c_void,
             size: std::mem::size_of::<AccentPolicy>(),
         };
-        let _ = set(hwnd, &mut data);
+        set(hwnd, &mut data).as_bool()
     }
 }
+
+/// Takes the keyboard focus from whatever app is in front, when the ordinary focus call
+/// was refused. Windows only lets a process do that when it received the last input, so
+/// a window raised from a global shortcut can otherwise end up behind the active app.
+/// Attaching to the foreground thread's input for the moment of the switch is the
+/// standard way round it. A no-op when Claws is already in front.
+#[cfg(windows)]
+pub fn take_foreground(window: &WebviewWindow) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+    };
+
+    let Ok(raw) = window.hwnd() else { return };
+    let hwnd = HWND(raw.0);
+    unsafe {
+        let foreground = GetForegroundWindow();
+        if foreground == hwnd {
+            return;
+        }
+        let ours = GetCurrentThreadId();
+        let theirs = GetWindowThreadProcessId(foreground, None);
+        let attached = theirs != 0 && theirs != ours && AttachThreadInput(ours, theirs, true).as_bool();
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetForegroundWindow(hwnd);
+        if attached {
+            let _ = AttachThreadInput(ours, theirs, false);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn take_foreground(_window: &WebviewWindow) {}
 
 #[cfg(not(windows))]
 pub fn apply_backdrop(_window: &WebviewWindow, _kind: &str) -> Result<(), String> {

@@ -28,6 +28,9 @@ const settings: Settings = {
   backdrop: "glass",
   maxConcurrent: 3,
   embedMetadata: true,
+  quickOpenShortcut: "ctrl+alt+d",
+  keepRunning: true,
+  openAtLogin: false,
 };
 
 const job = (id: string, title: string, hues: [number, number], over: Partial<Job>): Job => ({
@@ -93,6 +96,7 @@ const probe = (url: string): ProbeResult =>
         subtitles: [],
         entries: Array.from({ length: 8 }, (_, i) => ({
           url: `https://example.com/v/${i}`,
+          playlistIndex: null,
           title: `Sample: Travel diary, day ${i + 1}`,
           duration: 420 + i * 61,
           thumbnail: art(20 + i * 40, 60 + i * 40),
@@ -123,23 +127,26 @@ export function installMock() {
       const payload = (args ?? {}) as Record<string, unknown>;
       switch (cmd) {
         case "bootstrap":
-          return { settings, jobs, history };
+          return { settings, jobs, history, notices: [] };
         case "tools_status":
           return {
               ytdlp: { path: "C:\\sample\\yt-dlp\\yt-dlp.exe", version: "2026.10.26", managed: true, fastStart: true },
               ffmpeg: { path: "C:\\sample\\ffmpeg.exe", version: "8.0", managed: false, fastStart: false },
               latestYtdlp: null,
+              jsRuntime: "Deno",
           };
         case "list_history":
           return history;
         case "probe_url":
           return probe(String(payload.url));
+        case "cached_link":
+          return null;
         case "enqueue":
           return (payload.items as EnqueueItem[]).map((item, i) =>
             job(`n${Date.now()}${i}`, item.title, [200, 260], { createdAt: Date.now() + i }),
           );
         case "save_settings":
-          return payload.settings;
+          return { settings: payload.settings, warning: null };
         default:
           return null;
       }

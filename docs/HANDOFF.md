@@ -1,12 +1,12 @@
 # Claws: handoff
 
-Everything a new session (human or AI) needs to pick this project up. Lives at `docs/HANDOFF.md`. Last updated 2026-11-03.
+Everything a new session (human or AI) needs to pick this project up. Lives at `docs/HANDOFF.md`. Last updated 2026-11-04.
 
 ## 1. What this is
 
 Claws is a local Windows video downloader. You paste a link from almost any site, pick a quality, and the file is saved to disk. It is a **Rust (Tauri 2) app with a plain TypeScript + CSS frontend** that drives **yt-dlp** (site coverage) and **ffmpeg** (merging and conversion). The interface imitates Apple's design as closely as possible, with real desktop glass behind the window.
 
-Repo: `https://github.com/ppolkadot/Claws`, branch `main`. **Nothing from this work is committed yet.** The only commit is `c31405f Initial commit` (README + LICENSE). See section 10.
+Repo: `https://github.com/ppolkadot/Claws`, branch `main`. The first build was committed as `9e08d6b Claws 1.0.0`; the fix passes and features in sections 14 and 15 came after it. These changes are released as **1.0.1**, the version everywhere (`package.json`, `package-lock.json`, `Cargo.toml`, `Cargo.lock`, `tauri.conf.json`). See section 10.
 
 ## 2. What the owner asked for (binding requirements)
 
@@ -36,7 +36,7 @@ The owner also asked for a "testing release" (the installer is built, see sectio
 
 | File | Responsibility |
 | --- | --- |
-| `lib.rs` | App setup: plugins (dialog, opener), state, restores the queue, prunes the probe cache, applies theme and window material, shows the window (4 s fallback), registers commands. |
+| `lib.rs` | App setup: plugins (single-instance first, then dialog and opener), state, loads data files with recovery, restores the queue, prunes the probe cache, applies theme and window material, shows the window (4 s fallback), registers commands. On `RunEvent::Exit` it calls `downloader::shutdown`. |
 | `commands.rs` | Every `#[tauri::command]`. `bootstrap` returns settings/jobs/history only; tool status is separate and loaded after first paint. File actions open only paths the app recorded, never paths sent by the UI. `open_font_page` opens a fixed Apple URL. |
 | `downloader.rs` | Queue + concurrency (`pump`), building yt-dlp args, progress parsing, pause/resume/cancel/remove, partial-file cleanup, cached-probe retry. |
 | `probe.rs` | `validate_url` (http/https only), runs `yt-dlp --dump-single-json --flat-playlist`, parses formats/heights/subtitles/playlist entries, and keeps the **probe cache**. |
@@ -44,7 +44,9 @@ The owner also asked for a "testing release" (the installer is built, see sectio
 | `window.rs` | Window material: **glass** (accent-policy blur-behind via `SetWindowCompositionAttribute`, loaded at runtime), **acrylic/mica/tabbed** (DWM system backdrop), **none**. The DWM frame is extended over the whole client area for every material except none. |
 | `history.rs` | Library entries, local thumbnail cache (`%APPDATA%\dev.claws.downloader\thumbs`, our own uuid filenames, 5 MB cap). |
 | `settings.rs` | Settings struct + `validate()`. Every value that reaches the yt-dlp command line is checked: browser allow-list, cookie file exists, filename template must be relative with no `..`. |
-| `state.rs`, `store.rs`, `error.rs` | Shared state (short std mutexes, never held across await), atomic JSON save, error type (reqwest errors include their full cause chain). |
+| `desktop.rs` | Quick access: the Quick Open global shortcut (toggles the window, emits `quick-open`), the notification-area icon (Open / Quit), open-at-login via `tauri-plugin-autostart` with `--background`. `apply()` runs at startup and on every settings save and returns a warning when something could not be applied. |
+| `links.rs` | The link cache: `ProbeResult`s of downloaded links in `cache/links/<sha>.json`, 2000 entries / 1 year. Saved on `enqueue` (its `source`), refreshed by any later lookup of a known link. |
+| `state.rs`, `store.rs`, `error.rs` | Shared state (short std mutexes, never held across await; the lock order is documented in `state.rs`). `engine` is a tokio RwLock: yt-dlp runs read it, installs write it. `store.rs` serialises every JSON write behind one lock, snapshots under that lock, and moves damaged files aside with a notice. `error::notify` shows background failures as a toast. |
 
 **yt-dlp invocation rules:**
 - Arguments are always passed as an array, never through a shell.
@@ -194,10 +196,7 @@ npm run tauri build                # NSIS installer
 - `npm run build` runs `tsc` and Vite.
 - `cargo clippy` was clean at the end of the session.
 
-**Pending owner decision:** whether to commit and push, and whether to publish a GitHub pre-release (proposed tag `v0.1.0-test.1`). The owner asked for a "testing release", but neither question has been answered. Do not push or publish without explicit confirmation.
-- The repo may be public; committing makes all source public.
-- The fonts stay out of git either way.
-- An uploaded installer would include Legacy UI.
+**Release:** the owner asked for a release build to publish on GitHub themselves. `Claws_1.0.1_x64-setup.exe` is built **without** the Legacy UI files (`public/fonts/` is absent on this machine), so it does not redistribute the font. It uses an installed Legacy UI Display through the `local()` fallback in `fonts.css`, and Segoe UI Variable otherwise. Do not push or publish on the owner's behalf.
 
 ## 11. Testing workflow (`scripts/dev/`)
 
@@ -225,7 +224,7 @@ The real WebView2 app can be driven over the local DevTools port. Never leave it
 
 ## 12. Suggested next steps
 
-- Get the owner's answer on commit, push and pre-release (section 10).
+- Commit the section 14 and 15 work and publish the 1.0.1 release (section 10).
 - Test a non-YouTube site (Vimeo, an HLS site), a playlist download, and Firefox cookie import.
 - Install and run the NSIS build once.
 - Consider:
@@ -241,3 +240,81 @@ The real WebView2 app can be driven over the local DevTools port. Never leave it
 - `DESIGN.md`: the design system as built (refreshed after the glass redesign). Its machine sidecar `.impeccable/design.json` is gitignored along with the rest of `.impeccable/`.
 - `README.md`: user-facing overview, fonts, speed notes, development.
 - `docs/HANDOFF.md`: this file.
+
+## 14. Bug-fix pass (2026-11-04)
+
+A review listed concrete defects; all of them were fixed, along with a few found while reading the code.
+
+| Problem | Fix |
+| --- | --- |
+| Settings edits lost: an older save's response replaced newer edits (reproduced). | `store.ts` gives every edit a revision. Saves run one at a time on a chain, and a response is only adopted when no newer edit happened. A rejected save reverts just the fields it changed that were not edited since, then emits `settingsReverted`; the Settings view rebuilds on it. Saves are flushed before the window closes (`onCloseRequested`, 1.5 s cap, needs `core:window:allow-destroy`). |
+| JSON writes raced: one fixed temp name per file, stale snapshots could win, errors were ignored. | `store::save_snapshot` takes the snapshot and writes it under one global lock, through a uniquely named temp file. Queue and library save failures raise a `notice` toast. Leftover temp files are swept at startup. |
+| Partial-file names lived only in memory until the job ended. | `handle_line` persists the queue as soon as a new file name appears. |
+| Pause, cancel and resume could act on half-settled jobs; a pause racing a successful exit showed a finished file as paused. | All three run under the `running` lock. `execute` registers its process under it, and `finish` keeps the entry until cleanup is done, then removes it and sets the final status in the same critical section. A successful exit always wins. Cancel is never downgraded to pause. A retry keeps an intent that arrived between attempts. Removing a running job hands its leftovers to `finish`. Queue buttons disable until the status changes. |
+| Choosing Browser after File used the file path as the browser name; choosing File saved an empty path. | The Settings view remembers the last browser. File only takes effect once a file is chosen, and cancelling the picker shows the saved source again. |
+| "Delete File Too" removed the entry even when the file couldn't be deleted. | The file is deleted first; on failure (other than not-found) the entry stays and the error is shown. |
+| Reduced transparency stayed translucent: the media query lost the cascade. | Overrides moved after the rules they replace and extended to panels and sidebar, matching Solid. Normal glass rules are untouched. |
+| Installs were not coordinated with probes, downloads or each other; a failed update could leave no yt-dlp. | Installs take the `engine` write lock with `try_write` and fail at once if anything uses yt-dlp. Downloads and probes hold the read lock, so nothing starts on a half-installed tool. The yt-dlp folder swap keeps a backup and restores it on failure. ffmpeg and ffprobe are both staged before either replaces the old one. |
+| Download buttons stayed enabled during enqueue (duplicate jobs). | An `enqueuing` guard, and the button is disabled. |
+| Ctrl+V only worked on the Download view. | A global paste handler in `main.ts` routes links through `store.pasteLink` to the Download view from anywhere. |
+| Flat-playlist entries with only an id were silently dropped. | They are kept with `playlistIndex`; the job downloads that item from the playlist URL (`--yes-playlist --playlist-items N`, never from the probe cache). |
+| Playlists only offered "Best". | Playlists offer the standard height caps (4K to 360p). |
+| Thumbnails were fully buffered before the 5 MB check. | Content-Length is checked, then the body is streamed with a cap. Artwork for an entry deleted meanwhile is discarded. |
+| Corrupt JSON silently became defaults. | `store::load_or_recover` renames it to `<name>.corrupt-<time>.json` and the UI shows a notice. Loaded settings go through `Settings::repair`. |
+| No shutdown coordination or single-instance protection. | `tauri-plugin-single-instance` focuses the running window. On exit every yt-dlp tree is killed (waiting for `taskkill`), cancelled jobs' leftovers are removed, and the queue is saved as paused. |
+| JS runtime availability was invisible. | `ToolsStatus.jsRuntime`, shown in Settings → Tools. |
+| Desktop-blur failures were swallowed; on Windows 10 the missing backdrop attribute aborted glass entirely. | The backdrop-type attribute only fails the call for Acrylic or Mica. An accent-policy failure is reported, as a startup notice or the `warning` of `save_settings`, which now returns `{ settings, warning }`. |
+| Subtitle downloads counted as a media stream, so progress jumped to 50%. | Side files (subtitles, thumbnails, info JSON) are tracked for cleanup but don't advance the stream counter. |
+| An installed Legacy UI was hidden whenever `public/fonts/` was absent. | `local()` fallbacks after each bundled `url()`. |
+
+**Tests:** `cargo test` in `src-tauri/` runs 18 unit tests:
+- progress maths;
+- intent precedence;
+- partial-file cleanup;
+- URL validation;
+- playlist parsing;
+- error text;
+- settings validation and repair;
+- corrupt-file recovery;
+- concurrent saves;
+- yt-dlp swap and rollback.
+
+The settings race was verified against the real `store.ts` with an esbuild harness and a fake `api`, including the reported 20 → 90 case.
+
+**Still not verified in the running app:** the items in section 8, plus the single-instance focus and the exit-time process cleanup.
+
+## 15. Third pass (2026-11-04): shutdown, rollback, quick access, link cache
+
+**Review findings fixed:**
+- **P1, shutdown could start new downloads.** `AppState::shutting_down` is set before anything else. `pump` and `enqueue` refuse once it is set. `execute` spawns and registers its process under the `running` lock after checking the flag under that same lock, so shutdown's snapshot always includes it or it never starts. The cached-probe retry is skipped while closing. Shutdown then waits (up to 5 s) for `AppState::workers` to reach zero before its fix-up and save.
+- **P2, lookups were not stopped on exit.** `probe::probe` registers its process in `AppState::probes` under the same flag check, and shutdown kills those trees too. A timed-out lookup now kills its whole tree before the child is dropped; `kill_on_drop` alone orphaned the interpreter.
+- **P2, ffmpeg had no rollback.** `tools::replace_all` renames each existing executable to `.old` (allowed even while it runs), moves the new one in, and on any failure restores every target already replaced.
+
+**Also fixed:**
+- `store.runTool` dropped a request when another tool was busy, so a first-run yt-dlp install could be skipped. Installs now queue, and a tool already waiting is not queued twice.
+- **P1, duplicate workers.** Pause → Resume while a job's worker waited behind a tool install let `pump` start a second worker on the same job; the extra process escaped every map. `AppState::live_jobs` now keeps one worker per job. A worker frees its job just before its final `pump`.
+- **P2, pid reuse.** `Running.pid` is cleared once `child.wait()` returns, before the handle closes, so a late Cancel/Remove/Quit never `taskkill`s a reused pid.
+- **P3, version checks.** `tools::status` holds the engine read lock and its version runs use `kill_on_drop`.
+- **P3, quitting mid-install.** `tools::recover_bin` at startup puts back a tool left as `.old` and removes `.part` leftovers.
+- **P3, probe cache growth.** The probe cache is also pruned (at most every 5 minutes) as entries are written, not only at startup.
+
+The P1 duplicate-worker, P2 pid-reuse and three P3 findings came from an independent review of this pass, which also confirmed the shutdown, lock-order, `replace_all` and link-cache logic.
+
+**New features:**
+- **Quick Open** (Settings → Quick Access). A system-wide shortcut, Ctrl+Alt+D by default; Ctrl+Alt+Space, Ctrl+Shift+Space or off are the other choices.
+  - It brings Claws forward and looks up a link on the clipboard (not the same one twice in a row); pressed while Claws is in front, it puts Claws away.
+  - Registration conflicts come back as a warning.
+- **Keep running when closed** (default on). Closing hides the window to the notification area (`onCloseRequested` prevents the close, needs `core:window:allow-hide`). Ctrl+Q and the icon's Quit really exit, through `quit_app` → `RunEvent::Exit` → `shutdown`.
+- **Open at login** (default off). Starts with `--background`, which hides the window until asked, but only when Keep Running is on, so the window can never be lost.
+  - Note: toggling it in a dev build registers the dev executable.
+- **Link cache.** A lookup of a link downloaded before shows its saved details at once ("Checking for changes…") while a fresh lookup runs.
+  - The view only redraws if the details changed, keeping the user's choices.
+  - A failed refresh keeps the saved details and says so.
+  - The preview notes when a link was downloaded before.
+  - Recent rows reopen their link.
+
+**Tests:** 26 Rust unit tests:
+- the earlier ones;
+- `replace_all` (whole-set swap and restore-on-failure) and `recover_bin`;
+- link cache save, read, damage and prune;
+- shortcut parsing and labels.

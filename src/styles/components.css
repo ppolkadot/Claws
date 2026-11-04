@@ -25,6 +25,14 @@ html[data-backdrop="none"] .glass {
 html[data-backdrop="none"][data-theme="dark"] .glass {
   background: #2c2c2e;
 }
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    background: color-mix(in srgb, var(--solid-base) 70%, white 12%);
+  }
+  html[data-theme="dark"] .glass {
+    background: #2c2c2e;
+  }
+}
 
 .btn {
   position: relative;

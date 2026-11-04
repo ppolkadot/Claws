@@ -1,7 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { api, errorMessage, type DownloadOptions, type ProbeResult } from "../api";
-import { formatDuration, folderName } from "../format";
+import { formatDate, formatDuration, folderName } from "../format";
 import { store } from "../store";
 import { button, chipCheck, chipRadio, segmented, toast, toggle } from "../ui/components";
 import { clear, h, replace } from "../ui/dom";
@@ -21,14 +21,20 @@ const AUDIO_FORMATS = [
   { value: "best", label: "Original" },
 ];
 
-function qualityChoices(heights: number[]): { value: number; label: string }[] {
+function qualityChoices(heights: number[], playlist: boolean): { value: number; label: string }[] {
+  const label = (value: number) => (value === 2160 ? "4K" : `${value}p`);
+  // A flat playlist read does not list each video's formats. The choice is a cap, so
+  // the usual heights all make sense: each video is saved at the best it has up to it.
+  if (playlist && heights.length === 0) {
+    return STANDARD_HEIGHTS.filter((h) => h >= 360).map((value) => ({ value, label: label(value) }));
+  }
   const max = heights[0] ?? 0;
   let picks = STANDARD_HEIGHTS.filter((h) => heights.some((available) => available >= h * 0.95) && h <= max * 1.05);
   if (picks.length === 0) picks = heights.slice(0, 6);
-  return picks.slice(0, 7).map((value) => ({ value, label: value === 2160 ? "4K" : `${value}p` }));
+  return picks.slice(0, 7).map((value) => ({ value, label: label(value) }));
 }
 
-function looksLikeUrl(text: string): boolean {
+export function looksLikeUrl(text: string): boolean {
   return /^https?:\/\/\S+$/i.test(text.trim());
 }
 
@@ -54,6 +60,15 @@ export const mountDownload: MountView = (container, ctx) => {
   let subs = new Set<string>();
   let embedSubs = false;
   let selected = new Set<number>();
+  /** True while an enqueue is in flight or its confirmation is showing. */
+  let enqueuing = false;
+  /**
+   * For a link downloaded before, its saved details show at once ("checking") while a
+   * fresh lookup runs; "stale" when that lookup failed. "fresh" otherwise.
+   */
+  let freshness: "fresh" | "checking" | "stale" = "fresh";
+  let staleReason = "";
+  let freshnessEl: HTMLElement | null = null;
 
   const input = h("input", {
     class: "url-input",
@@ -133,6 +148,30 @@ export const mountDownload: MountView = (container, ctx) => {
     if (!store.tools.ytdlp && !store.toolBusy.ytdlp && !store.toolError.ytdlp) void installEngine();
   });
 
+  /** Shows a lookup result with every option back at its default. */
+  function showResult(next: ProbeResult) {
+    result = next;
+    mode = "video";
+    height = null;
+    audioFormat = "mp3";
+    subs = new Set();
+    embedSubs = false;
+    selected = new Set(next.entries.map((_, i) => i));
+    phase = "result";
+  }
+
+  /** What the options are built from; when this is unchanged a refresh redraws nothing. */
+  const shape = (r: ProbeResult) =>
+    JSON.stringify([r.title, r.thumbnail, r.duration, r.uploader, r.heights, r.subtitles.map((s) => s.code), r.entries.map((e) => e.url + e.title)]);
+
+  /** Takes refreshed details while keeping the choices already made. */
+  function adoptRefresh(next: ProbeResult) {
+    const before = result;
+    result = next;
+    subs = new Set([...subs].filter((code) => next.subtitles.some((s) => s.code === code)));
+    if (!before || before.entries.length !== next.entries.length) selected = new Set(next.entries.map((_, i) => i));
+  }
+
   async function submit() {
     const url = input.value.trim();
     if (!url) {
@@ -151,25 +190,55 @@ export const mountDownload: MountView = (container, ctx) => {
       return render();
     }
     lastUrl = url;
-    phase = "loading";
+
+    // A link downloaded before shows its saved details at once; the lookup below then
+    // checks them against the site.
+    const cached = await api.cachedLink(url).catch(() => null);
+    if (lastUrl !== url) return; // a newer request replaced this one
+    if (cached) {
+      showResult(cached.result);
+      freshness = "checking";
+    } else {
+      phase = "loading";
+      freshness = "fresh";
+    }
     render();
+
     try {
       const probed = await api.probe(url);
-      if (lastUrl !== url) return; // a newer request replaced this one
-      result = probed;
-      mode = "video";
-      height = null;
-      audioFormat = "mp3";
-      subs = new Set();
-      embedSubs = false;
-      selected = new Set(probed.entries.map((_, i) => i));
-      phase = "result";
+      if (lastUrl !== url) return;
+      if (cached && phase === "result" && result) {
+        const changed = shape(result) !== shape(probed);
+        freshness = "fresh";
+        if (changed) {
+          adoptRefresh(probed);
+          render();
+        } else {
+          result = probed;
+          paintFreshness();
+        }
+        return;
+      }
+      showResult(probed);
     } catch (error) {
       if (lastUrl !== url) return;
+      if (cached && phase === "result") {
+        // Keep the saved details on screen, but say they could not be confirmed.
+        freshness = "stale";
+        staleReason = errorMessage(error);
+        paintFreshness();
+        return;
+      }
       phase = "error";
       errorText = errorMessage(error);
     }
     render();
+  }
+
+  /** Looks up a link from the Recent list again; instant thanks to the link cache. */
+  function openLink(url: string) {
+    input.value = url;
+    void submit();
   }
 
   function currentOptions(): DownloadOptions {
@@ -186,12 +255,22 @@ export const mountDownload: MountView = (container, ctx) => {
   }
 
   async function startDownload(trigger?: HTMLButtonElement) {
-    if (!result) return;
+    // Without this, a double click or a click during the confirmation queues it twice.
+    if (!result || enqueuing) return;
+    enqueuing = true;
+    if (trigger) trigger.disabled = true;
     const items =
       result.kind === "playlist"
         ? result.entries
             .filter((_, i) => selected.has(i))
-            .map((e) => ({ url: e.url, title: e.title, thumbnail: e.thumbnail, uploader: e.uploader, duration: e.duration }))
+            .map((e) => ({
+              url: e.url,
+              playlistIndex: e.playlistIndex,
+              title: e.title,
+              thumbnail: e.thumbnail,
+              uploader: e.uploader,
+              duration: e.duration,
+            }))
         : [
             {
               url: result.url,
@@ -202,7 +281,8 @@ export const mountDownload: MountView = (container, ctx) => {
             },
           ];
     try {
-      const jobs = await api.enqueue(items, currentOptions());
+      // The looked-up link goes along so its details are saved for an instant next time.
+      const jobs = await api.enqueue(items, currentOptions(), lastUrl || result.url);
       jobs.forEach((job) => store.upsertJob(job));
       if (trigger) {
         trigger.classList.add("confirmed");
@@ -219,6 +299,9 @@ export const mountDownload: MountView = (container, ctx) => {
       render();
     } catch (error) {
       toast(errorMessage(error), { tone: "error" });
+      if (trigger) trigger.disabled = false;
+    } finally {
+      enqueuing = false;
     }
   }
 
@@ -236,7 +319,8 @@ export const mountDownload: MountView = (container, ctx) => {
       r.uploader,
       r.site,
     ].filter(Boolean) as string[];
-    return h(
+    freshnessEl = h("p", { class: "preview-note", attrs: { "aria-live": "polite" } });
+    const section = h(
       "section",
       { class: "preview glass", attrs: { "aria-label": "Link details" } },
       thumbnailEl(art, "preview-thumb"),
@@ -245,8 +329,26 @@ export const mountDownload: MountView = (container, ctx) => {
         { class: "preview-info" },
         h("h2", { class: "preview-title", text: r.title }),
         h("p", { class: "preview-meta", text: meta.join("  ·  ") }),
+        freshnessEl,
       ),
     );
+    paintFreshness();
+    return section;
+  }
+
+  /** "Downloaded …" for a link already in the library, and the state of saved details. */
+  function paintFreshness() {
+    if (!freshnessEl || !result) return;
+    const r = result;
+    const previous = store.history.find((item) => item.url === r.url || item.url === lastUrl);
+    const parts = [
+      previous ? `Downloaded ${formatDate(previous.finishedAt)}` : null,
+      freshness === "checking" ? "Checking for changes…" : null,
+      freshness === "stale" ? `Couldn't check for changes: ${staleReason}` : null,
+    ].filter(Boolean) as string[];
+    freshnessEl.textContent = parts.join("  ·  ");
+    freshnessEl.hidden = parts.length === 0;
+    freshnessEl.dataset.tone = freshness === "stale" ? "warn" : "";
   }
 
   function renderEntries(r: ProbeResult): HTMLElement {
@@ -306,7 +408,8 @@ export const mountDownload: MountView = (container, ctx) => {
   }
 
   function renderOptions(r: ProbeResult): HTMLElement {
-    const qualities = qualityChoices(r.heights);
+    const playlist = r.kind === "playlist";
+    const qualities = qualityChoices(r.heights, playlist);
     const body = h("div", { class: "options-body" });
 
     const paint = () => {
@@ -335,7 +438,11 @@ export const mountDownload: MountView = (container, ctx) => {
               height ?? 0,
               (value) => (height = value === 0 ? null : value),
             ),
-            qualities.length === 0 ? "Quality options appear once the site reports them." : "Saved as MP4 when possible.",
+            qualities.length === 0
+              ? "Quality options appear once the site reports them."
+              : playlist
+                ? "Each video is saved at the best quality it has, up to this limit. MP4 when possible."
+                : "Saved as MP4 when possible.",
           ),
         );
         if (r.subtitles.length > 0) {
@@ -406,8 +513,17 @@ export const mountDownload: MountView = (container, ctx) => {
           h(
             "div",
             { class: "row recent-row" },
-            thumbnailEl(item.thumbnailLocal ? convertFileSrc(item.thumbnailLocal) : item.thumbnail, "recent-thumb"),
-            h("div", { class: "recent-text" }, h("span", { class: "row-title", text: item.title }), h("span", { class: "row-hint", text: [item.quality, item.uploader].filter(Boolean).join("  ·  ") })),
+            // Opens the link's details again, straight from the link cache.
+            h(
+              "button",
+              {
+                class: "recent-open",
+                attrs: { type: "button", title: "Show the details again" },
+                on: { click: () => openLink(item.url) },
+              },
+              thumbnailEl(item.thumbnailLocal ? convertFileSrc(item.thumbnailLocal) : item.thumbnail, "recent-thumb"),
+              h("span", { class: "recent-text" }, h("span", { class: "row-title", text: item.title }), h("span", { class: "row-hint", text: [item.quality, item.uploader].filter(Boolean).join("  ·  ") })),
+            ),
             button({
               icon: "folder",
               title: "Show in folder",
@@ -461,23 +577,24 @@ export const mountDownload: MountView = (container, ctx) => {
     }
   }
 
-  const onPaste = (event: ClipboardEvent) => {
-    const target = event.target as HTMLElement | null;
-    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
-    const text = event.clipboardData?.getData("text")?.trim() ?? "";
-    if (looksLikeUrl(text)) {
-      input.value = text;
-      void submit();
-    }
+  // Ctrl+V anywhere in the window lands here (main.ts routes it), even from another view.
+  const takePaste = () => {
+    const pasted = store.takePastedLink();
+    if (!pasted) return;
+    input.value = pasted;
+    void submit();
   };
-  document.addEventListener("paste", onPaste);
+  const offPaste = store.on("paste", takePaste);
+  const offFocus = store.on("focusLink", () => input.focus());
   const offHistory = store.on("history", () => phase === "idle" && render());
 
   render();
   input.focus();
+  takePaste();
 
   return () => {
-    document.removeEventListener("paste", onPaste);
+    offPaste();
+    offFocus();
     offTools.forEach((off) => off());
     offHistory();
     lastUrl = "";
