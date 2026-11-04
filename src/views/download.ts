@@ -23,8 +23,7 @@ const AUDIO_FORMATS = [
 
 function qualityChoices(heights: number[], playlist: boolean): { value: number; label: string }[] {
   const label = (value: number) => (value === 2160 ? "4K" : `${value}p`);
-  // A flat playlist read does not list each video's formats. The choice is a cap, so
-  // the usual heights all make sense: each video is saved at the best it has up to it.
+  // A flat playlist read has no formats; the choice is a cap, so any height works.
   if (playlist && heights.length === 0) {
     return STANDARD_HEIGHTS.filter((h) => h >= 360).map((value) => ({ value, label: label(value) }));
   }
@@ -62,10 +61,7 @@ export const mountDownload: MountView = (container, ctx) => {
   let selected = new Set<number>();
   /** True while an enqueue is in flight or its confirmation is showing. */
   let enqueuing = false;
-  /**
-   * For a link downloaded before, its saved details show at once ("checking") while a
-   * fresh lookup runs; "stale" when that lookup failed. "fresh" otherwise.
-   */
+  /** Saved details shown while a fresh lookup runs ("checking"), or after it failed ("stale"). */
   let freshness: "fresh" | "checking" | "stale" = "fresh";
   let staleReason = "";
   let freshnessEl: HTMLElement | null = null;
@@ -160,7 +156,7 @@ export const mountDownload: MountView = (container, ctx) => {
     phase = "result";
   }
 
-  /** What the options are built from; when this is unchanged a refresh redraws nothing. */
+  /** When this is unchanged, a refresh redraws nothing. */
   const shape = (r: ProbeResult) =>
     JSON.stringify([r.title, r.thumbnail, r.duration, r.uploader, r.heights, r.subtitles.map((s) => s.code), r.entries.map((e) => e.url + e.title)]);
 
@@ -191,8 +187,7 @@ export const mountDownload: MountView = (container, ctx) => {
     }
     lastUrl = url;
 
-    // A link downloaded before shows its saved details at once; the lookup below then
-    // checks them against the site.
+    // Saved details show at once; the lookup below checks them.
     const cached = await api.cachedLink(url).catch(() => null);
     if (lastUrl !== url) return; // a newer request replaced this one
     if (cached) {
@@ -235,7 +230,6 @@ export const mountDownload: MountView = (container, ctx) => {
     render();
   }
 
-  /** Looks up a link from the Recent list again; instant thanks to the link cache. */
   function openLink(url: string) {
     input.value = url;
     void submit();
@@ -255,7 +249,7 @@ export const mountDownload: MountView = (container, ctx) => {
   }
 
   async function startDownload(trigger?: HTMLButtonElement) {
-    // Without this, a double click or a click during the confirmation queues it twice.
+    // A double click, or a click during the confirmation, would queue it twice.
     if (!result || enqueuing) return;
     enqueuing = true;
     if (trigger) trigger.disabled = true;
@@ -281,7 +275,7 @@ export const mountDownload: MountView = (container, ctx) => {
             },
           ];
     try {
-      // The looked-up link goes along so its details are saved for an instant next time.
+      // The looked-up link, so its details are saved in the link cache.
       const jobs = await api.enqueue(items, currentOptions(), lastUrl || result.url);
       jobs.forEach((job) => store.upsertJob(job));
       if (trigger) {
@@ -336,7 +330,6 @@ export const mountDownload: MountView = (container, ctx) => {
     return section;
   }
 
-  /** "Downloaded …" for a link already in the library, and the state of saved details. */
   function paintFreshness() {
     if (!freshnessEl || !result) return;
     const r = result;
@@ -513,7 +506,6 @@ export const mountDownload: MountView = (container, ctx) => {
           h(
             "div",
             { class: "row recent-row" },
-            // Opens the link's details again, straight from the link cache.
             h(
               "button",
               {
@@ -577,7 +569,7 @@ export const mountDownload: MountView = (container, ctx) => {
     }
   }
 
-  // Ctrl+V anywhere in the window lands here (main.ts routes it), even from another view.
+  // Ctrl+V anywhere in the window lands here (routed by main.ts).
   const takePaste = () => {
     const pasted = store.takePastedLink();
     if (!pasted) return;

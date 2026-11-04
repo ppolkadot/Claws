@@ -1,10 +1,6 @@
-//! The link cache: the details (title, artwork, qualities, subtitles, playlist entries)
-//! of every link the user has downloaded, kept on disk so looking the same link up
-//! again shows them at once. The Download view then refreshes them in the background.
-//!
-//! This is separate from the probe cache in `probe.rs`, which keeps yt-dlp's full info
-//! JSON for 20 minutes so a download can skip extraction. Media URLs expire, so that
-//! one stays short-lived; these details do not, so they are kept for long.
+//! The link cache: the details of every downloaded link, so looking it up again is
+//! instant. Unlike the 20-minute probe cache in `probe.rs` (yt-dlp's full info, whose
+//! media URLs expire), these are kept for a long time.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -74,9 +70,8 @@ pub fn lookup(app: &AppHandle, url: &str) -> Option<CachedLink> {
     read(&path_for(&dir(app), &url))
 }
 
-/// Saves the details a download was started from. `source` is the link the user looked
-/// up; the details come from that lookup (still in memory) or, when they were shown from
-/// this cache and not refreshed yet, from the cache itself.
+/// Saves the details a download was started from: from the recent lookup, or from this
+/// cache when they were shown from it and not refreshed yet.
 pub fn remember_download(app: &AppHandle, source: &str) {
     let Ok(source) = validate_url(source) else { return };
     let state = app.state::<AppState>();
@@ -86,8 +81,7 @@ pub fn remember_download(app: &AppHandle, source: &str) {
     }
 }
 
-/// After a fresh lookup: updates the saved details of a link that was downloaded before.
-/// Links that were only looked up are not saved.
+/// Updates the details of a link downloaded before; links only looked up are not saved.
 pub fn refresh(app: &AppHandle, keys: &[&str], result: &ProbeResult) {
     let dir = dir(app);
     let known = keys
@@ -99,8 +93,7 @@ pub fn refresh(app: &AppHandle, keys: &[&str], result: &ProbeResult) {
     }
 }
 
-/// Keeps the cache bounded: drops entries older than a year, then the oldest beyond
-/// `MAX_ENTRIES`.
+/// Drops entries older than a year, then the oldest beyond `MAX_ENTRIES`.
 pub fn prune(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let now = SystemTime::now();

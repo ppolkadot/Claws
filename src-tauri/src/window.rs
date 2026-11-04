@@ -68,8 +68,7 @@ pub fn apply_backdrop(window: &WebviewWindow, kind: &str) -> Result<(), String> 
 }
 
 /// SetWindowCompositionAttribute is exported by user32 but missing from its import
-/// library, so it is looked up at runtime. Returns false when Windows refused it, which
-/// means no blur.
+/// library, so it is looked up at runtime. False means no blur.
 #[cfg(windows)]
 fn set_accent(hwnd: windows::Win32::Foundation::HWND, state: u32) -> bool {
     use std::ffi::c_void;
@@ -114,11 +113,9 @@ fn set_accent(hwnd: windows::Win32::Foundation::HWND, state: u32) -> bool {
     }
 }
 
-/// Takes the keyboard focus from whatever app is in front, when the ordinary focus call
-/// was refused. Windows only lets a process do that when it received the last input, so
-/// a window raised from a global shortcut can otherwise end up behind the active app.
-/// Attaching to the foreground thread's input for the moment of the switch is the
-/// standard way round it. A no-op when Claws is already in front.
+/// Fallback when Windows refuses the focus change (it only allows it to the process
+/// that received the last input): attaches to the foreground thread's input for the
+/// switch. A no-op when Claws is already in front.
 #[cfg(windows)]
 pub fn take_foreground(window: &WebviewWindow) {
     use windows::Win32::Foundation::HWND;

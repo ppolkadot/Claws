@@ -6,21 +6,16 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::error::Result;
 
-/// Serialises every JSON write in the app. Queue completions, thumbnail callbacks and
-/// commands all persist from different tasks; without this two writers could race on
-/// the same file, and an older snapshot could be renamed over a newer one.
-///
-/// Lock order: this lock first, then any state mutex the snapshot needs. Never take it
-/// while holding a state mutex.
+/// Serialises every JSON write, so concurrent writers cannot race on a file or rename
+/// an older snapshot over a newer one. Taken before any state mutex, never inside one.
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 fn write_lock() -> MutexGuard<'static, ()> {
     WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Reads a JSON file. A missing file gives the default silently; a file that exists but
-/// cannot be read or parsed is moved aside (so nothing is lost) and reported in
-/// `notices`, then the default is used.
+/// Missing file: the default. Unreadable or damaged: moved aside, reported in `notices`,
+/// then the default.
 pub fn load_or_recover<T: DeserializeOwned + Default>(path: &Path, what: &str, notices: &mut Vec<String>) -> T {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
@@ -54,8 +49,8 @@ fn backup_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{stem}.corrupt-{stamp}.json"))
 }
 
-/// Writes JSON through a uniquely named temp file and an atomic rename, so a crash never
-/// leaves a half-written file. Callers must hold the write lock.
+/// Temp file plus atomic rename, so a crash never leaves a half-written file. Callers
+/// must hold the write lock.
 fn write_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -68,16 +63,14 @@ fn write_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(result?)
 }
 
-/// Takes the snapshot and writes it while holding the write lock, so the newest state
-/// always wins: a writer that snapshots later also writes later.
+/// Snapshots under the write lock, so a writer that snapshots later also writes later.
 pub fn save_snapshot<T: Serialize>(path: &Path, snapshot: impl FnOnce() -> T) -> Result<()> {
     let _guard = write_lock();
     let value = snapshot();
     write_atomic(path, &value)
 }
 
-/// Writes `value` and then runs `commit` (typically updating the in-memory copy) under
-/// the same lock, so memory and disk cannot end up holding different writers' values.
+/// Writes `value`, then runs `commit` (usually updating memory) under the same lock.
 pub fn save_then<T: Serialize>(path: &Path, value: &T, commit: impl FnOnce()) -> Result<()> {
     let _guard = write_lock();
     write_atomic(path, value)?;

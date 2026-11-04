@@ -115,9 +115,8 @@ pub struct Job {
     pub file_path: Option<String>,
     pub error: Option<String>,
     pub created_at: i64,
-    /// Every file name yt-dlp has reported for this job, so unfinished leftovers can
-    /// be cleaned up even after the job was paused, resumed or restarted. Persisted as
-    /// soon as a new name appears, so a crash mid-download keeps it too.
+    /// Every file name yt-dlp reported, so leftovers can be cleaned up after a pause,
+    /// resume or restart. Saved as soon as a new one appears.
     #[serde(default)]
     pub partial_files: Vec<String>,
 }
@@ -141,16 +140,13 @@ pub enum Intent {
     Cancel,
 }
 
-/// A job whose yt-dlp process exists. The entry stays until `finish` has fully settled
-/// the job, so pause, cancel and resume always see either a live process or a final
-/// status, never something in between.
+/// A job whose yt-dlp process exists. The entry stays until `finish` has settled the
+/// job, so pause, cancel and resume never see a half-finished state.
 pub struct Running {
-    /// `None` once the process has exited (it is cleared before the child handle closes),
-    /// so a late pause, cancel or quit never kills a pid Windows has reused.
+    /// `None` once the process has exited, so a late kill never hits a reused pid.
     pid: Option<u32>,
     intent: Intent,
-    /// Leftovers from earlier runs, handed over when a running job is removed from the
-    /// queue (its record is gone by the time the process exits).
+    /// Leftovers from earlier runs, handed over when a running job is removed.
     cleanup: Vec<String>,
 }
 
@@ -354,9 +350,8 @@ pub(crate) fn kill_tree(pid: u32, wait: bool) {
     let _ = (pid, wait);
 }
 
-// Pause, cancel and resume each run under the `running` lock, so they cannot interleave
-// with a process starting (`execute` registers under the same lock) or a job being
-// settled (`finish` removes its entry and sets the final status under it too).
+// Pause, cancel and resume run under the `running` lock, as do process registration
+// (`execute`) and settling (`finish`), so they never interleave.
 
 pub fn pause(app: &AppHandle, id: &str) {
     let state = app.state::<AppState>();
@@ -501,13 +496,9 @@ pub fn clear_finished(app: &AppHandle) {
     persist_queue(app);
 }
 
-/// Called once as the app exits:
-/// 1. raises `shutting_down`, so no download or lookup can start from here on (both
-///    check it under the same lock they register their process with);
-/// 2. stops every download and lookup process tree, waiting for `taskkill`;
-/// 3. waits (bounded) for the download workers to settle their jobs;
-/// 4. fixes up anything a worker did not get to, removes cancelled leftovers and saves
-///    the queue, so the jobs come back paused with their partial files known.
+/// Called once as the app exits. Raises `shutting_down` (nothing new can start), kills
+/// every download and lookup tree, waits for the workers to settle, then fixes up what
+/// they did not and saves the queue, so jobs come back paused.
 pub fn shutdown(app: &AppHandle) {
     let state = app.state::<AppState>();
     state.shutting_down.store(true, Ordering::SeqCst);
@@ -527,9 +518,7 @@ pub fn shutdown(app: &AppHandle) {
         kill_tree(pid, true);
     }
 
-    // The workers see their process exit and settle the job (paused, or cancelled with
-    // its leftovers removed). A worker stuck behind a tool install cannot finish, so the
-    // wait is bounded and the fix-up below covers it.
+    // Bounded: a worker stuck behind a tool install cannot finish; the fix-up covers it.
     let deadline = Instant::now() + Duration::from_secs(5);
     while state.workers.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(25));
@@ -667,8 +656,7 @@ fn number(field: &str) -> Option<f64> {
     field.trim().parse().ok()
 }
 
-/// Subtitles, thumbnails and info files are downloaded through the same progress hook
-/// as the media, but they are tiny and must not count as one of the media streams.
+/// Subtitles, thumbnails and info files report progress too, but are not media streams.
 fn is_side_file(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     let ext = lower.rsplit('.').next().unwrap_or("");
@@ -767,9 +755,8 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    // The process is started and registered under the `running` lock, after checking
-    // the shutdown flag under that same lock: either shutdown's snapshot includes this
-    // process, or this sees the flag and never starts one.
+    // Spawned and registered under `running` after checking the shutdown flag under the
+    // same lock, so shutdown either sees this process or it never starts.
     let mut child = {
         let mut running = state.running.lock().unwrap();
         if state.shutting_down.load(Ordering::SeqCst) {
@@ -864,8 +851,7 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
     }
 
     let status = child.wait().await;
-    // The process is gone; its pid is forgotten before the handle closes (when `child`
-    // drops at the end of this function) and Windows can reuse it.
+    // Forget the pid before `child` drops and Windows can reuse it.
     if let Some(entry) = state.running.lock().unwrap().get_mut(id) {
         entry.pid = None;
     }
@@ -925,7 +911,7 @@ fn handle_line(app: &AppHandle, id: &str, line: &str, progress: &mut Progress, o
                     _ => false,
                 }
             };
-            // Saved right away so a crash or forced close can still clean up later.
+            // Saved now, so a crash can still clean up later.
             if added {
                 persist_queue(app);
             }
@@ -951,7 +937,7 @@ fn handle_line(app: &AppHandle, id: &str, line: &str, progress: &mut Progress, o
 
 async fn run_job(app: AppHandle, id: String) {
     let state = app.state::<AppState>();
-    // Waits while yt-dlp or ffmpeg is being replaced; never starts on a half-installed tool.
+    // Waits while a tool is being replaced.
     let _engine = state.engine.read().await;
 
     let mut outcome = execute(&app, &id, true).await;
@@ -991,9 +977,8 @@ async fn run_job(app: AppHandle, id: String) {
     pump(&app);
 }
 
-/// Sets the final status for a job whose process has exited. A successful exit always
-/// wins: a pause or cancel that arrived as the download completed must not hide a
-/// finished file.
+/// Final status for a job whose process exited. Success always wins, so a pause or
+/// cancel that arrived as it completed cannot hide a finished file.
 fn settle(app: &AppHandle, id: &str, intent: Intent, outcome: &Outcome) -> Option<Job> {
     if outcome.success {
         return update_job(app, id, |j| {
@@ -1044,9 +1029,8 @@ async fn finish(app: &AppHandle, id: &str, outcome: Outcome) {
     let mut cleaned = false;
     let mut completed = None;
     loop {
-        // Either collect the files a cancel must remove (then clean up and look again,
-        // in case the intent changed meanwhile), or remove the entry and settle the
-        // job in the same critical section.
+        // Either clean up after a cancel and look again (the intent may have changed), or
+        // remove the entry and settle the job in one critical section.
         let to_clean = {
             let mut running = state.running.lock().unwrap();
             let entry = running.get(id);

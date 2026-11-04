@@ -405,8 +405,7 @@
   min-width: 0;
   text-align: left;
 }
-/* The thumbnail and title reopen the link's details; it reads as part of the row, and
-   only the title takes the accent on hover, as in a Finder sidebar list. */
+/* Reopens the link's details; only the title takes the accent on hover. */
 .recent-open {
   display: flex;
   flex: 1;

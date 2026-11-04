@@ -268,8 +268,7 @@ pub async fn probe(app: &AppHandle, raw_url: &str) -> Result<ProbeResult> {
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    // Started and registered under the `probes` lock after checking the shutdown flag,
-    // so shutdown either sees this process and stops its tree, or it never starts.
+    // Registered under `probes` after checking the shutdown flag under the same lock.
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let (mut child, pid) = {
         let mut probes = state.probes.lock().unwrap();
@@ -290,8 +289,7 @@ pub async fn probe(app: &AppHandle, raw_url: &str) -> Result<ProbeResult> {
     let status = match tokio::time::timeout(PROBE_TIMEOUT, child.wait()).await {
         Ok(status) => status?,
         Err(_) => {
-            // The whole tree has to go: yt-dlp.exe is only a launcher, and dropping the
-            // child would orphan the interpreter it started.
+            // Kill the tree first: dropping the child alone would orphan yt-dlp's interpreter.
             if let Some(pid) = pid {
                 let _ = tokio::task::spawn_blocking(move || kill_tree(pid, true)).await;
             }
@@ -317,8 +315,7 @@ pub async fn probe(app: &AppHandle, raw_url: &str) -> Result<ProbeResult> {
     Ok(result)
 }
 
-/// The details a download can be started from, kept briefly so `enqueue` can save them
-/// in the link cache without another lookup.
+/// Kept briefly so `enqueue` can save them in the link cache without another lookup.
 fn remember_recent(state: &AppState, url: &str, result: &ProbeResult) {
     const KEEP: usize = 16;
     let mut recent = state.recent_probes.lock().unwrap();
@@ -354,8 +351,8 @@ fn cache_path(dir: &Path, url: &str) -> PathBuf {
 }
 
 async fn remember(app: &AppHandle, url: &str, json: &[u8]) {
-    // Pruned here too, at most every few minutes: with Keep Running and Open at Login a
-    // session can last days, and each entry can be a few megabytes.
+    // Also pruned here (every few minutes): a session can last days, and entries are
+    // megabytes.
     static LAST_PRUNE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
     let dir = app.state::<AppState>().probe_cache_dir();
     if tokio::fs::create_dir_all(&dir).await.is_ok() {

@@ -1,8 +1,6 @@
-/* Legacy UI Display, built by scripts/build-fonts.py into public/fonts/ (not committed;
-   see README). Without those files each face falls back to a copy of Legacy UI installed
-   in Windows (local()); these rules would otherwise hide an installed Legacy UI. With
-   neither, the stack in base.css falls back to Segoe UI Variable. `block` avoids a
-   flash of the fallback: the files are local, so they arrive before the window shows. */
+/* Built by scripts/build-fonts.py into public/fonts/ (not committed). Without them,
+   local() uses an installed Legacy UI, which these rules would otherwise hide. `block`
+   is safe: the files are local and arrive before the window shows. */
 @font-face {
   font-family: "Legacy UI Display";
   src: url("/fonts/Legacy UI Display-400.woff2") format("woff2"), local("Legacy UI Display Regular"), local("Legacy UI Display-Regular");
