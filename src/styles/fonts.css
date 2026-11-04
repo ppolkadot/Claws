@@ -1,4 +1,35 @@
-/* Built by scripts/build-fonts.py into public/fonts/ (not committed). Without them,
+/* Salted Flutters Polaris is the main font; Legacy UI Display is the fallback. Both are
+   built by scripts/build-fonts.py into public/fonts/ (not committed). */
+@font-face {
+  font-family: "Salted Flutters Polaris";
+  src: url("/fonts/salted-flutters-polaris-400.woff2") format("woff2"), local("Salted Flutters Polaris Regular"), local("SaltedFluttersPolaris-Regular");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Salted Flutters Polaris";
+  src: url("/fonts/salted-flutters-polaris-500.woff2") format("woff2"), local("Salted Flutters Polaris Medium"), local("SaltedFluttersPolaris-Medium");
+  font-weight: 500;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Salted Flutters Polaris";
+  src: url("/fonts/salted-flutters-polaris-600.woff2") format("woff2"), local("Salted Flutters Polaris Semibold"), local("SaltedFluttersPolaris-Semibold");
+  font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Salted Flutters Polaris";
+  src: url("/fonts/salted-flutters-polaris-700.woff2") format("woff2"), local("Salted Flutters Polaris Bold"), local("SaltedFluttersPolaris-Bold");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
+/* Without the Legacy UI files,
    local() uses an installed Legacy UI, which these rules would otherwise hide. `block`
    is safe: the files are local and arrive before the window shows. */
 @font-face {

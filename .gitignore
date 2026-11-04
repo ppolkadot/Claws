@@ -10,6 +10,9 @@ src-tauri/gen/
 # source files nor the web fonts built from them are committed. See README → Fonts.
 assets/fonts/
 public/fonts/
+# Salted Flutters Polaris is derived from Legacy UI (same metrics and features), so its
+# source files are kept out of the repo for the same reason.
+Salted-Flutters-Polaris/
 
 # ---- Design tooling ---------------------------------------------------------------
 # Impeccable's machine-generated sidecar, hook cache and review captures.

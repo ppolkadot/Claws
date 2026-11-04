@@ -135,18 +135,20 @@ function buildSettings(container: HTMLElement): () => void {
   );
 
   const intensityValue = h("span", { class: "value", text: `${s().glassIntensity}%` });
-  const bundled = [...document.fonts].some((f) => f.family.replace(/"/g, "") === "Legacy UI Display" && f.status === "loaded");
-  const Legacy UI = bundled || fontInstalled("Legacy UI Display");
+  const loaded = (family: string) => [...document.fonts].some((f) => f.family.replace(/"/g, "") === family && f.status === "loaded");
+  const family = ["Salted Flutters Polaris", "Legacy UI Display"].find((f) => loaded(f) || fontInstalled(f));
+  const bundled = family !== undefined && loaded(family);
+  const Legacy UI = family !== undefined;
   const fontRow = row(
     "Font",
     Legacy UI
-      ? h("span", { class: "font-status" }, h("span", { class: "tool-dot", attrs: { "data-state": "ok" } }), "Legacy UI Display")
+      ? h("span", { class: "font-status" }, h("span", { class: "tool-dot", attrs: { "data-state": "ok" } }), family)
       : button({ label: "Get Legacy UI…", variant: "secondary", size: "small", onClick: () => void api.openFontPage().catch((e) => onError(errorMessage(e))) }),
     bundled
       ? "In use throughout Claws."
       : Legacy UI
         ? "Installed on this PC and used throughout Claws."
-        : "Legacy UI Display is not available, so Claws uses Segoe UI Variable. Build the fonts (see README) or install Legacy UI from Apple, then restart Claws.",
+        : "Neither Salted Flutters Polaris nor Legacy UI Display is available, so Claws uses Segoe UI Variable. Build the fonts (see README) or install Legacy UI from Apple, then restart Claws.",
   );
   const appearance = group(
     row(

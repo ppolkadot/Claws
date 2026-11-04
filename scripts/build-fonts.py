@@ -1,27 +1,39 @@
-"""Builds the web fonts Claws ships from the Legacy UI Display source files.
+"""Builds the web fonts Claws ships.
 
-The source .otf files live in assets/fonts/Legacy UI Display/ (not committed: Apple's
-licence does not allow redistributing them). This script subsets the four weights
-the interface uses to Latin, Greek, Cyrillic and common punctuation, keeps their
-OpenType features (tabular figures, kerning, ligatures), and writes WOFF2 files to
-public/fonts/, which Vite copies into the app as-is.
+Two families: Salted Flutters Polaris, the main font (source .otf files in
+Salted-Flutters-Polaris/), and Legacy UI Display as a fallback (source in
+assets/fonts/Legacy UI Display/). A family whose source files are absent is skipped.
+Polaris is derived from Legacy UI (same metrics and features), so neither the sources nor
+the fonts built from them are committed; see README -> Fonts.
 
-Without the source files the app still builds and falls back to Segoe UI Variable.
+The four weights the interface uses are subset to Latin, Greek, Cyrillic and common
+punctuation, keeping their OpenType features (tabular figures, kerning, ligatures) and
+every name record, and written as WOFF2 to public/fonts/, which Vite copies into the
+app as-is. Without any source files the app still builds and falls back to Segoe UI
+Variable.
 
 Usage (needs fontTools with WOFF2 support: pip install "fonttools[woff]"):
     python scripts/build-fonts.py
 """
 
+import shutil
 from pathlib import Path
 
 from fontTools import subset
 from fontTools.ttLib import TTFont
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = ROOT / "assets" / "fonts" / "Legacy UI Display"
 OUTPUT = ROOT / "public" / "fonts"
 
 WEIGHTS = {400: "Regular", 500: "Medium", 600: "Semibold", 700: "Bold"}
+
+# (family, source folder, source file pattern, output file pattern)
+FAMILIES = [
+    ("Salted Flutters Polaris", ROOT / "Salted-Flutters-Polaris",
+     "SaltedFluttersPolaris-{style}.otf", "salted-flutters-polaris-{weight}.woff2"),
+    ("Legacy UI Display", ROOT / "assets" / "fonts" / "Legacy UI Display",
+     "Legacy UI Display-{style}.otf", "Legacy UI Display-{weight}.woff2"),
+]
 
 # Titles come from sites all over the world, so the subset keeps every script Legacy UI
 # itself covers well. Anything outside it falls back to the system font per glyph.
@@ -43,9 +55,7 @@ UNICODES = [
 ]
 
 
-def build(weight: int, style: str) -> Path:
-    source = SOURCE / f"Legacy UI Display-{style}.otf"
-    target = OUTPUT / f"Legacy UI Display-{weight}.woff2"
+def build(source: Path, target: Path) -> None:
     options = subset.Options()
     options.layout_features = ["*"]  # keep tnum, kern, liga, case, ss0x...
     options.name_IDs = ["*"]
@@ -59,18 +69,27 @@ def build(weight: int, style: str) -> Path:
     subsetter.subset(font)
     font.flavor = "woff2"
     font.save(target)
-    return target
 
 
 def main() -> None:
-    missing = [s for s in WEIGHTS.values() if not (SOURCE / f"Legacy UI Display-{s}.otf").is_file()]
-    if missing:
-        raise SystemExit(f"Missing source fonts in {SOURCE}: {', '.join(missing)}")
-    OUTPUT.mkdir(parents=True, exist_ok=True)
-    for weight, style in WEIGHTS.items():
-        target = build(weight, style)
-        source_kb = (SOURCE / f"Legacy UI Display-{style}.otf").stat().st_size // 1024
-        print(f"{style:9} {source_kb:5} KB -> {target.stat().st_size // 1024:4} KB  {target.relative_to(ROOT)}")
+    built = 0
+    for family, folder, source_pattern, target_pattern in FAMILIES:
+        sources = {w: folder / source_pattern.format(style=s) for w, s in WEIGHTS.items()}
+        missing = [p.name for p in sources.values() if not p.is_file()]
+        if missing:
+            print(f"{family}: skipped, missing in {folder}: {', '.join(missing)}")
+            continue
+        OUTPUT.mkdir(parents=True, exist_ok=True)
+        for weight, source in sources.items():
+            target = OUTPUT / target_pattern.format(weight=weight)
+            build(source, target)
+            print(f"{source.name:36} {source.stat().st_size // 1024:5} KB -> {target.stat().st_size // 1024:4} KB  {target.relative_to(ROOT)}")
+        licence = folder / "LICENSE.txt"
+        if licence.is_file():
+            shutil.copyfile(licence, OUTPUT / f"{target_pattern.split('-{')[0]}-LICENSE.txt")
+        built += 1
+    if not built:
+        raise SystemExit("No font sources found; the app will fall back to Segoe UI Variable.")
 
 
 if __name__ == "__main__":

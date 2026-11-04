@@ -167,17 +167,17 @@ What makes the difference:
 
 ## Fonts
 
-The interface is set in **Legacy UI Display**. Claws builds it into the app from the source files in `assets/fonts/Legacy UI Display/`:
+The interface is set in **Salted Flutters Polaris**, with **Legacy UI Display** as the fallback. Claws builds both into the app from their source files, `Salted-Flutters-Polaris/` and `assets/fonts/Legacy UI Display/`; a family whose files are missing is skipped:
 
 ```powershell
 pip install "fonttools[woff]"
-python scripts/build-fonts.py   # writes public/fonts/Legacy UI Display-{400,500,600,700}.woff2
+python scripts/build-fonts.py   # writes public/fonts/{salted-flutters-polaris,Legacy UI Display}-{400,500,600,700}.woff2
 ```
 
-The script subsets the four weights the interface uses (Regular, Medium, Semibold and Bold) to Latin, Greek, Cyrillic and common punctuation. That takes each from about 2.2 MB to about 120 KB, while keeping tabular figures, kerning and ligatures.
+The script subsets the four weights the interface uses (Regular, Medium, Semibold and Bold) to Latin, Greek, Cyrillic and common punctuation. That takes each Polaris weight from about 3.5 MB to about 160 KB, while keeping tabular figures, kerning and ligatures.
 
 > [!IMPORTANT]
-> Apple's licence for Legacy UI only covers creating mock-ups for Apple platforms. The font files and the fonts built from them are therefore **not committed** (see `.gitignore`), and an installer that contains them should not be distributed publicly. Without the files, Claws builds and runs normally. It uses Legacy UI Display if it is installed in Windows, and otherwise falls back to **Segoe UI Variable**. Public release builds are made without the font files. **Settings → Appearance → Font** shows which one is in use.
+> Salted Flutters Polaris is derived from Legacy UI: it shares Legacy UI's metrics and OpenType features. Apple's licence for Legacy UI only covers creating mock-ups for Apple platforms, so the source files and the fonts built from them are **not committed** (see `.gitignore`), and an installer that contains them should not be distributed publicly. Without the files, Claws builds and runs normally, using either font if it is installed in Windows and otherwise **Segoe UI Variable**. Public release builds are made without the font files. **Settings → Appearance → Font** shows which one is in use.
 
 ## Building from source
 

@@ -1,6 +1,6 @@
 [package]
 name = "claws"
-version = "1.0.2"
+version = "1.0.3"
 description = "Local video downloader with a liquid-glass interface"
 edition = "2021"
 rust-version = "1.85"
@@ -41,3 +41,4 @@ strip = true
 
 [target."cfg(windows)".dependencies]
 windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Controls", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }
+
