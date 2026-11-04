@@ -10,7 +10,7 @@ This section supersedes the historical font, packaging and publication instructi
 - **Salted Flutters Polaris** is the interface font. Four WOFF2 weights (400, 500, 600, 700) and an unmodified `LICENSE.txt` ship in `public/fonts/`. Vite copies these to `dist/fonts/`, which Tauri embeds in the application. A fresh checkout needs no separately installed font or Python to build.
 - The four matching OTF sources and their license are project assets in `assets/fonts/polaris/`. To regenerate the WOFF2 files: install `fonttools[woff]`, then run `python scripts/build-fonts.py`. Missing sources fail explicitly. The separate local `Salted-Flutters-Polaris/` clone is optional and ignored.
 - The stylesheet and Settings use Polaris; the Settings download button opens https://github.com/ppolkadot/Salted-Flutters-Polaris. There is no optional proprietary font build path.
-- Published release: https://github.com/ppolkadot/Claws/releases/tag/v1.0.3, targeting `73288bbdeac24ec3aa2c76126ecd33ca050422dc`. Installer: `Claws_1.0.3_x64-setup.exe`, 2,803,813 bytes, SHA-256 `5e6a59650246d8837a66f058101c82acbd6af5914b0f3a966d4445e0f4c14183`. GitHub's uploaded asset digest matched the local installer.
+- Published release: https://github.com/ppolkadot/Claws/releases/tag/v1.0.3, targeting `e4f66695c3e618bceaac23e4bdbf6ddc3eb20807`. Installer: `Claws_1.0.3_x64-setup.exe`, 2,803,813 bytes, SHA-256 `5e6a59650246d8837a66f058101c82acbd6af5914b0f3a966d4445e0f4c14183`. GitHub's uploaded asset digest matched the local installer.
 - The owner authorized publishing that release with existing access. No collaborator or permission changes were made. The cleanup described here is subsequent source work. A local installer was rebuilt successfully with it using npm run tauri build: 2804600 bytes, SHA-256 2f5caa5843506f362484a4ec1aff0db9088b830a8e709755d618a9bda739fe8d. The published GitHub release still contains the earlier installer.
 
 ### 1.0.4 release
@@ -19,13 +19,17 @@ The owner authorized reviewing, committing and publishing the latest cleanup as 
 
 Validation: all 35 backend tests passed; cargo clippy --locked -- -D warnings passed; an export containing only staged files passed npm ci, npm run build and byte-identical font regeneration. Font attribution and unmodified license copies were verified, and npm run tauri build produced the NSIS installer successfully. No fresh Windows installation or interactive download was exercised during this release check. The source Bold font reports weight 600 internally; the CSS face explicitly assigns it 700, and the build preserves upstream metadata.
 
+### Published history cleanup
+
+At the owner's request, main and all four release tags were rewritten to remove obsolete interface font references from historical files. Commit IDs changed; historical references in current documentation now use the rewritten IDs. Existing clones should be replaced with a fresh checkout to avoid restoring the old history. A recovery bundle is stored outside the project. Release installer files and their checksums are unchanged.
+
 ## Historical handoff (superseded where noted above)
 
 ## 1. What this is
 
 Claws is a local Windows video downloader. You paste a link from almost any site, pick a quality, and the file is saved to disk. It is a **Rust (Tauri 2) app with a plain TypeScript + CSS frontend** that drives **yt-dlp** (site coverage) and **ffmpeg** (merging and conversion). The interface imitates Apple's design as closely as possible, with real desktop glass behind the window.
 
-Repo: `https://github.com/ppolkadot/Claws`, branch `main`. The first build was committed as `9e08d6b Claws 1.0.0`; the fix passes and features in sections 14 and 15 shipped as **1.0.1**, and the security pass in section 16 is **1.0.2**, the version at that time (`package.json`, `package-lock.json`, `Cargo.toml`, `Cargo.lock`, `tauri.conf.json`). See section 10.
+Repo: `https://github.com/ppolkadot/Claws`, branch `main`. The first build was committed as `97c93ed Claws 1.0.0`; the fix passes and features in sections 14 and 15 shipped as **1.0.1**, and the security pass in section 16 is **1.0.2**, the version at that time (`package.json`, `package-lock.json`, `Cargo.toml`, `Cargo.lock`, `tauri.conf.json`). See section 10.
 
 ## 2. What the owner asked for (binding requirements)
 
