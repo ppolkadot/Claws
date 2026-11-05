@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 
+use crate::bounded_io;
 use crate::disk_budget;
 use crate::download_files::{self, Publication, WorkspaceRef};
 use crate::download_policy::{self, FailureKind, JobExecution, Source};
@@ -1001,26 +1002,28 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
     let processing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stderr_processing = processing.clone();
     let stderr_task = tauri::async_runtime::spawn(async move {
+        // Only the last part is kept: the final error is what explains a failure.
         let mut text = String::new();
         let Some(stream) = stderr else { return text };
         let mut reader = BufReader::new(stream);
         let mut buf = Vec::new();
-        loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let line = String::from_utf8_lossy(&buf);
-                    let line = line.trim_end();
-                    if let Some(rest) = line.strip_prefix(TAG_POST) {
-                        if rest.starts_with("started") {
-                            stderr_processing.store(true, Ordering::SeqCst);
-                            mark_processing(&stderr_app, &stderr_id);
-                        }
-                    } else if text.len() < 64 * 1024 {
-                        text.push_str(line);
-                        text.push('\n');
+        while bounded_io::read_line_capped(&mut reader, &mut buf, bounded_io::MAX_LINE).await.is_some() {
+            let line = String::from_utf8_lossy(&buf);
+            let line = line.trim_end();
+            if let Some(rest) = line.strip_prefix(TAG_POST) {
+                if rest.starts_with("started") {
+                    stderr_processing.store(true, Ordering::SeqCst);
+                    mark_processing(&stderr_app, &stderr_id);
+                }
+            } else {
+                text.push_str(line);
+                text.push('\n');
+                if text.len() > bounded_io::DIAGNOSTIC_TAIL * 2 {
+                    let mut cut = text.len() - bounded_io::DIAGNOSTIC_TAIL;
+                    while !text.is_char_boundary(cut) {
+                        cut += 1;
                     }
+                    text.drain(..cut);
                 }
             }
         }
@@ -1044,10 +1047,10 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
         let mut reader = BufReader::new(stdout);
         let mut buf = Vec::new();
         loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
+            // An overlong line is cut (and the rest drained), never buffered whole.
+            match bounded_io::read_line_capped(&mut reader, &mut buf, bounded_io::MAX_LINE).await {
+                None => break,
+                Some(_) => {
                     let line = String::from_utf8_lossy(&buf);
                     let line = line.trim_end();
                     handle_line(app, id, line, &mut progress, &mut last_emit, &mut outcome);
