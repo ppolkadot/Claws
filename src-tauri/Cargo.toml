@@ -4,10 +4,24 @@ version = "1.0.4"
 description = "Local video downloader with a liquid-glass interface"
 edition = "2021"
 rust-version = "1.85"
+default-run = "claws"
 
 [lib]
 name = "claws_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# Builds the yt-dlp stand-in used by process tests. Never part of a release build.
+test-tools = []
+
+[[bin]]
+name = "claws"
+path = "src/main.rs"
+
+[[bin]]
+name = "claws-fixture-tool"
+path = "tools/claws-fixture-tool.rs"
+required-features = ["test-tools"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
