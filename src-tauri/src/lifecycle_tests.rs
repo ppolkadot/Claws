@@ -220,6 +220,115 @@ fn nothing_is_deleted_or_forgotten_without_a_saved_cleanup_record() {
     assert!(t.job(&id).is_none());
 }
 
+// --- B1: trying a cancelled job again --------------------------------------------------
+
+#[test]
+fn a_retried_cancel_survives_a_restart_with_its_new_bytes() {
+    let Some(t) = TestApp::new("b1-restart") else { return };
+    let id = t.enqueue("https://fixture.invalid/hang/echo");
+    let first = t.wait_job(&id, running, "the first attempt").workspace.unwrap().path;
+    downloader::cancel(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Cancelled, "the cancel");
+    wait_until("the cancelled attempt's files to go", || !first.exists());
+
+    downloader::resume(t.handle(), &id);
+    let job = t.wait_job(&id, running, "the retry");
+    assert!(!job.cancel_requested, "the retry still carries the old cancel");
+    let second = job.workspace.unwrap().path;
+    assert_eq!(part_file(&second), b"partial");
+
+    // Closing mid-retry and starting again keeps the retry, paused, with its bytes.
+    let t = t.restart();
+    let job = t.job(&id).expect("the retry is still in the queue");
+    assert_eq!(job.status, JobStatus::Paused);
+    std::thread::sleep(Duration::from_millis(800)); // startup cleanup has run
+    assert_eq!(part_file(&second), b"partial", "startup deleted the retry's bytes");
+    downloader::resume(t.handle(), &id);
+    t.wait_job(&id, |j| running(j) && j.downloaded_bytes == Some(14), "the resumed retry");
+    assert_eq!(part_file(&second), b"partialpartial", "the retry was restarted instead of resumed");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_retry_while_old_files_are_locked_keeps_both_safe() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let Some(t) = TestApp::new("b1-locked") else { return };
+    let id = t.enqueue("https://fixture.invalid/hang/foxtrot");
+    let first = t.wait_job(&id, running, "the first attempt").workspace.unwrap().path;
+    // Something else (a preview, a scanner) holds a file of the attempt being cancelled.
+    let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(first.join("foxtrot.f18.mp4.part")).unwrap();
+    downloader::cancel(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Cancelled, "the cancel");
+
+    // Try Again right away: the new attempt gets its own folder.
+    downloader::resume(t.handle(), &id);
+    let second = t.wait_job(&id, running, "the retry").workspace.unwrap().path;
+    assert_ne!(first, second);
+    std::thread::sleep(Duration::from_millis(2500)); // the old cleanup gives up for now
+    assert!(first.exists(), "the locked folder cannot have gone");
+    assert!(t.state().pending_cleanup.lock().unwrap().iter().any(|p| p.workspace.as_ref().is_some_and(|w| w.path == first)));
+
+    // Once released, the retried cleanup removes the old attempt and only that.
+    drop(lock);
+    downloader::retry_pending_cleanup(t.handle());
+    assert!(!first.exists());
+    assert_eq!(part_file(&second), b"partial");
+    assert!(t.state().pending_cleanup.lock().unwrap().is_empty());
+}
+
+#[test]
+fn repeated_cancel_and_retry_start_one_new_attempt() {
+    let Some(t) = TestApp::new("b1-repeat") else { return };
+    let id = t.enqueue("https://fixture.invalid/hang/golf");
+    t.wait_job(&id, running, "the first attempt");
+    downloader::cancel(t.handle(), &id);
+    downloader::cancel(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Cancelled, "the cancel");
+    downloader::resume(t.handle(), &id);
+    downloader::resume(t.handle(), &id);
+    let job = t.wait_job(&id, running, "the retry");
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(job.attempt, 1);
+    assert_eq!(t.starts().len(), 2, "{:?}", t.starts());
+    let folders = crate::download_tests::names(&t.out.join(crate::download_files::WORK_DIR));
+    assert_eq!(folders.len(), 1, "only the retry's folder remains: {folders:?}");
+}
+
+#[test]
+fn a_job_removed_during_its_retry_stays_gone_and_leaves_nothing() {
+    let Some(t) = TestApp::new("b1-remove") else { return };
+    let id = t.enqueue("https://fixture.invalid/hang/hotel");
+    t.wait_job(&id, running, "the first attempt");
+    downloader::cancel(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Cancelled, "the cancel");
+    downloader::resume(t.handle(), &id);
+    downloader::remove(t.handle(), &id).unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(t.job(&id).is_none(), "a removed job came back");
+    let work = t.out.join(crate::download_files::WORK_DIR);
+    wait_until("every attempt's folder to go", || !work.exists() || crate::download_tests::names(&work).is_empty());
+    assert!(t.saved_queue().iter().all(|j| j.id != id));
+}
+
+#[test]
+fn shutdown_right_after_a_retry_keeps_it_resumable() {
+    let Some(t) = TestApp::new("b1-shutdown") else { return };
+    let id = t.enqueue("https://fixture.invalid/hang/india");
+    t.wait_job(&id, running, "the first attempt");
+    downloader::cancel(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Cancelled, "the cancel");
+    downloader::resume(t.handle(), &id);
+    let t = t.restart();
+    // Either the retry had started (and comes back paused) or it had not been saved yet
+    // (and the job is simply gone with its cancel); never a cancel that deletes a retry.
+    if let Some(job) = t.job(&id) {
+        assert_eq!(job.status, JobStatus::Paused);
+        assert!(!job.cancel_requested);
+        downloader::resume(t.handle(), &id);
+        t.wait_job(&id, running, "the retry after restart");
+    }
+}
+
 #[test]
 fn shutdown_that_cannot_save_keeps_cancelled_files() {
     let Some(t) = TestApp::new("b4-shutdown") else { return };
