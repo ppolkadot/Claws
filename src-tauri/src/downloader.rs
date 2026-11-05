@@ -1138,6 +1138,25 @@ async fn run_prepared(
     let stderr_id = id.to_string();
     let processing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stderr_processing = processing.clone();
+    // Why the run was stopped early (not enough space), from either stream's reader.
+    let stopped: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
+    let stderr_stopped = stopped.clone();
+    let stderr_workspace = workspace.path.clone();
+    let stderr_pid = child.id();
+    // While the job runs, what reached its work folder stops being reserved.
+    let ledger_ticker = {
+        let app = app.clone();
+        let id = id.to_string();
+        let path = workspace.path.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(LEDGER_REFRESH).await;
+                let sample = path.clone();
+                let Ok(on_disk) = tokio::task::spawn_blocking(move || disk_budget::bytes_in(&sample)).await else { break };
+                app.state::<AppState>().disk_ledger.lock().unwrap().update(&id, on_disk);
+            }
+        })
+    };
     let stderr_task = tauri::async_runtime::spawn(async move {
         // Only the last part is kept: the final error is what explains a failure.
         let mut text = String::new();
@@ -1151,6 +1170,13 @@ async fn run_prepared(
                 if rest.starts_with("started") {
                     stderr_processing.store(true, Ordering::SeqCst);
                     mark_processing(&stderr_app, &stderr_id);
+                    // Each processing step writes a whole new file: it must still fit.
+                    if let Some(reason) = recheck_before_processing(&stderr_app, &stderr_id, &stderr_workspace).await {
+                        if let Some(pid) = stderr_pid {
+                            kill_tree(pid, false);
+                        }
+                        stderr_stopped.lock().unwrap().get_or_insert(reason);
+                    }
                 }
             } else {
                 text.push_str(line);
@@ -1181,7 +1207,6 @@ async fn run_prepared(
     let mut last_emit = Instant::now() - Duration::from_secs(1);
     let mut budget = Budget::new(job, execution, &workspace.path);
     let pid = child.id();
-    let mut stopped: Option<String> = None;
 
     if let Some(stdout) = child.stdout.take() {
         let mut reader = BufReader::new(stdout);
@@ -1194,14 +1219,14 @@ async fn run_prepared(
                     let line = String::from_utf8_lossy(&buf);
                     let line = line.trim_end();
                     handle_line(app, id, line, &mut progress, &mut last_emit, &mut outcome);
-                    if stopped.is_none() {
+                    if stopped.lock().unwrap().is_none() {
                         if let Some(reason) = budget.after_line(app, id, line, &progress).await {
                             // Not enough space: stop before the transfer (or before the
                             // disk fills), keeping what is already downloaded.
                             if let Some(pid) = pid {
                                 kill_tree(pid, false);
                             }
-                            stopped = Some(reason);
+                            stopped.lock().unwrap().get_or_insert(reason);
                         }
                     }
                 }
@@ -1210,6 +1235,7 @@ async fn run_prepared(
     }
 
     let status = child.wait().await;
+    ledger_ticker.abort();
     // Forget the pid before `child` drops and Windows can reuse it.
     if let Some(entry) = state.running.lock().unwrap().get_mut(id) {
         entry.pid = None;
@@ -1232,6 +1258,7 @@ async fn run_prepared(
         }
         Err(e) => outcome.error = Some(format!("yt-dlp stopped unexpectedly: {e}")),
     }
+    let stopped = stopped.lock().unwrap().take();
     if let Some(reason) = stopped {
         outcome.success = false;
         outcome.kind = Some(FailureKind::LocalIo);
@@ -1243,7 +1270,6 @@ async fn run_prepared(
 /// Disk-space checks for one run: once the selection (and so the sizes) is known, the
 /// estimated peak is checked and reserved; when a size is unknown, free space is watched.
 struct Budget {
-    job_id: String,
     workspace: std::path::PathBuf,
     volume: String,
     mode: String,
@@ -1258,7 +1284,6 @@ struct Budget {
 impl Budget {
     fn new(job: &Job, execution: &JobExecution, workspace: &Path) -> Self {
         Self {
-            job_id: job.id.clone(),
             workspace: workspace.to_path_buf(),
             volume: disk_budget::volume_key(workspace),
             mode: job.options.mode.clone(),
@@ -1293,27 +1318,18 @@ impl Budget {
                 return None;
             };
             let workspace = self.workspace.clone();
-            let (on_disk, free) = tokio::task::spawn_blocking(move || (disk_budget::bytes_in(&workspace), disk_budget::free_bytes(&workspace)))
-                .await
-                .ok()?;
+            let on_disk = tokio::task::spawn_blocking(move || disk_budget::bytes_in(&workspace)).await.ok()?;
+            let state = app.state::<AppState>();
+            // Free space is read under the ledger's lock, so no other admission or update
+            // lands between the reading and the decision.
+            let mut ledger = state.disk_ledger.lock().unwrap();
             // An unreadable volume is not evidence of a shortfall: watch instead.
-            let Ok(free) = free else {
+            let Ok(free) = (state.free_space)(&self.workspace) else {
                 self.watching = true;
                 return None;
             };
-            let additional = peak.saturating_sub(on_disk);
-            let state = app.state::<AppState>();
-            let mut reservations = state.disk_reservations.lock().unwrap();
-            let others: u64 = reservations
-                .iter()
-                .filter(|(job, (volume, _))| **job != self.job_id && *volume == self.volume)
-                .map(|(_, (_, bytes))| *bytes)
-                .sum();
-            return match disk_budget::check(additional, free, others) {
-                Ok(()) => {
-                    reservations.insert(id.to_string(), (self.volume.clone(), additional + disk_budget::margin(additional)));
-                    None
-                }
+            return match ledger.admit(id, &self.volume, peak, on_disk, free) {
+                Ok(()) => None,
                 Err(short) => Some(format!(
                     "Not enough free space on {} for this download. It needs about {} more (estimated, including a safety margin) and about {} is available. Free up space, then press Try Again; what was downloaded is kept.",
                     self.volume.to_uppercase(),
@@ -1325,7 +1341,8 @@ impl Budget {
         if self.watching && line.starts_with(TAG_PROGRESS) && self.last_watch.elapsed() >= Duration::from_secs(5) {
             self.last_watch = Instant::now();
             let workspace = self.workspace.clone();
-            let free = tokio::task::spawn_blocking(move || disk_budget::free_bytes(&workspace)).await.ok()?.ok()?;
+            let app = app.clone();
+            let free = tokio::task::spawn_blocking(move || (app.state::<AppState>().free_space)(&workspace)).await.ok()?.ok()?;
             if free < disk_budget::WATCH_FLOOR {
                 return Some(format!(
                     "{} is almost full ({} free), so the download was stopped before the disk filled up. Free up space, then press Try Again; what was downloaded is kept.",
@@ -1336,6 +1353,27 @@ impl Budget {
         }
         None
     }
+}
+
+/// How often a running job's work folder is measured to shrink its reservation.
+const LEDGER_REFRESH: Duration = Duration::from_secs(2);
+
+/// Before a whole-file processing step: refreshes the job's reservation from its work
+/// folder and returns a reason to stop if what it still needs no longer fits.
+async fn recheck_before_processing(app: &AppHandle, id: &str, workspace: &Path) -> Option<String> {
+    let sample = workspace.to_path_buf();
+    let on_disk = tokio::task::spawn_blocking(move || disk_budget::bytes_in(&sample)).await.ok()?;
+    let state = app.state::<AppState>();
+    let mut ledger = state.disk_ledger.lock().unwrap();
+    ledger.update(id, on_disk);
+    let free = (state.free_space)(workspace).ok()?;
+    let short = ledger.recheck(id, free).err()?;
+    Some(format!(
+        "Not enough free space on {} to finish processing this download. It needs about {} more (estimated, including a safety margin) and about {} is available. Free up space, then press Try Again; the downloaded streams are kept.",
+        disk_budget::volume_key(workspace).to_uppercase(),
+        human_bytes(short.required),
+        human_bytes(short.available),
+    ))
 }
 
 fn human_bytes(bytes: u64) -> String {
@@ -1568,6 +1606,10 @@ async fn run_job(app: AppHandle, id: String) {
         }
     }
 
+    // The process is gone, so its files stop growing (publication only moves them on the
+    // same volume): the claim goes before the job is settled and could be retried.
+    state.disk_ledger.lock().unwrap().release(&id);
+
     // Success wins over a pause or cancel that arrives now: the file is published.
     if outcome.success {
         update_job(&app, &id, |j| {
@@ -1581,7 +1623,6 @@ async fn run_job(app: AppHandle, id: String) {
     }
 
     finish(&app, &id, outcome).await;
-    state.disk_reservations.lock().unwrap().remove(&id);
     // Free the job before pumping, so a resume that arrived meanwhile can start it.
     state.live_jobs.lock().unwrap().remove(&id);
     pump(&app);
