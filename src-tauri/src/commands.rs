@@ -115,6 +115,8 @@ pub fn save_settings(
     state: State<'_, AppState>,
     mut settings: Settings,
 ) -> Result<SavedSettings> {
+    // The interface always edits current-format settings.
+    settings.schema_version = crate::settings::SETTINGS_SCHEMA;
     settings.validate()?;
     // Disk and memory under one lock, so two saves cannot leave them disagreeing.
     store::save_then(&state.settings_path(), &settings, || {

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Mutex;
 
-use crate::downloader::{Job, Running};
+use crate::downloader::{Job, PendingCleanup, Running};
 use crate::history::HistoryItem;
 use crate::probe::ProbeResult;
 use crate::settings::Settings;
@@ -12,7 +12,8 @@ use crate::settings::Settings;
 /// sections and never across an `.await`.
 ///
 /// Lock order, outermost first: `store`'s write lock, `running`, `jobs`, `live_jobs`.
-/// `settings`, `history`, `probes` and `recent_probes` are leaf locks and are never held
+/// `settings`, `history`, `probes`, `recent_probes`, `pending_cleanup` and `destinations`
+/// are leaf locks and are never held
 /// while another one is taken.
 pub struct AppState {
     pub data_dir: PathBuf,
@@ -40,6 +41,11 @@ pub struct AppState {
     pub recent_probes: Mutex<Vec<(String, ProbeResult)>>,
     /// Launched by "Open at login": stay in the notification area until asked.
     pub start_hidden: AtomicBool,
+    /// Cancelled jobs' files that could not be deleted yet (still in use). Leaf lock.
+    pub pending_cleanup: Mutex<Vec<PendingCleanup>>,
+    /// Destinations being published right now (lower-cased), so two jobs never move
+    /// files to the same name at once. Leaf lock.
+    pub destinations: Mutex<HashSet<String>>,
 }
 
 impl AppState {
@@ -57,6 +63,9 @@ impl AppState {
     }
     pub fn bin_dir(&self) -> PathBuf {
         self.data_dir.join("bin")
+    }
+    pub fn cleanup_path(&self) -> PathBuf {
+        self.data_dir.join("cleanup.json")
     }
     pub fn probe_cache_dir(&self) -> PathBuf {
         self.data_dir.join("cache").join("probe")

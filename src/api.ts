@@ -5,7 +5,11 @@ export type Theme = "system" | "light" | "dark";
 export type Backdrop = "glass" | "acrylic" | "mica" | "tabbed" | "none";
 export type CookieKind = "none" | "browser" | "file";
 
+export type AudioSelection = "best" | "preferMatching";
+
 export interface Settings {
+  /** Format version of these settings; the backend migrates older ones. */
+  schemaVersion: number;
   outputDir: string;
   filenameTemplate: string;
   cookieSource: { kind: CookieKind; value: string };
@@ -19,6 +23,8 @@ export interface Settings {
   /** Closing the window leaves Claws in the notification area. */
   keepRunning: boolean;
   openAtLogin: boolean;
+  /** Audio-only downloads: prefer a stream already in the chosen format. */
+  audioSelection: AudioSelection;
 }
 
 export type QuickOpenShortcut = "ctrl+alt+d" | "ctrl+alt+space" | "ctrl+shift+space" | "off";
@@ -56,6 +62,21 @@ export interface Job {
   filePath: string | null;
   error: string | null;
   createdAt: number;
+  /** Settings bound when the job first started; later starts reuse them. */
+  execution?: JobExecution | null;
+  /** The job's private work folder. */
+  workspace?: { schemaVersion: number; path: string } | null;
+  cancelRequested?: boolean;
+}
+
+export interface JobExecution {
+  schemaVersion: number;
+  outputDir: string;
+  filenameTemplate: string;
+  embedMetadata: boolean;
+  audioSelection: AudioSelection;
+  fragmentConcurrency: number;
+  transport: "native" | "aria2c";
 }
 
 export interface HistoryItem {

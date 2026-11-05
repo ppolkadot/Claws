@@ -20,6 +20,7 @@ const now = Date.now();
 const defaults: DownloadOptions = { mode: "video", maxHeight: 1080, audioFormat: "mp3", subtitleLangs: [], autoSubs: false, embedSubs: false };
 
 const settings: Settings = {
+  schemaVersion: 2,
   outputDir: "C:\\Users\\Sample\\Downloads\\Claws",
   filenameTemplate: "%(title).150B [%(id)s].%(ext)s",
   cookieSource: { kind: "none", value: "" },
@@ -31,6 +32,7 @@ const settings: Settings = {
   quickOpenShortcut: "ctrl+alt+d",
   keepRunning: true,
   openAtLogin: false,
+  audioSelection: "preferMatching",
 };
 
 const job = (id: string, title: string, hues: [number, number], over: Partial<Job>): Job => ({
