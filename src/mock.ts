@@ -50,6 +50,7 @@ const job = (id: string, title: string, hues: [number, number], over: Partial<Jo
   filePath: null,
   error: null,
   createdAt: now,
+  revision: 1,
   ...over,
 });
 
@@ -144,9 +145,13 @@ export function installMock() {
         case "cached_link":
           return null;
         case "enqueue":
-          return (payload.items as EnqueueItem[]).map((item, i) =>
-            job(`n${Date.now()}${i}`, item.title, [200, 260], { createdAt: Date.now() + i }),
-          );
+          return {
+            schemaVersion: 1,
+            jobs: (payload.items as EnqueueItem[]).map((item, i) => {
+              const added = job(`n${Date.now()}${i}`, item.title, [200, 260], { createdAt: Date.now() + i });
+              return { schemaVersion: 1, jobId: added.id, revision: added.revision, job: added };
+            }),
+          };
         case "save_settings":
           return { settings: payload.settings, warning: null };
         default:

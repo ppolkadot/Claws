@@ -3,7 +3,7 @@ use tauri::{AppHandle, Manager, State, WebviewWindow};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::desktop;
-use crate::downloader::{self, DownloadOptions, EnqueueItem, Job};
+use crate::downloader::{self, DownloadOptions, EnqueueItem, Job, JobsAdded};
 use crate::links::{self, CachedLink};
 use crate::error::{AppError, Result};
 use crate::history::{self, HistoryItem};
@@ -67,7 +67,7 @@ pub fn enqueue(
     items: Vec<EnqueueItem>,
     options: DownloadOptions,
     source: Option<String>,
-) -> Result<Vec<Job>> {
+) -> Result<JobsAdded> {
     let jobs = downloader::enqueue(&app, items, options)?;
     if let Some(source) = source {
         links::remember_download(&app, &source);

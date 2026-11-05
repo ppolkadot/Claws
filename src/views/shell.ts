@@ -192,7 +192,7 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
     if (count > lastCount) pop(badge);
     lastCount = count;
   };
-  store.on("jobs", paintBadge);
+  store.on("jobStatus", paintBadge);
   paintBadge();
 
   const paintTools = () => {

@@ -133,6 +133,55 @@ pub struct Job {
     /// folder is deleted still ends in a cancelled job and a retried cleanup.
     #[serde(default)]
     pub cancel_requested: bool,
+    /// Bumped (under the jobs lock) on every observable change, so the interface can drop
+    /// events that arrive late or twice.
+    #[serde(default)]
+    pub revision: u64,
+}
+
+pub const EVENT_SCHEMA: u16 = 1;
+
+/// One job's state at a revision, as sent to the interface.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct JobEvent {
+    pub schema_version: u16,
+    pub job_id: String,
+    pub revision: u64,
+    pub job: Job,
+}
+
+impl JobEvent {
+    pub fn of(job: &Job) -> Self {
+        Self { schema_version: EVENT_SCHEMA, job_id: job.id.clone(), revision: job.revision, job: job.clone() }
+    }
+}
+
+/// Jobs added together (one enqueue), sent as one event and returned by `enqueue`.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct JobsAdded {
+    pub schema_version: u16,
+    pub jobs: Vec<JobEvent>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct JobRemoved<'a> {
+    schema_version: u16,
+    job_id: &'a str,
+    revision: u64,
+}
+
+/// The next job revision. Call with the jobs lock held, so revisions follow the order in
+/// which changes were made.
+fn next_revision(state: &AppState) -> u64 {
+    state.job_revision.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+fn emit_removed(app: &AppHandle, id: &str) {
+    let revision = next_revision(&app.state::<AppState>());
+    let _ = app.emit("job-removed", JobRemoved { schema_version: EVENT_SCHEMA, job_id: id, revision });
 }
 
 #[derive(Deserialize, Debug)]
@@ -176,7 +225,7 @@ impl Running {
 }
 
 fn emit_job(app: &AppHandle, job: &Job) {
-    let _ = app.emit("job-update", job);
+    let _ = app.emit("job-update", JobEvent::of(job));
 }
 
 /// The queue file's contents: everything not finished. Called by the queue writer with
@@ -221,6 +270,7 @@ fn update_job(app: &AppHandle, id: &str, change: impl FnOnce(&mut Job)) -> Optio
         let mut jobs = state.jobs.lock().unwrap();
         let job = jobs.iter_mut().find(|j| j.id == id)?;
         change(job);
+        job.revision = next_revision(&state);
         job.clone()
     };
     emit_job(app, &snapshot);
@@ -277,6 +327,9 @@ pub fn restore_queue(app: &AppHandle, saved: Vec<Job>) {
         }
     }
     let state = app.state::<AppState>();
+    // Revisions continue above anything saved, so the interface never sees one go back.
+    let highest = saved.iter().map(|j| j.revision).max().unwrap_or(0);
+    state.job_revision.store(highest, Ordering::SeqCst);
     *state.jobs.lock().unwrap() = saved;
     for job in &recovered {
         let known = state.history.lock().unwrap().iter().any(|h| h.id == job.id);
@@ -298,7 +351,7 @@ pub fn list(app: &AppHandle) -> Vec<Job> {
     app.state::<AppState>().jobs.lock().unwrap().clone()
 }
 
-pub fn enqueue(app: &AppHandle, items: Vec<EnqueueItem>, mut options: DownloadOptions) -> Result<Vec<Job>> {
+pub fn enqueue(app: &AppHandle, items: Vec<EnqueueItem>, mut options: DownloadOptions) -> Result<JobsAdded> {
     if app.state::<AppState>().shutting_down.load(Ordering::SeqCst) {
         return Err(AppError::msg("Claws is closing."));
     }
@@ -352,23 +405,26 @@ pub fn enqueue(app: &AppHandle, items: Vec<EnqueueItem>, mut options: DownloadOp
             execution: None,
             workspace: None,
             cancel_requested: false,
+            revision: 0,
         });
     }
     if created.is_empty() {
         return Err(AppError::msg("That is already in the queue with the same options."));
     }
 
-    app.state::<AppState>()
-        .jobs
-        .lock()
-        .unwrap()
-        .extend(created.iter().cloned());
-    for job in &created {
-        emit_job(app, job);
-    }
+    let added = {
+        let mut jobs = state.jobs.lock().unwrap();
+        for job in &mut created {
+            job.revision = next_revision(&state);
+        }
+        jobs.extend(created.iter().cloned());
+        JobsAdded { schema_version: EVENT_SCHEMA, jobs: created.iter().map(JobEvent::of).collect() }
+    };
+    // One event for the whole batch: a 500-item playlist is one structural change.
+    let _ = app.emit("jobs-added", &added);
     persist_queue(app);
     pump(app);
-    Ok(created)
+    Ok(added)
 }
 
 fn options_key(options: &DownloadOptions) -> String {
@@ -411,6 +467,7 @@ pub fn pump(app: &AppHandle) {
                     .map(|job| {
                         job.status = JobStatus::Downloading;
                         job.error = None;
+                        job.revision = next_revision(&state);
                         live.insert(job.id.clone());
                         job.clone()
                     })
@@ -676,7 +733,7 @@ pub fn remove(app: &AppHandle, id: &str) {
         register_cleanup(app, &leftovers);
     }
     state.jobs.lock().unwrap().retain(|j| j.id != id);
-    let _ = app.emit("job-removed", id);
+    emit_removed(app, id);
     persist_queue(app);
     if clean {
         spawn_cleanup(app, leftovers);
@@ -696,7 +753,7 @@ pub fn clear_finished(app: &AppHandle) {
         ids
     };
     for id in removed {
-        let _ = app.emit("job-removed", id);
+        emit_removed(app, &id);
     }
     persist_queue(app);
 }
@@ -1259,6 +1316,7 @@ async fn run_job(app: AppHandle, id: String) {
                 .find(|j| j.id == id && j.status.is_active())
                 .map(|j| {
                     j.status = JobStatus::Downloading;
+                    j.revision = next_revision(&state);
                     j.clone()
                 })
         };

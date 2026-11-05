@@ -3,17 +3,25 @@ import {
   errorMessage,
   type HistoryItem,
   type Job,
+  type JobEvent,
+  type JobRemoved,
+  type JobsAdded,
   type Settings,
   type ToolProgress,
   type ToolsStatus,
 } from "./api";
+import { JobTable } from "./queue-events";
 
 export type Route = "download" | "queue" | "library" | "settings";
 
 type Topic =
   | "route"
+  /** The list's structure changed: jobs were added or removed. */
   | "jobs"
+  /** One known job changed (detail: the job). */
   | "job"
+  /** A job's status changed, or jobs were added or removed: counts may differ. */
+  | "jobStatus"
   | "history"
   | "settings"
   /** A save was rejected and some fields went back to their saved values. */
@@ -47,7 +55,8 @@ const defaultSettings: Settings = {
 class Store {
   route: Route = "download";
   settings: Settings = defaultSettings;
-  jobs = new Map<string, Job>();
+  /** The download list, kept in creation order from revisioned events. */
+  readonly jobs = new JobTable<Job>();
   history: HistoryItem[] = [];
   tools: ToolsStatus = { ytdlp: null, ffmpeg: null, latestYtdlp: null, jsRuntime: null };
   toolProgress: Partial<Record<"ytdlp" | "ffmpeg", ToolProgress>> = {};
@@ -86,8 +95,18 @@ class Store {
     this.listeners.get(topic)?.forEach((listener) => listener(detail));
   }
 
+  /** In creation order. The same array until jobs are added or removed. */
   jobList(): Job[] {
-    return [...this.jobs.values()].sort((a, b) => a.createdAt - b.createdAt);
+    return this.jobs.list();
+  }
+
+  /** Finished or cancelled jobs, which Clear Finished would remove. */
+  finishedCount(): number {
+    let count = 0;
+    for (const job of this.jobs.values()) {
+      if (job.status === "completed" || job.status === "cancelled") count += 1;
+    }
+    return count;
   }
 
   activeCount(): number {
@@ -110,7 +129,7 @@ class Store {
     const data = await api.bootstrap();
     this.settings = data.settings;
     this.confirmed = data.settings;
-    this.jobs = new Map(data.jobs.map((job) => [job.id, job]));
+    this.jobs.load(data.jobs, (job) => job.revision ?? 0);
     this.history = data.history;
     return data.notices;
   }
@@ -126,15 +145,31 @@ class Store {
     }
   }
 
-  upsertJob(job: Job) {
-    this.jobs.set(job.id, job);
-    this.emit("job", job);
-    this.emit("jobs");
+  /** One job changed (a `job-update` event). Older or repeated revisions are ignored. */
+  updateJob(event: JobEvent<Job>) {
+    const change = this.jobs.apply(event);
+    if (change.kind === "ignored") return;
+    if (change.kind === "added") {
+      this.emit("jobs");
+      this.emit("jobStatus");
+    } else if (change.statusChanged) {
+      this.emit("jobStatus");
+    }
+    this.emit("job", event.job);
   }
 
-  removeJob(id: string) {
-    this.jobs.delete(id);
+  /** Jobs added together: the `jobs-added` event, and the enqueue reply (the same batch). */
+  addJobs(batch: JobsAdded<Job>) {
+    const result = this.jobs.applyBatch(batch);
+    if (result.added.length > 0) this.emit("jobs");
+    if (result.added.length > 0 || result.statusChanged) this.emit("jobStatus");
+    for (const id of result.updated) this.emit("job", this.jobs.get(id));
+  }
+
+  removeJob(event: JobRemoved) {
+    if (!this.jobs.remove(event)) return;
     this.emit("jobs");
+    this.emit("jobStatus");
   }
 
   async refreshHistory() {

@@ -139,8 +139,28 @@ export const mountQueue: MountView = (container, ctx) => {
   const rows = new Map<string, RowRefs>();
   const known = new Map<string, Job>();
   let mounted = false; // rows already there when the page opens appear without animating
+  let frame = 0;
+  let leaveTimer = 0;
+  // Dev builds expose counters for scripts/dev/queue-bench.mjs.
+  const stats = { structuralSyncs: 0, rowPaints: 0 };
+  if (import.meta.env.DEV) (window as unknown as { __clawsQueueStats: typeof stats }).__clawsQueueStats = stats;
 
+  const paint = (refs: RowRefs, job: Job) => {
+    stats.rowPaints += 1;
+    paintRow(refs, job, known.get(job.id));
+    known.set(job.id, job);
+  };
+
+  const paintClear = () => {
+    clearBtn.disabled = store.finishedCount() === 0;
+  };
+
+  // Adding or removing jobs. Runs at most once per frame however many arrive, touches only
+  // new and removed rows, and moves only rows that are out of place, so a row mid-animation
+  // is never re-inserted.
   const sync = () => {
+    frame = 0;
+    stats.structuralSyncs += 1;
     const jobs = store.jobList();
     const ids = new Set(jobs.map((j) => j.id));
     for (const [id, refs] of rows) {
@@ -150,19 +170,16 @@ export const mountQueue: MountView = (container, ctx) => {
         known.delete(id);
       }
     }
-    for (const job of jobs) {
-      let refs = rows.get(job.id);
-      if (!refs) {
-        refs = buildRow(job);
-        rows.set(job.id, refs);
-        list.appendChild(refs.el);
-        if (mounted) expandIn(refs.el);
-      }
-      paintRow(refs, job, known.get(job.id));
-      known.set(job.id, job);
+    const fresh = jobs.filter((job) => !rows.has(job.id));
+    // A playlist's worth of rows at once would be hundreds of springs: only small additions animate.
+    const animate = mounted && fresh.length <= 12;
+    for (const job of fresh) {
+      const refs = buildRow(job);
+      rows.set(job.id, refs);
+      paint(refs, job);
+      list.appendChild(refs.el);
+      if (animate) expandIn(refs.el);
     }
-    // Keep list order stable by creation time, moving only rows that are out of place
-    // so a row mid-animation is never re-inserted.
     jobs.forEach((job, index) => {
       const el = rows.get(job.id)!.el;
       const at = list.children[index];
@@ -172,24 +189,32 @@ export const mountQueue: MountView = (container, ctx) => {
     const leaving = list.children.length - jobs.length;
     list.hidden = jobs.length === 0 && leaving <= 0;
     empty.hidden = jobs.length > 0;
-    if (jobs.length === 0 && leaving > 0) window.setTimeout(sync, 360);
-    clearBtn.disabled = !jobs.some((j) => j.status === "completed" || j.status === "cancelled");
+    window.clearTimeout(leaveTimer);
+    if (jobs.length === 0 && leaving > 0) leaveTimer = window.setTimeout(scheduleSync, 360);
+    paintClear();
   };
 
+  const scheduleSync = () => {
+    if (!frame) frame = requestAnimationFrame(sync);
+  };
+
+  // One job changed: repaint its row only. A job without a row yet is drawn by the
+  // pending structural sync.
   const offJob = store.on("job", (detail) => {
     const job = detail as Job;
     const refs = rows.get(job.id);
-    if (!refs) return sync();
-    paintRow(refs, job, known.get(job.id));
-    known.set(job.id, job);
-    clearBtn.disabled = !store.jobList().some((j) => j.status === "completed" || j.status === "cancelled");
+    if (refs) paint(refs, job);
   });
-  const offJobs = store.on("jobs", sync);
+  const offJobs = store.on("jobs", scheduleSync);
+  const offStatus = store.on("jobStatus", paintClear);
   sync();
   mounted = true;
 
   return () => {
     offJob();
     offJobs();
+    offStatus();
+    cancelAnimationFrame(frame);
+    window.clearTimeout(leaveTimer);
   };
 };

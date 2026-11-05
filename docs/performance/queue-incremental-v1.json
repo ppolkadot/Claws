@@ -1,0 +1,198 @@
+[
+  {
+    "protocol": "v1",
+    "addedJobs": 1,
+    "activeTransfers": 1,
+    "renderedRows": 7,
+    "add": {
+      "scriptMs": 0.8,
+      "layoutMs": 1,
+      "styleMs": 0.7,
+      "longTasks": 0,
+      "counters": {
+        "structuralSyncs": 1,
+        "rowPaints": 1
+      }
+    },
+    "progress": {
+      "events": 40,
+      "scriptMs": 1.1,
+      "layoutMs": 15.2,
+      "styleMs": 18.9,
+      "longTasks": 0,
+      "counters": {
+        "structuralSyncs": 0,
+        "rowPaints": 40
+      },
+      "scriptMsPerEvent": 0.026
+    }
+  },
+  {
+    "protocol": "v1",
+    "addedJobs": 100,
+    "activeTransfers": 1,
+    "renderedRows": 106,
+    "add": {
+      "scriptMs": 10.1,
+      "layoutMs": 10.2,
+      "styleMs": 9.7,
+      "longTasks": 0,
+      "counters": {
+        "structuralSyncs": 1,
+        "rowPaints": 100
+      }
+    },
+    "progress": {
+      "events": 40,
+      "scriptMs": 0.9,
+      "layoutMs": 19,
+      "styleMs": 16.9,
+      "longTasks": 0,
+      "counters": {
+        "structuralSyncs": 0,
+        "rowPaints": 40
+      },
+      "scriptMsPerEvent": 0.022
+    }
+  },
+  {
+    "protocol": "v1",
+    "addedJobs": 100,
+    "activeTransfers": 3,
+    "renderedRows": 106,
+    "add": {
+      "scriptMs": 10,
+      "layoutMs": 10.8,
+      "styleMs": 9.1,
+      "longTasks": 0,
+      "counters": {
+        "structuralSyncs": 1,
+        "rowPaints": 100
+      }
+    },
+    "progress": {
+      "events": 120,
+      "scriptMs": 0.5,
+      "layoutMs": 25.8,
+      "styleMs": 23.4,
+      "longTasks": 0,
+      "counters": {
+        "structuralSyncs": 0,
+        "rowPaints": 120
+      },
+      "scriptMsPerEvent": 0.005
+    }
+  },
+  {
+    "protocol": "v1",
+    "addedJobs": 100,
+    "activeTransfers": 8,
+    "renderedRows": 106,
+    "add": {
+      "scriptMs": 7.4,
+      "layoutMs": 11.6,
+      "styleMs": 6.3,
+      "longTasks": 0,
+      "counters": {
+        "structuralSyncs": 1,
+        "rowPaints": 100
+      }
+    },
+    "progress": {
+      "events": 320,
+      "scriptMs": 4.8,
+      "layoutMs": 22.8,
+      "styleMs": 25.3,
+      "longTasks": 0,
+      "counters": {
+        "structuralSyncs": 0,
+        "rowPaints": 320
+      },
+      "scriptMsPerEvent": 0.015
+    }
+  },
+  {
+    "protocol": "v1",
+    "addedJobs": 500,
+    "activeTransfers": 1,
+    "renderedRows": 506,
+    "add": {
+      "scriptMs": 45.8,
+      "layoutMs": 36.2,
+      "styleMs": 37.9,
+      "longTasks": 1,
+      "counters": {
+        "structuralSyncs": 1,
+        "rowPaints": 500
+      }
+    },
+    "progress": {
+      "events": 40,
+      "scriptMs": 1.5,
+      "layoutMs": 32.6,
+      "styleMs": 13.9,
+      "longTasks": 0,
+      "counters": {
+        "structuralSyncs": 0,
+        "rowPaints": 40
+      },
+      "scriptMsPerEvent": 0.037
+    }
+  },
+  {
+    "protocol": "v1",
+    "addedJobs": 500,
+    "activeTransfers": 3,
+    "renderedRows": 506,
+    "add": {
+      "scriptMs": 38.7,
+      "layoutMs": 45.9,
+      "styleMs": 45.2,
+      "longTasks": 1,
+      "counters": {
+        "structuralSyncs": 1,
+        "rowPaints": 500
+      }
+    },
+    "progress": {
+      "events": 120,
+      "scriptMs": 0.8,
+      "layoutMs": 45.4,
+      "styleMs": 23.1,
+      "longTasks": 0,
+      "counters": {
+        "structuralSyncs": 0,
+        "rowPaints": 120
+      },
+      "scriptMsPerEvent": 0.007
+    }
+  },
+  {
+    "protocol": "v1",
+    "addedJobs": 500,
+    "activeTransfers": 8,
+    "renderedRows": 506,
+    "add": {
+      "scriptMs": 41.9,
+      "layoutMs": 42,
+      "styleMs": 30.9,
+      "longTasks": 1,
+      "counters": {
+        "structuralSyncs": 1,
+        "rowPaints": 500
+      }
+    },
+    "progress": {
+      "events": 320,
+      "scriptMs": 0.6,
+      "layoutMs": 35.9,
+      "styleMs": 27.5,
+      "longTasks": 0,
+      "counters": {
+        "structuralSyncs": 0,
+        "rowPaints": 320
+      },
+      "scriptMsPerEvent": 0.002
+    }
+  }
+]

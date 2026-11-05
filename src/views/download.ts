@@ -276,8 +276,10 @@ export const mountDownload: MountView = (container, ctx) => {
           ];
     try {
       // The looked-up link, so its details are saved in the link cache.
-      const jobs = await api.enqueue(items, currentOptions(), lastUrl || result.url);
-      jobs.forEach((job) => store.upsertJob(job));
+      const added = await api.enqueue(items, currentOptions(), lastUrl || result.url);
+      // Usually already applied from the jobs-added event; the revisions make this a no-op.
+      store.addJobs(added);
+      const jobs = added.jobs;
       if (trigger) {
         trigger.classList.add("confirmed");
         replace(trigger, icon("check", 16), h("span", { text: jobs.length === 1 ? "Added" : `${jobs.length} Added` }));
