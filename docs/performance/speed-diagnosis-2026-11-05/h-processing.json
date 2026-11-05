@@ -1,0 +1,169 @@
+{
+  "complete": false,
+  "note": "Synthetic media through ffmpeg directly, with the stream-copy arguments yt-dlp's merger and metadata steps use; not a full Claws run.",
+  "sourceCommit": "5167328af040ebcaa5f3e7a46a27c62380ec12dd",
+  "toolVersions": {
+    "ffmpeg": "ffmpeg version N-128416-g5048d707a3-20261104 Copyright (c) 2000-2026 the FFmpeg developers"
+  },
+  "environment": {
+    "os": "win32 10.0.26200",
+    "cpu": "AMD Ryzen 7 5700X 8-Core Processor             ",
+    "logicalCpus": 16,
+    "ramBytes": 34301759488,
+    "storage": "temp folder on C: (SSD; exact device unrecorded)"
+  },
+  "inputs": {
+    "videoBytes": 4103119431,
+    "videoSeconds": 60,
+    "audioBytes": 1211888,
+    "longAudioBytes": 49745495,
+    "longAudioSeconds": 3600
+  },
+  "outputs": {
+    "mergedBytes": 4104357165,
+    "taggedBytes": 4104357286,
+    "combinedBytes": 4104357286,
+    "mp3Bytes": 67828941,
+    "opusCopyBytes": 48918838
+  },
+  "parity": {
+    "separate": {
+      "streams": [
+        "video:h264",
+        "audio:aac"
+      ],
+      "durationSeconds": 60,
+      "title": "Benchmark title"
+    },
+    "combined": {
+      "streams": [
+        "video:h264",
+        "audio:aac"
+      ],
+      "durationSeconds": 60,
+      "title": "Benchmark title"
+    },
+    "sameStreams": true,
+    "sameDuration": true,
+    "sameTitle": true,
+    "mp3": {
+      "streams": [
+        "audio:mp3"
+      ],
+      "durationSeconds": 3600,
+      "title": null
+    },
+    "opusCopy": {
+      "streams": [
+        "audio:opus"
+      ],
+      "durationSeconds": 3600.01,
+      "title": null
+    }
+  },
+  "summary": {
+    "merge": {
+      "medianSeconds": 19.059881400000013,
+      "spreadSeconds": 31.358854300000008,
+      "medianCpuSeconds": 0,
+      "runs": [
+        {
+          "seconds": 39.63558230000001,
+          "cpuSeconds": null
+        },
+        {
+          "seconds": 19.059881400000013,
+          "cpuSeconds": null
+        },
+        {
+          "seconds": 8.276728000000002,
+          "cpuSeconds": null
+        }
+      ]
+    },
+    "metadata": {
+      "medianSeconds": 34.442126099999996,
+      "spreadSeconds": 38.12163510000001,
+      "medianCpuSeconds": 0,
+      "runs": [
+        {
+          "seconds": 34.442126099999996,
+          "cpuSeconds": null
+        },
+        {
+          "seconds": 19.148635100000014,
+          "cpuSeconds": null
+        },
+        {
+          "seconds": 57.27027020000003,
+          "cpuSeconds": null
+        }
+      ]
+    },
+    "merge+metadata": {
+      "medianSeconds": 34.598112699999994,
+      "spreadSeconds": 45.89327110000007,
+      "medianCpuSeconds": 0,
+      "runs": [
+        {
+          "seconds": 54.77059010000003,
+          "cpuSeconds": null
+        },
+        {
+          "seconds": 34.598112699999994,
+          "cpuSeconds": null
+        },
+        {
+          "seconds": 8.877318999999959,
+          "cpuSeconds": null
+        }
+      ]
+    },
+    "audio-mp3": {
+      "medianSeconds": 30.168472500000004,
+      "spreadSeconds": 8.538196700000032,
+      "medianCpuSeconds": 0,
+      "runs": [
+        {
+          "seconds": 30.168472500000004,
+          "cpuSeconds": null
+        },
+        {
+          "seconds": 36.7892316,
+          "cpuSeconds": null
+        },
+        {
+          "seconds": 28.25103489999997,
+          "cpuSeconds": null
+        }
+      ]
+    },
+    "audio-copy": {
+      "medianSeconds": 1.2591613999999827,
+      "spreadSeconds": 1.0835441999999746,
+      "medianCpuSeconds": 0,
+      "runs": [
+        {
+          "seconds": 2.2653839999999907,
+          "cpuSeconds": null
+        },
+        {
+          "seconds": 1.181839800000016,
+          "cpuSeconds": null
+        },
+        {
+          "seconds": 1.2591613999999827,
+          "cpuSeconds": null
+        }
+      ]
+    }
+  },
+  "derived": {
+    "separateMedianSeconds": 53.502007500000005,
+    "combinedMedianSeconds": 34.598112699999994,
+    "conversionVsCopyMedianSeconds": [
+      30.168472500000004,
+      1.2591613999999827
+    ]
+  }
+}

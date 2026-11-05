@@ -1,13 +1,17 @@
 """Local download fixtures with controlled faults, for tests and benchmarks.
 
-Run:  python scripts/dev/download-fixtures.py [--port 0] [--size-mib 8] [--rate-kib 0]
+Run:  python scripts/dev/download-fixtures.py [--port 0] [--size-mib 8] [--rate-kib 256]
+          [--segments 3] [--conn-rate-kib 8192] [--global-rate-kib 0]
 
 Everything is served from 127.0.0.1 only and every byte is generated on the fly
 (a repeating pattern derived from the offset), so even multi-GiB payloads never sit
 in memory or on disk. Routes:
 
-  /hls/list.m3u8           three-segment HLS playlist; segment 1 (the middle one) is 404
+  /hls/list.m3u8           HLS playlist (--segments, default 3); segment 1 is 404
   /hls-ok/list.m3u8        the same playlist with every segment present
+  /capped-hls/list.m3u8    every segment present, each connection capped at --conn-rate-kib
+  /capped/file.bin         honours Range, each connection capped at --conn-rate-kib (like a
+                           CDN that limits every connection, so parallel ranges can help)
   /range/file.bin          honours Range requests (206), so downloads can resume
   /no-range/file.bin       ignores Range and always sends the whole body (200)
   /unstable/file.bin       answers 503 to the first N requests, then serves normally
@@ -16,6 +20,9 @@ in memory or on disk. Routes:
   /slow/file.bin           serves at a capped rate (--rate-kib, default 256 KiB/s)
   /sha256/<route-name>     hex SHA-256 of what that route serves, for integrity checks
   /faults                  JSON of the active fault settings and request counters
+
+--global-rate-kib caps everything the server sends, across all connections together (like
+a saturated link or a server-wide limit, which no number of connections can beat).
 
 The base URL and fault settings are printed on startup as one JSON line, so test
 harnesses can read them from stdout.
@@ -31,7 +38,6 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CHUNK = 64 * 1024
-SEGMENTS = 3
 
 
 BLOCK = 4096
@@ -60,11 +66,35 @@ def pattern_digest(size: int) -> str:
     return digest.hexdigest()
 
 
+class GlobalBucket:
+    """A server-wide rate: each chunk is given the next free slot on one shared clock."""
+
+    def __init__(self, rate: int):
+        self.rate = rate
+        self.lock = threading.Lock()
+        self.clock = 0.0
+
+    def take(self, length: int):
+        if self.rate <= 0:
+            return
+        with self.lock:
+            now = time.monotonic()
+            start = max(now, self.clock)
+            self.clock = start + length / self.rate
+            wait = self.clock - now
+        if wait > 0:
+            time.sleep(wait)
+
+
 class Fixtures:
-    def __init__(self, size: int, segment_size: int, rate: int, unstable_failures: int):
+    def __init__(self, size: int, segment_size: int, rate: int, unstable_failures: int,
+                 segments: int = 3, conn_rate: int = 0, global_rate: int = 0):
         self.size = size
         self.segment_size = segment_size
+        self.segments = segments
         self.rate = rate
+        self.conn_rate = conn_rate
+        self.bucket = GlobalBucket(global_rate)
         self.unstable_failures = unstable_failures
         self.lock = threading.Lock()
         self.counters: dict[str, int] = {}
@@ -86,7 +116,10 @@ class Fixtures:
             return {
                 "sizeBytes": self.size,
                 "segmentBytes": self.segment_size,
+                "segments": self.segments,
                 "slowRateBytesPerSecond": self.rate,
+                "perConnectionRateBytesPerSecond": self.conn_rate,
+                "globalRateBytesPerSecond": self.bucket.rate,
                 "unstableFailures": self.unstable_failures,
                 "missingHlsSegment": 1,
                 "counters": dict(self.counters),
@@ -120,6 +153,7 @@ def make_handler(fx: Fixtures):
                     self.close_connection = True
                     self.connection.shutdown(2)
                     return
+                fx.bucket.take(length)
                 self.wfile.write(pattern_bytes(position, length))
                 position += length
                 sent += length
@@ -157,21 +191,23 @@ def make_handler(fx: Fixtures):
 
         def playlist(self, prefix: str):
             lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:4", "#EXT-X-MEDIA-SEQUENCE:0"]
-            for index in range(SEGMENTS):
+            for index in range(fx.segments):
                 lines += ["#EXTINF:4.0,", f"/{prefix}/seg{index}.ts"]
             lines.append("#EXT-X-ENDLIST")
             self.send_plain(200, ("\n".join(lines) + "\n").encode(), "application/vnd.apple.mpegurl")
 
-        def segment(self, index: int, missing: bool):
+        def segment(self, index: int, missing: bool, rate: int = 0):
             if missing and index == 1:
                 return self.send_plain(404, b"missing segment")
+            if index >= fx.segments:
+                return self.send_plain(404, b"no such segment")
             size = fx.segment_size
             self.send_response(200)
             self.send_header("Content-Type", "video/mp2t")
             self.send_header("Content-Length", str(size))
             self.end_headers()
             if self.command != "HEAD":
-                self.stream(index * size, index * size + size)
+                self.stream(index * size, index * size + size, rate)
 
         def do_HEAD(self):
             self.do_GET()
@@ -181,11 +217,12 @@ def make_handler(fx: Fixtures):
             fx.count(path)
             if path == "/faults":
                 return self.send_plain(200, json.dumps(fx.describe()).encode(), "application/json")
-            if path in ("/hls/list.m3u8", "/hls-ok/list.m3u8"):
+            if path in ("/hls/list.m3u8", "/hls-ok/list.m3u8", "/capped-hls/list.m3u8"):
                 return self.playlist(path.split("/")[1])
-            seg = re.fullmatch(r"/(hls|hls-ok)/seg(\d+)\.ts", path)
+            seg = re.fullmatch(r"/(hls|hls-ok|capped-hls)/seg(\d+)\.ts", path)
             if seg:
-                return self.segment(int(seg.group(2)), missing=seg.group(1) == "hls")
+                prefix = seg.group(1)
+                return self.segment(int(seg.group(2)), missing=prefix == "hls", rate=fx.conn_rate if prefix == "capped-hls" else 0)
             # Any file name works under the file routes (/range/a.bin, /range/b.bin, ...),
             # so tests can produce distinct downloads of the same bytes.
             route = re.fullmatch(r"/([a-z-]+)/[A-Za-z0-9_.-]+\.bin", path)
@@ -196,6 +233,8 @@ def make_handler(fx: Fixtures):
                 return self.serve_file(False)
             if kind == "slow":
                 return self.serve_file(True, rate=fx.rate)
+            if kind == "capped":
+                return self.serve_file(True, rate=fx.conn_rate)
             if kind == "unstable":
                 if fx.count("unstable-attempts") <= fx.unstable_failures:
                     return self.send_plain(503, b"try again later")
@@ -207,7 +246,7 @@ def make_handler(fx: Fixtures):
                 return self.send_plain(403, b"link expired")
             digest = re.fullmatch(r"/sha256/([a-z-]+)", path)
             if digest:
-                size = fx.segment_size * SEGMENTS if digest.group(1) == "hls-ok" else fx.size
+                size = fx.segment_size * fx.segments if digest.group(1) in ("hls-ok", "capped-hls") else fx.size
                 return self.send_plain(200, fx.digest(size).encode())
             self.send_plain(404, b"unknown fixture route")
 
@@ -221,9 +260,13 @@ def main():
     parser.add_argument("--segment-kib", type=int, default=256, help="size of each HLS segment")
     parser.add_argument("--rate-kib", type=int, default=256, help="rate cap of /slow, KiB/s")
     parser.add_argument("--unstable-failures", type=int, default=2, help="503s before /unstable succeeds")
+    parser.add_argument("--segments", type=int, default=3, help="segments in each HLS playlist")
+    parser.add_argument("--conn-rate-kib", type=int, default=8192, help="per-connection cap of /capped and /capped-hls, KiB/s")
+    parser.add_argument("--global-rate-kib", type=int, default=0, help="cap on everything sent, across connections, KiB/s (0: none)")
     args = parser.parse_args()
 
-    fx = Fixtures(int(args.size_mib * 1024 * 1024), args.segment_kib * 1024, args.rate_kib * 1024, args.unstable_failures)
+    fx = Fixtures(int(args.size_mib * 1024 * 1024), args.segment_kib * 1024, args.rate_kib * 1024, args.unstable_failures,
+                  args.segments, args.conn_rate_kib * 1024, args.global_rate_kib * 1024)
     class QuietServer(ThreadingHTTPServer):
         # Clients closing early (cancel, the reset fixture) are expected, not errors.
         def handle_error(self, request, client_address):
