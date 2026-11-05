@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncReadExt;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
+use crate::bounded_io;
 use crate::downloader::kill_tree;
 use crate::error::{AppError, Result};
 use crate::links;
@@ -225,14 +225,6 @@ impl Drop for ProbeSlot<'_> {
     }
 }
 
-async fn read_all<R: tokio::io::AsyncRead + Unpin>(stream: Option<R>) -> Vec<u8> {
-    let mut out = Vec::new();
-    if let Some(mut stream) = stream {
-        let _ = stream.read_to_end(&mut out).await;
-    }
-    out
-}
-
 const PROBE_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub async fn probe(app: &AppHandle, raw_url: &str) -> Result<ProbeResult> {
@@ -284,20 +276,54 @@ pub async fn probe(app: &AppHandle, raw_url: &str) -> Result<ProbeResult> {
     };
     let _slot = ProbeSlot { state: &state, id };
 
-    let stdout = tauri::async_runtime::spawn(read_all(child.stdout.take()));
-    let stderr = tauri::async_runtime::spawn(read_all(child.stderr.take()));
-    let status = match tokio::time::timeout(PROBE_TIMEOUT, child.wait()).await {
-        Ok(status) => status?,
+    // The metadata is capped and only the end of the error output is kept, so neither an
+    // enormous answer nor a noisy failure can grow memory without bound.
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout = tauri::async_runtime::spawn(async move {
+        match stdout {
+            Some(stream) => bounded_io::read_capped(stream, bounded_io::MAX_METADATA).await,
+            None => Ok(Vec::new()),
+        }
+    });
+    let stderr = tauri::async_runtime::spawn(async move {
+        match stderr {
+            Some(stream) => bounded_io::read_tail(stream, bounded_io::DIAGNOSTIC_TAIL).await,
+            None => Vec::new(),
+        }
+    });
+    let finished = tokio::time::timeout(PROBE_TIMEOUT, async {
+        // An oversized answer ends the read early; the process must then be stopped,
+        // because nothing drains its output any more.
+        let stdout = stdout.await.unwrap_or_else(|_| Ok(Vec::new()));
+        if stdout.is_err() {
+            return Err(());
+        }
+        Ok((stdout, child.wait().await))
+    })
+    .await;
+    let stop = |child_pid: Option<u32>| async move {
+        // Kill the tree first: dropping the child alone would orphan yt-dlp's interpreter.
+        if let Some(pid) = child_pid {
+            let _ = tokio::task::spawn_blocking(move || kill_tree(pid, true)).await;
+        }
+    };
+    let (stdout, status) = match finished {
+        Ok(Ok((stdout, status))) => (stdout.unwrap_or_default(), status?),
+        Ok(Err(())) => {
+            stop(pid).await;
+            let _ = child.kill().await;
+            return Err(AppError::msg(format!(
+                "That link returned more information than Claws accepts ({} MB). For a very large playlist or channel, try a smaller part of it.",
+                bounded_io::MAX_METADATA / (1024 * 1024)
+            )));
+        }
         Err(_) => {
-            // Kill the tree first: dropping the child alone would orphan yt-dlp's interpreter.
-            if let Some(pid) = pid {
-                let _ = tokio::task::spawn_blocking(move || kill_tree(pid, true)).await;
-            }
+            stop(pid).await;
             let _ = child.kill().await;
             return Err(AppError::msg("Timed out while reading that link."));
         }
     };
-    let stdout = stdout.await.unwrap_or_default();
     let stderr = stderr.await.unwrap_or_default();
 
     if !status.success() {
