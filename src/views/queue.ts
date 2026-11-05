@@ -56,6 +56,9 @@ function optionsText(job: Job): string {
   return o.maxHeight ? `Video up to ${o.maxHeight}p` : "Video, best quality";
 }
 
+/** New rows built per frame during a large addition: about a frame's worth of work. */
+const ROWS_PER_FRAME = 40;
+
 function buildRow(job: Job): RowRefs {
   const status = h("span", { class: "job-status" });
   const bar = progressBar(0);
@@ -170,7 +173,9 @@ export const mountQueue: MountView = (container, ctx) => {
 
   // Adding or removing jobs. Runs at most once per frame however many arrive, touches only
   // new and removed rows, and moves only rows that are out of place, so a row mid-animation
-  // is never re-inserted.
+  // is never re-inserted. A large addition (a playlist) is built ROWS_PER_FRAME rows at a
+  // time over consecutive frames, so no single frame blocks the window; rows not built yet
+  // are drawn from the job's latest state when their turn comes.
   const sync = () => {
     frame = 0;
     stats.structuralSyncs += 1;
@@ -186,18 +191,22 @@ export const mountQueue: MountView = (container, ctx) => {
     const fresh = jobs.filter((job) => !rows.has(job.id));
     // A playlist's worth of rows at once would be hundreds of springs: only small additions animate.
     const animate = mounted && fresh.length <= 12;
-    for (const job of fresh) {
+    const batch = fresh.slice(0, ROWS_PER_FRAME);
+    for (const job of batch) {
       const refs = buildRow(job);
       rows.set(job.id, refs);
       paint(refs, job);
       list.appendChild(refs.el);
       if (animate) expandIn(refs.el);
     }
-    jobs.forEach((job, index) => {
-      const el = rows.get(job.id)!.el;
-      const at = list.children[index];
-      if (at !== el) list.insertBefore(el, at ?? null);
-    });
+    if (batch.length < fresh.length) scheduleSync();
+    jobs
+      .filter((job) => rows.has(job.id))
+      .forEach((job, index) => {
+        const el = rows.get(job.id)!.el;
+        const at = list.children[index];
+        if (at !== el) list.insertBefore(el, at ?? null);
+      });
     // Rows collapsing out still occupy the list for a moment.
     const leaving = list.children.length - jobs.length;
     list.hidden = jobs.length === 0 && leaving <= 0;

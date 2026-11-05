@@ -1,0 +1,212 @@
+[
+  {
+    "protocol": "v1",
+    "addedJobs": 1,
+    "activeTransfers": 1,
+    "renderedRows": 7,
+    "add": {
+      "scriptMs": 0.5,
+      "layoutMs": 0.9,
+      "styleMs": 0.7,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "counters": {
+        "structuralSyncs": 1,
+        "rowPaints": 1
+      }
+    },
+    "progress": {
+      "events": 40,
+      "scriptMs": 0.7,
+      "layoutMs": 14.6,
+      "styleMs": 8.6,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "counters": {
+        "structuralSyncs": 0,
+        "rowPaints": 40
+      },
+      "scriptMsPerEvent": 0.016
+    }
+  },
+  {
+    "protocol": "v1",
+    "addedJobs": 100,
+    "activeTransfers": 1,
+    "renderedRows": 106,
+    "add": {
+      "scriptMs": 9.5,
+      "layoutMs": 9.6,
+      "styleMs": 7.5,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "counters": {
+        "structuralSyncs": 3,
+        "rowPaints": 100
+      }
+    },
+    "progress": {
+      "events": 40,
+      "scriptMs": 0.6,
+      "layoutMs": 17.7,
+      "styleMs": 7,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "counters": {
+        "structuralSyncs": 0,
+        "rowPaints": 40
+      },
+      "scriptMsPerEvent": 0.016
+    }
+  },
+  {
+    "protocol": "v1",
+    "addedJobs": 100,
+    "activeTransfers": 3,
+    "renderedRows": 106,
+    "add": {
+      "scriptMs": 7.1,
+      "layoutMs": 7.4,
+      "styleMs": 6.1,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "counters": {
+        "structuralSyncs": 3,
+        "rowPaints": 100
+      }
+    },
+    "progress": {
+      "events": 120,
+      "scriptMs": 0.5,
+      "layoutMs": 19.1,
+      "styleMs": 8.4,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "counters": {
+        "structuralSyncs": 0,
+        "rowPaints": 120
+      },
+      "scriptMsPerEvent": 0.004
+    }
+  },
+  {
+    "protocol": "v1",
+    "addedJobs": 100,
+    "activeTransfers": 8,
+    "renderedRows": 106,
+    "add": {
+      "scriptMs": 8.7,
+      "layoutMs": 6.1,
+      "styleMs": 6.7,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "counters": {
+        "structuralSyncs": 3,
+        "rowPaints": 100
+      }
+    },
+    "progress": {
+      "events": 320,
+      "scriptMs": 0.4,
+      "layoutMs": 20.5,
+      "styleMs": 8.7,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "counters": {
+        "structuralSyncs": 0,
+        "rowPaints": 320
+      },
+      "scriptMsPerEvent": 0.001
+    }
+  },
+  {
+    "protocol": "v1",
+    "addedJobs": 500,
+    "activeTransfers": 1,
+    "renderedRows": 506,
+    "add": {
+      "scriptMs": 41.8,
+      "layoutMs": 34.6,
+      "styleMs": 31.1,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "counters": {
+        "structuralSyncs": 13,
+        "rowPaints": 500
+      }
+    },
+    "progress": {
+      "events": 40,
+      "scriptMs": 0.4,
+      "layoutMs": 25,
+      "styleMs": 5.2,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "counters": {
+        "structuralSyncs": 0,
+        "rowPaints": 40
+      },
+      "scriptMsPerEvent": 0.009
+    }
+  },
+  {
+    "protocol": "v1",
+    "addedJobs": 500,
+    "activeTransfers": 3,
+    "renderedRows": 506,
+    "add": {
+      "scriptMs": 35.7,
+      "layoutMs": 32.5,
+      "styleMs": 28.2,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "counters": {
+        "structuralSyncs": 13,
+        "rowPaints": 500
+      }
+    },
+    "progress": {
+      "events": 120,
+      "scriptMs": 0.4,
+      "layoutMs": 25.1,
+      "styleMs": 6.1,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "counters": {
+        "structuralSyncs": 0,
+        "rowPaints": 120
+      },
+      "scriptMsPerEvent": 0.004
+    }
+  },
+  {
+    "protocol": "v1",
+    "addedJobs": 500,
+    "activeTransfers": 8,
+    "renderedRows": 506,
+    "add": {
+      "scriptMs": 32.5,
+      "layoutMs": 35.9,
+      "styleMs": 33.2,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "counters": {
+        "structuralSyncs": 13,
+        "rowPaints": 500
+      }
+    },
+    "progress": {
+      "events": 320,
+      "scriptMs": 0.4,
+      "layoutMs": 25.7,
+      "styleMs": 7.8,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "counters": {
+        "structuralSyncs": 0,
+        "rowPaints": 320
+      },
+      "scriptMsPerEvent": 0.001
+    }
+  }
+]

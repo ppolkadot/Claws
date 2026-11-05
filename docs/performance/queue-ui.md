@@ -24,4 +24,17 @@ After the change (v1, from the dev counters):
 
 - Adding 500 jobs is one structural sync and 500 row paints. Before, every job triggered a full re-sort and repaint of the list.
 - Each progress event repaints only its own row: 320 row paints for 8 × 40 events, with no structural syncs.
-- Adding 500 jobs still produces one long task. That is building 500 rows in a single frame.
+- Adding 500 jobs still produced one long task: building 500 rows in a single frame.
+
+## Batched row creation (2026-11-05)
+
+New rows are now built at most 40 per frame, also when the view opens. Measured with the updated `queue-bench.mjs`, which waits until every row exists and records the longest task; the "before" run used the previous `queue.ts` with the same benchmark (raw results: `queue-batched-v2.json`).
+
+| Added jobs | Active | Long tasks while adding, before → after | Longest task, before → after | Rows |
+| ---: | ---: | --- | --- | ---: |
+| 100 | 1, 3, 8 | 0 → 0 | — | 106 |
+| 500 | 1 | 1 → 0 | 109 ms → none | 506 |
+| 500 | 3 | 1 → 0 | 109 ms → none | 506 |
+| 500 | 8 | 1 → 0 | 117 ms → none | 506 |
+
+Script time while adding 500 rises slightly (about 28 → 33–42 ms in total) because the work is split over more frames; progress updates are unchanged (≤ 0.016 ms per event, no long tasks).
