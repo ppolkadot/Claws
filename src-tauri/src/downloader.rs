@@ -163,6 +163,10 @@ pub struct Job {
     /// events that arrive late or twice.
     #[serde(default)]
     pub revision: u64,
+    /// Which attempt the job is on. Trying a cancelled job again starts the next one, in a
+    /// new work folder, so the cancelled attempt's cleanup can never reach its files.
+    #[serde(default)]
+    pub attempt: u32,
 }
 
 pub const EVENT_SCHEMA: u16 = 1;
@@ -463,6 +467,7 @@ pub fn enqueue(app: &AppHandle, items: Vec<EnqueueItem>, mut options: DownloadOp
             workspace: None,
             cancel_requested: false,
             revision: 0,
+            attempt: 0,
         });
     }
     if created.is_empty() {
@@ -597,19 +602,42 @@ pub fn resume(app: &AppHandle, id: &str) {
         let running = state.running.lock().unwrap();
         // A job whose process is still winding down is settled by `finish` first.
         if !running.contains_key(id) {
-            update_job(app, id, |j| {
-                if matches!(
-                    j.status,
-                    JobStatus::Paused | JobStatus::Failed | JobStatus::Cancelled
-                ) {
+            update_job(app, id, |j| match j.status {
+                JobStatus::Paused | JobStatus::Failed => {
                     j.status = JobStatus::Queued;
                     j.error = None;
                 }
+                JobStatus::Cancelled => {
+                    start_new_attempt(j);
+                    j.status = JobStatus::Queued;
+                }
+                _ => {}
             });
         }
     }
+    // The reset is saved by the start's own barrier before anything is written.
     persist_queue(app);
     pump(app);
+}
+
+/// Trying a cancelled job again: its files went (or are going) with the cancel, so it
+/// starts over in a new attempt and folder, with the cancel cleared. The frozen settings,
+/// destination and options are kept.
+fn start_new_attempt(job: &mut Job) {
+    if job.workspace.take().is_some() {
+        job.attempt += 1;
+    }
+    job.cancel_requested = false;
+    job.partial_files.clear();
+    job.error = None;
+    job.file_path = None;
+    job.progress = 0.0;
+    job.progress_known = false;
+    job.progress_estimated = false;
+    job.downloaded_bytes = None;
+    job.total_bytes = None;
+    job.speed = None;
+    job.eta = None;
 }
 
 pub fn cancel(app: &AppHandle, id: &str) {
@@ -686,6 +714,11 @@ impl PendingCleanup {
     fn is_empty(&self) -> bool {
         self.workspace.is_none() && self.legacy.is_empty()
     }
+
+    /// The same job's same attempt: another attempt's cleanup is a separate entry.
+    fn same_files(&self, other: &PendingCleanup) -> bool {
+        self.job_id == other.job_id && self.workspace == other.workspace
+    }
 }
 
 /// Records a cleanup in cleanup.json before anything is deleted, so a crash midway is
@@ -694,7 +727,7 @@ fn register_cleanup(app: &AppHandle, item: &PendingCleanup) -> Result<()> {
     let state = app.state::<AppState>();
     {
         let mut pending = state.pending_cleanup.lock().unwrap();
-        pending.retain(|p| p.job_id != item.job_id);
+        pending.retain(|p| !p.same_files(item));
         pending.push(item.clone());
     }
     save_pending_cleanup(app)
@@ -743,7 +776,7 @@ fn cleanup_now(app: &AppHandle, item: PendingCleanup) -> bool {
     let changed = {
         let mut pending = state.pending_cleanup.lock().unwrap();
         let before = pending.clone();
-        pending.retain(|p| p.job_id != item.job_id);
+        pending.retain(|p| !p.same_files(&item));
         if !removed {
             pending.push(item);
         }
@@ -925,6 +958,9 @@ fn build_args(
 }
 
 struct Outcome {
+    /// The work folder this run opened, so a cancel can clean it even when the job was
+    /// removed before its folder was recorded anywhere else.
+    workspace: Option<WorkspaceRef>,
     success: bool,
     error: Option<String>,
     final_path: Option<String>,
@@ -936,6 +972,7 @@ struct Outcome {
 impl Outcome {
     fn failed(message: impl Into<String>) -> Self {
         Self {
+            workspace: None,
             success: false,
             error: Some(message.into()),
             final_path: None,
@@ -962,6 +999,25 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
         Ok(prepared) => prepared,
         Err(message) => return Outcome::failed(message),
     };
+    let mut outcome = run_prepared(app, &job, &settings, &ytdlp, allow_cache, &execution, &workspace, &manifest).await;
+    outcome.workspace = Some(workspace);
+    outcome
+}
+
+/// The rest of a run, once its settings are frozen and its work folder is open and saved.
+#[allow(clippy::too_many_arguments)]
+async fn run_prepared(
+    app: &AppHandle,
+    job: &Job,
+    settings: &Settings,
+    ytdlp: &Path,
+    allow_cache: bool,
+    execution: &JobExecution,
+    workspace: &WorkspaceRef,
+    manifest: &download_files::Manifest,
+) -> Outcome {
+    let state = app.state::<AppState>();
+    let id = job.id.as_str();
     // Downloaded and verified before; only the publication is left to do. Registered as
     // running (without a process) so a cancel meanwhile is settled by `finish`.
     if matches!(manifest.state, Publication::Ready | Publication::Publishing) {
@@ -984,6 +1040,7 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
             return Outcome::failed("");
         }
         return Outcome {
+            workspace: None,
             success: true,
             error: None,
             final_path: None,
@@ -996,8 +1053,8 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
     let info_json = (allow_cache && job.playlist_index.is_none())
         .then(|| probe::cached_info(app, &job.url))
         .flatten();
-    let args = build_args(app, &job, &settings, &execution, &workspace.path, info_json.as_deref());
-    let mut command = tools::command(&ytdlp);
+    let args = build_args(app, job, settings, execution, &workspace.path, info_json.as_deref());
+    let mut command = tools::command(ytdlp);
     command
         .args(&args)
         .stdout(Stdio::piped())
@@ -1082,6 +1139,7 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
     });
 
     let mut outcome = Outcome {
+        workspace: None,
         success: false,
         error: None,
         final_path: None,
@@ -1090,7 +1148,7 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
     };
     let mut progress = TransferProgress::new(&job.options.mode);
     let mut last_emit = Instant::now() - Duration::from_secs(1);
-    let mut budget = Budget::new(&job, &execution, &workspace.path);
+    let mut budget = Budget::new(job, execution, &workspace.path);
     let pid = child.id();
     let mut stopped: Option<String> = None;
 
@@ -1334,7 +1392,8 @@ async fn prepare(
         .unwrap_or_else(|| JobExecution::freeze(settings, job.options.fast_save));
     let output = execution.output_dir.clone();
     let id = job.id.clone();
-    let (workspace, manifest) = tokio::task::spawn_blocking(move || download_files::open_workspace(&output, &id))
+    let attempt = job.attempt;
+    let (workspace, manifest) = tokio::task::spawn_blocking(move || download_files::open_workspace(&output, &id, attempt))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| format!("Cannot use the output folder: {e}"))?;
@@ -1565,6 +1624,7 @@ async fn finish(app: &AppHandle, id: &str, outcome: Outcome) {
                 item.legacy.extend(entry.cleanup);
                 item.workspace = item.workspace.or(entry.workspace);
             }
+            item.workspace = item.workspace.or_else(|| outcome.workspace.clone());
             item.legacy.sort();
             item.legacy.dedup();
             settle(app, id, intent, &outcome);

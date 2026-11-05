@@ -3,10 +3,14 @@
 //! output folder with a no-replace move, and cancelling deletes the verified work folder,
 //! never a file chosen by matching names in the user's folder.
 //!
-//! Ownership is decided by layout plus a marker: the folder must be named after the job,
-//! sit directly in a `.claws-work` folder, not be a link or junction, and hold a marker
-//! naming the same job. Paths reported by tools are untrusted and are only accepted when
-//! they resolve inside the work folder.
+//! Ownership is decided by layout plus a marker: the folder must be named after the job
+//! and attempt, sit directly in a `.claws-work` folder, not be a link or junction, and hold
+//! a marker naming the same job and attempt. Paths reported by tools are untrusted and are
+//! only accepted when they resolve inside the work folder.
+//!
+//! A cancelled job that is tried again starts a new attempt in a new folder, so a cleanup
+//! still finishing (or retried at the next start) for the cancelled attempt can never
+//! reach the new attempt's files.
 
 use std::fs;
 use std::io;
@@ -27,6 +31,10 @@ const SIDECAR_EXTENSIONS: &[&str] = &["srt", "vtt", "ass", "ssa", "lrc", "ttml",
 pub struct WorkspaceRef {
     pub schema_version: u16,
     pub path: PathBuf,
+    /// Which attempt of the job this folder belongs to. References saved before attempts
+    /// existed read as 0, the attempt whose folder has the plain name.
+    #[serde(default)]
+    pub attempt: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +54,9 @@ pub enum Publication {
 pub struct Manifest {
     pub schema_version: u16,
     pub job_id: String,
+    /// See `WorkspaceRef::attempt`; missing in markers written before attempts existed.
+    #[serde(default)]
+    pub attempt: u32,
     pub workspace: PathBuf,
     /// Where finished files go: the frozen output folder.
     pub destination_root: PathBuf,
@@ -58,15 +69,21 @@ pub struct Manifest {
     pub published: Vec<PathBuf>,
 }
 
-/// The work folder's name: the first 12 hex digits of the job id. Short, because every
-/// path yt-dlp builds inside it counts against Windows' 260-character limit; the marker
-/// inside holds the full id, and is what proves ownership.
-pub fn folder_name(job_id: &str) -> String {
-    job_id.chars().filter(|c| c.is_ascii_hexdigit()).take(12).collect::<String>().to_ascii_lowercase()
+/// The work folder's name: the first 12 hex digits of the job id, then `-<attempt>` from
+/// the second attempt on. Short, because every path yt-dlp builds inside it counts against
+/// Windows' 260-character limit; the marker inside holds the full id and the attempt, and
+/// is what proves ownership.
+pub fn folder_name(job_id: &str, attempt: u32) -> String {
+    let short = job_id.chars().filter(|c| c.is_ascii_hexdigit()).take(12).collect::<String>().to_ascii_lowercase();
+    if attempt == 0 {
+        short
+    } else {
+        format!("{short}-{attempt}")
+    }
 }
 
-pub fn workspace_path(output_dir: &Path, job_id: &str) -> PathBuf {
-    output_dir.join(WORK_DIR).join(folder_name(job_id))
+pub fn workspace_path(output_dir: &Path, job_id: &str, attempt: u32) -> PathBuf {
+    output_dir.join(WORK_DIR).join(folder_name(job_id, attempt))
 }
 
 fn marker_path(workspace: &Path) -> PathBuf {
@@ -136,7 +153,7 @@ pub fn write_manifest(manifest: &Manifest) -> io::Result<()> {
 
 /// Opens the job's work folder, creating it (with its marker) the first time. A folder
 /// that exists but is not provably this job's is refused, never adopted.
-pub fn open_workspace(output_dir: &Path, job_id: &str) -> io::Result<(WorkspaceRef, Manifest)> {
+pub fn open_workspace(output_dir: &Path, job_id: &str, attempt: u32) -> io::Result<(WorkspaceRef, Manifest)> {
     uuid::Uuid::parse_str(job_id).map_err(|_| io::Error::other("invalid job id"))?;
     fs::create_dir_all(output_dir)?;
     let root = output_dir.join(WORK_DIR);
@@ -145,10 +162,11 @@ pub fn open_workspace(output_dir: &Path, job_id: &str) -> io::Result<(WorkspaceR
         hide(&root);
     }
     plain_dir(&root)?;
-    let workspace = workspace_path(output_dir, job_id);
+    let workspace = workspace_path(output_dir, job_id, attempt);
     let reference = WorkspaceRef {
         schema_version: MANIFEST_SCHEMA,
         path: workspace.clone(),
+        attempt,
     };
     if workspace.exists() {
         let manifest = verify(&reference, job_id)?;
@@ -158,6 +176,7 @@ pub fn open_workspace(output_dir: &Path, job_id: &str) -> io::Result<(WorkspaceR
     let manifest = Manifest {
         schema_version: MANIFEST_SCHEMA,
         job_id: job_id.to_string(),
+        attempt,
         workspace: workspace.clone(),
         destination_root: output_dir.to_path_buf(),
         state: Publication::Active,
@@ -171,7 +190,7 @@ pub fn open_workspace(output_dir: &Path, job_id: &str) -> io::Result<(WorkspaceR
 /// Proves `reference` is this job's work folder and returns its manifest.
 pub fn verify(reference: &WorkspaceRef, job_id: &str) -> io::Result<Manifest> {
     let path = &reference.path;
-    let named_for_job = path.file_name().and_then(|n| n.to_str()) == Some(folder_name(job_id).as_str());
+    let named_for_job = path.file_name().and_then(|n| n.to_str()) == Some(folder_name(job_id, reference.attempt).as_str());
     let parent = path.parent().ok_or_else(|| io::Error::other("work folder has no parent"))?;
     let in_work_dir = parent.file_name().and_then(|n| n.to_str()) == Some(WORK_DIR);
     if !named_for_job || !in_work_dir {
@@ -180,7 +199,7 @@ pub fn verify(reference: &WorkspaceRef, job_id: &str) -> io::Result<Manifest> {
     plain_dir(parent)?;
     plain_dir(path)?;
     let manifest = read_manifest(path)?;
-    if manifest.job_id != job_id || manifest.schema_version > MANIFEST_SCHEMA {
+    if manifest.job_id != job_id || manifest.attempt != reference.attempt || manifest.schema_version > MANIFEST_SCHEMA {
         return Err(io::Error::other(format!("{} belongs to another download", path.display())));
     }
     Ok(manifest)
@@ -321,14 +340,43 @@ pub fn remove_workspace(reference: &WorkspaceRef, job_id: &str) -> io::Result<()
         if attempt > 0 {
             std::thread::sleep(Duration::from_millis(250));
         }
-        // remove_dir_all does not follow links or junctions inside the folder.
-        match fs::remove_dir_all(&reference.path) {
+        match remove_owned_folder(&reference.path) {
             Ok(()) => return Ok(()),
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(e) => last = Some(e),
         }
     }
     Err(last.unwrap_or_else(|| io::Error::other("could not remove the work folder")))
+}
+
+/// Deletes everything but the marker first, then the marker and the folder. A file that is
+/// still in use stops the deletion with the marker in place, so the folder can still be
+/// proven to be this job's when the cleanup is retried.
+fn remove_owned_folder(path: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_name() == MARKER {
+            continue;
+        }
+        let meta = fs::symlink_metadata(entry.path())?;
+        if is_link(&meta) {
+            // A link or junction: only the link goes, never what it points to. Links to
+            // folders are removed as folders.
+            if fs::remove_file(entry.path()).is_err() {
+                fs::remove_dir(entry.path())?;
+            }
+        } else if meta.is_dir() {
+            // remove_dir_all does not follow links or junctions inside the folder.
+            fs::remove_dir_all(entry.path())?;
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    match fs::remove_file(marker_path(path)) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    fs::remove_dir(path)
 }
 
 /// Partial-file names of downloads started before work folders existed: exactly
@@ -356,12 +404,12 @@ mod tests {
     fn workspace_is_created_once_and_reopened() {
         let out = temp_dir("ws");
         let job = id();
-        let (reference, manifest) = open_workspace(&out, &job).unwrap();
-        assert_eq!(reference.path, out.join(WORK_DIR).join(folder_name(&job)));
-        assert_eq!(folder_name(&job).len(), 12);
+        let (reference, manifest) = open_workspace(&out, &job, 0).unwrap();
+        assert_eq!(reference.path, out.join(WORK_DIR).join(folder_name(&job, 0)));
+        assert_eq!(folder_name(&job, 0).len(), 12);
         assert_eq!(manifest.state, Publication::Active);
         fs::write(reference.path.join("clip.f137.mp4.part"), b"12345").unwrap();
-        let (again, _) = open_workspace(&out, &job).unwrap();
+        let (again, _) = open_workspace(&out, &job, 0).unwrap();
         assert_eq!(again, reference);
         assert_eq!(fs::read(again.path.join("clip.f137.mp4.part")).unwrap(), b"12345");
         let _ = fs::remove_dir_all(out);
@@ -370,16 +418,16 @@ mod tests {
     #[test]
     fn a_folder_of_another_job_is_refused() {
         let out = temp_dir("foreign");
-        let (a, _) = open_workspace(&out, &id()).unwrap();
+        let (a, _) = open_workspace(&out, &id(), 0).unwrap();
         let other = id();
-        let forged = WorkspaceRef { schema_version: 1, path: a.path.clone() };
+        let forged = WorkspaceRef { schema_version: 1, path: a.path.clone(), attempt: 0 };
         assert!(verify(&forged, &other).is_err());
         assert!(remove_workspace(&forged, &other).is_err());
         assert!(a.path.exists());
         // A folder named for the job but without its marker is not adopted either.
-        let plain = workspace_path(&out, &other);
+        let plain = workspace_path(&out, &other, 0);
         fs::create_dir_all(&plain).unwrap();
-        assert!(open_workspace(&out, &other).is_err());
+        assert!(open_workspace(&out, &other, 0).is_err());
         let _ = fs::remove_dir_all(out);
     }
 
@@ -387,7 +435,7 @@ mod tests {
     fn cancel_removes_only_the_work_folder() {
         let out = temp_dir("cancel");
         let job = id();
-        let (reference, _) = open_workspace(&out, &job).unwrap();
+        let (reference, _) = open_workspace(&out, &job, 0).unwrap();
         for name in ["clip.f137.mp4", "clip.f140.m4a.part", "clip.temp.mp4", "clip.en.vtt"] {
             fs::write(reference.path.join(name), b"x").unwrap();
         }
@@ -395,7 +443,7 @@ mod tests {
         for name in ["clip.mp4", "clip.mp4.partnership", "clip.temp.mp4", "clip.f137.mp4"] {
             fs::write(out.join(name), b"keep").unwrap();
         }
-        let (neighbour, _) = open_workspace(&out, &id()).unwrap();
+        let (neighbour, _) = open_workspace(&out, &id(), 0).unwrap();
         fs::write(neighbour.path.join("other.part"), b"keep").unwrap();
         remove_workspace(&reference, &job).unwrap();
         assert!(!reference.path.exists());
@@ -411,7 +459,7 @@ mod tests {
         let outside = temp_dir("outside");
         fs::write(outside.join("precious.mp4"), b"keep").unwrap();
         let job = id();
-        let (reference, _) = open_workspace(&out, &job).unwrap();
+        let (reference, _) = open_workspace(&out, &job, 0).unwrap();
         let link = reference.path.join("escape");
         let made = std::process::Command::new("cmd")
             .args(["/C", "mklink", "/J", &link.to_string_lossy(), &outside.to_string_lossy()])
@@ -430,7 +478,7 @@ mod tests {
     #[test]
     fn reported_paths_must_resolve_inside() {
         let out = temp_dir("owned");
-        let (reference, _) = open_workspace(&out, &id()).unwrap();
+        let (reference, _) = open_workspace(&out, &id(), 0).unwrap();
         fs::create_dir_all(reference.path.join("Channel")).unwrap();
         fs::write(reference.path.join("Channel").join("a.mp4"), b"x").unwrap();
         fs::write(out.join("b.mp4"), b"x").unwrap();
@@ -444,7 +492,7 @@ mod tests {
     fn publication_never_replaces_and_can_resume() {
         let out = temp_dir("publish");
         let job = id();
-        let (reference, mut manifest) = open_workspace(&out, &job).unwrap();
+        let (reference, mut manifest) = open_workspace(&out, &job, 0).unwrap();
         fs::write(reference.path.join("clip.mp4"), b"media").unwrap();
         fs::write(reference.path.join("clip.en.srt"), b"subs").unwrap();
         fs::write(out.join("clip.en.srt"), b"user's own").unwrap();
@@ -463,7 +511,7 @@ mod tests {
     #[test]
     fn an_existing_destination_fails_publication_and_keeps_the_file() {
         let out = temp_dir("conflict");
-        let (reference, mut manifest) = open_workspace(&out, &id()).unwrap();
+        let (reference, mut manifest) = open_workspace(&out, &id(), 0).unwrap();
         fs::write(reference.path.join("clip.mp4"), b"new").unwrap();
         fs::write(out.join("clip.mp4"), b"old").unwrap();
         manifest.outputs = vec!["clip.mp4".into()];
@@ -480,9 +528,47 @@ mod tests {
     }
 
     #[test]
+    fn attempts_have_their_own_folders_and_never_adopt_each_other() {
+        let out = temp_dir("attempts");
+        let job = id();
+        let (first, _) = open_workspace(&out, &job, 0).unwrap();
+        let (second, manifest) = open_workspace(&out, &job, 1).unwrap();
+        assert_ne!(first.path, second.path);
+        assert!(second.path.ends_with(format!("{}-1", folder_name(&job, 0))));
+        assert_eq!((second.attempt, manifest.attempt), (1, 1));
+        fs::write(second.path.join("clip.f18.mp4.part"), b"retry").unwrap();
+        // A cleanup of the first attempt that points at the second folder is refused.
+        let stale = WorkspaceRef { attempt: 0, ..second.clone() };
+        assert!(remove_workspace(&stale, &job).is_err());
+        remove_workspace(&first, &job).unwrap();
+        assert_eq!(fs::read(second.path.join("clip.f18.mp4.part")).unwrap(), b"retry");
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn references_and_markers_from_before_attempts_still_open() {
+        let out = temp_dir("pre-attempts");
+        let job = id();
+        let folder = workspace_path(&out, &job, 0);
+        fs::create_dir_all(&folder).unwrap();
+        // Exactly what the previous build wrote.
+        let marker = format!(
+            r#"{{"schemaVersion":1,"jobId":"{job}","workspace":{},"destinationRoot":{},"state":"active","outputs":[],"published":[]}}"#,
+            serde_json::to_string(&folder).unwrap(),
+            serde_json::to_string(&out).unwrap()
+        );
+        fs::write(folder.join(MARKER), marker).unwrap();
+        let reference: WorkspaceRef = serde_json::from_str(&format!(r#"{{"schemaVersion":1,"path":{}}}"#, serde_json::to_string(&folder).unwrap())).unwrap();
+        assert_eq!(reference.attempt, 0);
+        assert_eq!(verify(&reference, &job).unwrap().attempt, 0);
+        assert_eq!(open_workspace(&out, &job, 0).unwrap().0, reference);
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
     fn sidecars_share_the_media_stem() {
         let out = temp_dir("sidecars");
-        let (reference, _) = open_workspace(&out, &id()).unwrap();
+        let (reference, _) = open_workspace(&out, &id(), 0).unwrap();
         for name in ["clip.mp4", "clip.en.srt", "clip.es.vtt", "clip2.en.srt", "clip.f137.mp4.part", "other.srt"] {
             fs::write(reference.path.join(name), b"x").unwrap();
         }
