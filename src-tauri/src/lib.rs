@@ -14,6 +14,7 @@ mod settings;
 mod state;
 mod store;
 mod tools;
+mod transfer_progress;
 mod window;
 
 use std::collections::HashMap;

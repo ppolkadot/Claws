@@ -315,3 +315,31 @@ fn progress_output_is_capped_near_five_lines_a_second() {
     assert!(capped <= ceiling, "{capped} lines in {elapsed:?}");
     assert!(uncapped > capped, "without the delta yt-dlp printed {uncapped}, with it {capped}");
 }
+
+#[test]
+fn real_progress_output_is_weighted_by_bytes() {
+    use crate::transfer_progress::TransferProgress;
+    let ytdlp = require!(ytdlp());
+    let fx = require!(fixtures(&["--size-mib", "6"]));
+    let work = temp_dir("weighted");
+    let url = format!("{}/range/file.bin", fx.base);
+    let run = run_policy(&ytdlp, &work, Media::Direct(&url, "bin"), &[], None);
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let mut progress = TransferProgress::new("video");
+    let mut last = None;
+    for line in run.stdout.lines() {
+        if let Some(rest) = line.strip_prefix("CLAWSFMT|") {
+            progress.set_plan(rest);
+        } else if let Some(rest) = line.strip_prefix("CLAWS|") {
+            let fields: Vec<&str> = rest.splitn(10, '|').collect();
+            if let Some(snapshot) = progress.update(&fields) {
+                last = Some(snapshot);
+            }
+        }
+    }
+    let last = last.expect("progress lines were parsed");
+    assert_eq!(last.downloaded, 6 * 1024 * 1024);
+    assert_eq!(last.total, Some(6 * 1024 * 1024));
+    assert_eq!(last.fraction, Some(0.99), "full only after publication");
+    let _ = std::fs::remove_dir_all(work);
+}
