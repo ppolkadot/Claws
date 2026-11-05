@@ -112,7 +112,12 @@ function buildSettings(container: HTMLElement): () => void {
     row(
       "Embed metadata",
       toggle("Embed metadata", s().embedMetadata, (v) => update({ embedMetadata: v })),
-      "Writes title, uploader and date into the file. It rewrites the file once more, which adds a few seconds on long videos.",
+      "Adds title, uploader and date. Large files may take substantially longer because the whole file can be rewritten.",
+    ),
+    row(
+      "Prefer matching source audio",
+      toggle("Prefer matching source audio", s().audioSelection === "preferMatching", (v) => update({ audioSelection: v ? "preferMatching" : "best" })),
+      "For audio downloads, picks a stream already in the chosen format so it can be saved without conversion. Its bitrate may differ from the site's best stream. Applies to downloads that have not started yet.",
     ),
   );
 

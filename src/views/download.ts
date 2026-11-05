@@ -461,7 +461,9 @@ export const mountDownload: MountView = (container, ctx) => {
           row(
             "Format",
             chipRadio<string>("Audio format", AUDIO_FORMATS, audioFormat, (value) => (audioFormat = value)),
-            "Original keeps the site's own audio without re-encoding.",
+            store.settings.audioSelection === "preferMatching"
+              ? "Original keeps the site's own audio. For other formats, a stream already in that format is saved without conversion when the site has one."
+              : "Original keeps the site's own audio without re-encoding. Other formats are converted from the site's best audio.",
           ),
         );
       }
