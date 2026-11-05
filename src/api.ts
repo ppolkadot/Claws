@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+import type { JobEvent, JobRemoved, JobsAdded } from "./queue-events";
+
+export type { JobEvent, JobRemoved, JobsAdded };
+
 export type Theme = "system" | "light" | "dark";
 export type Backdrop = "glass" | "acrylic" | "mica" | "tabbed" | "none";
 export type CookieKind = "none" | "browser" | "file";
@@ -67,6 +71,8 @@ export interface Job {
   /** The job's private work folder. */
   workspace?: { schemaVersion: number; path: string } | null;
   cancelRequested?: boolean;
+  /** Increases with every change; older or repeated events are ignored. */
+  revision: number;
 }
 
 export interface JobExecution {
@@ -183,7 +189,7 @@ export const api = {
   cachedLink: (url: string) => invoke<CachedLink | null>("cached_link", { url }),
   /** `source` is the link that was looked up, saved so its next lookup is instant. */
   enqueue: (items: EnqueueItem[], options: DownloadOptions, source: string | null) =>
-    invoke<Job[]>("enqueue", { items, options, source }),
+    invoke<JobsAdded<Job>>("enqueue", { items, options, source }),
   pause: (id: string) => invoke<void>("pause_job", { id }),
   resume: (id: string) => invoke<void>("resume_job", { id }),
   cancel: (id: string) => invoke<void>("cancel_job", { id }),

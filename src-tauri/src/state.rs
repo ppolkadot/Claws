@@ -49,6 +49,8 @@ pub struct AppState {
     pub destinations: Mutex<HashSet<String>>,
     /// Bumped after every queue change; the writer saves snapshots in revision order.
     pub queue_revision: AtomicU64,
+    /// Source of `Job::revision`; only advanced with the jobs lock held.
+    pub job_revision: AtomicU64,
     pub queue_writer: QueueWriter,
 }
 

@@ -5,7 +5,7 @@ import "./styles/views.css";
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { api, onEvent, errorMessage, type Job, type ToolProgress } from "./api";
+import { api, onEvent, errorMessage, type Job, type JobEvent, type JobRemoved, type JobsAdded, type ToolProgress } from "./api";
 import { store } from "./store";
 import { h } from "./ui/dom";
 import { toast } from "./ui/components";
@@ -67,8 +67,9 @@ async function start() {
     settings: { title: "Settings", mount: mountSettings },
   });
 
-  await onEvent<Job>("job-update", (job) => store.upsertJob(job));
-  await onEvent<string>("job-removed", (id) => store.removeJob(id));
+  await onEvent<JobEvent<Job>>("job-update", (event) => store.updateJob(event));
+  await onEvent<JobsAdded<Job>>("jobs-added", (batch) => store.addJobs(batch));
+  await onEvent<JobRemoved>("job-removed", (event) => store.removeJob(event));
   await onEvent<null>("history-changed", () => void store.refreshHistory());
   await onEvent<ToolProgress>("tool-progress", (progress) => store.setToolProgress(progress));
   await onEvent<string>("notice", (message) => toast(message, { tone: "error" }));

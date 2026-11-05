@@ -110,6 +110,7 @@ pub fn run() {
                 pending_cleanup: Mutex::new(pending_cleanup),
                 destinations: Mutex::new(std::collections::HashSet::new()),
                 queue_revision: std::sync::atomic::AtomicU64::new(0),
+                job_revision: std::sync::atomic::AtomicU64::new(0),
                 queue_writer,
             });
             downloader::restore_queue(app.handle(), queue);

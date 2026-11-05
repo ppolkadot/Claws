@@ -4,6 +4,8 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 *.tsbuildinfo
+# Compiled helpers for the Node test runner (npm run test:queue).
+.test-build/
 __pycache__/
 
 # ---- Fonts ------------------------------------------------------------------------
