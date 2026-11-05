@@ -1,8 +1,8 @@
 # Current problems and download-speed review
 
-**Date:** 2026-11-04\
+**Date:** 2026-11-05\
 **Reviewed branch:** `download-reliability`\
-**Reviewed commit:** `7c4f981`\
+**Reviewed source:** `624dd7e` plus the 1.0.5 follow-up corrections\
 **Baseline before this branch:** `a9b6cbb`\
 **Scope:** consolidate unresolved review findings, distinguish implemented fixes from unfinished performance work, and check whether the current transfer policy resolves low download speed.
 
@@ -10,21 +10,29 @@
 
 The branch improves reliability, queue responsiveness, and optional post-processing behavior. It does **not yet establish a fix for low raw download speed**.
 
-A controlled plain-HTTP comparison produced essentially identical throughput before and after the policy changes. Parallel HTTP acceleration, independent processing slots, and combined FFmpeg processing are not implemented. There are also five outstanding correctness/recovery defects that should be fixed before a release.
+A controlled plain-HTTP comparison produced essentially identical throughput before and after the policy changes. Parallel HTTP acceleration, independent processing slots, and combined FFmpeg processing are not implemented. The original five lifecycle findings have targeted fixes. The follow-up recovery edges are addressed in the current working changes; the processing-space check remains explicitly best effort rather than a strict pre-launch gate.
 
-The tracked installer is still the earlier 1.0.4 artifact from `a9b6cbb`. It does not contain these 11 branch commits. This observation concerns the repository installer; it does not identify which executable the owner currently has running.
+The 1.0.5 installer was rebuilt from this branch with the reliability and recovery corrections, archive-tested and checked against the optimized executable. It is stored in `installers/` with its SHA-256 file; see `docs/releases/1.0.5.md` for validation limits. The retained 1.0.4 installer predates these corrections. Neither version establishes a measured fix for the owner's slow real-source download.
+
+## Follow-up fixes (2026-11-05, included in 1.0.5)
+
+- Done media publication records are checked against output existence and stored identity on retry and startup; missing/replaced media do not become completed Library entries. Already-published subtitle sidecars may be renamed or deleted without blocking retry.
+- Startup considers committed publication before stale cancellation. Settlement clears late cancellation while holding the process registry lock, including when Library saving failed.
+- Processing-space notifications are best effort, not a pre-launch gate. A late notification cannot fail a successfully finished transfer or stop a reaped PID. Failed processing preserves owned artifacts without promising the original streams still exist.
+- The speed report limits its uncapped-throughput conclusion to standalone yt-dlp; native-app overhead and the real slow source remain unmeasured.
 
 ## Owner priority update
 
 **Low download speed is the main improvement priority.** Only correctness fixes necessary to prevent lost progress, unsafe cleanup, broken recovery or unusable downloads take precedence. This ordering supersedes the earlier suggestion to finish every general improvement before acceleration work.
 
 - Start speed diagnosis immediately; it can run alongside the critical fixes.
-- Resolve B1–B4 before shipping a speed-focused release: these protect retry data, completion recovery, publication and required persistence.
-- Resolve B5 before throughput comparisons if its false disk-space rejection blocks the test/download; otherwise implement it alongside the speed work.
+- B1–B4 and their follow-up recovery corrections are implemented. Preserve their regression coverage before shipping a speed-focused release.
+- Follow-up: missing/renamed already-published subtitle sidecars no longer block Try Again; the video still requires identity verification. Startup verification runs in the background with recovery jobs reserved against duplicate starts, and startup events are buffered across bootstrap. FAT/exFAT hashing still costs disk time, but no longer runs on the app setup thread. The intentional fixture child now has a local Clippy allowance for `test-tools` builds.
+- B5 remaining-demand accounting is implemented. Its processing notification is best effort; a strict pre-launch gate remains in the managed processing plan.
 - After those prerequisites, prioritize the measured transfer or processing bottleneck over cosmetic changes, speculative refactors, additional Queue optimizations and unrelated enhancements.
 - The priority is a demonstrated improvement on the affected download path. It is not a requirement to add aria2c when the source, protocol or measurement shows a different cause.
 
-## 1. Open correctness defects
+## 1. Reviewed correctness findings and closure evidence
 
 ### B1 — Retrying a cancelled job leaves its cancellation flag set
 
@@ -96,7 +104,7 @@ The file is moved to the destination before its path is appended to `manifest.pu
 
 ### B5 — Disk reservations double-count consumed space
 
-**Status (2026-11-05): closed in `5167328`.** A ledger holds each job's remaining demand (estimated peak minus what its work folder holds, sampled every 2 s, plus margin); admission reads free space under the ledger's lock; each whole-file processing step rechecks what is still needed and is stopped before it runs (streams kept) if it no longer fits; a claim is released when the process exits. Tests cover this section's 22-of-30 GiB example, simultaneous admission, resumed partials, a pending merge and release (pure, with set free-space numbers), plus app-level admission and a merge stopped for space; they fail with the old static reservation. Not done: a physical low-disk run on disposable storage.
+**Status (2026-11-05): closed in `5167328`.** A ledger holds each job's remaining demand (estimated peak minus what its work folder holds, sampled every 2 s, plus margin); admission reads free space under the ledger's lock; processing-start notifications recheck what is still needed on a best-effort basis; they cannot guarantee a stop before processing begins, and retained artifacts can be either streams or merged output; a claim is released when the process exits. Tests cover this section's 22-of-30 GiB example, simultaneous admission, resumed partials, a pending merge and release (pure, with set free-space numbers), plus app-level admission and a merge stopped for space; they fail with the old static reservation. Not done: a physical low-disk run on disposable storage.
 
 **Priority:** P2. **Evidence:** code-traced accounting defect.
 
@@ -231,18 +239,12 @@ For this summary:
 
 Passing tests do not close B1–B5. Each needs a dedicated regression at its actual lifecycle boundary. No live-site large-media transfer, native installer upgrade, physical disk-full test or universal download-speed claim is included.
 
-## 7. Prioritized fix list
+## 7. Remaining priorities
 
-1. **Begin diagnosis of the low-speed problem now.** Measure extraction, transfer, processing and total time for a representative slow source. Compare Claws against standalone yt-dlp using the same selected formats, tool version and authentication. Existing localhost results are a baseline, not proof about that source.
-2. **Complete the critical correctness prerequisites before release:** B1 cancelled-job retry/cleanup coordination; B2 durable completion/history ordering; B3 recoverable publication; B4 enforced save barriers. Add regression tests at the failure boundaries. These fixes can proceed while measurements run.
-3. **Correct B5 disk accounting** before benchmarking if it blocks the affected download; otherwise fix it alongside the main speed work.
-4. **Implement the measured speed fix as the main development task:**
-   - Plain HTTP with a demonstrated per-connection cap: prioritize optional range-parallel acceleration, connection budgeting and working progress/resume/cancellation.
-   - HLS/DASH: benchmark fragment/job concurrency and source/extractor behavior. Do not assume that increasing eight fragments is the fix.
-   - Slow merge/conversion: prioritize native audio, reduced processing passes and independent transfer/processing scheduling.
-   - Extraction delay or a source-wide/network limit: fix a confirmed extraction/tool issue where possible and report a limit the application cannot remove honestly.
-5. **Prove the result.** Use repeated identical-format comparisons, integrity checks, end-to-end timing and regression tests. Keep acceleration disabled if it fails correctness or provides no meaningful benefit in its target scenario.
-6. **Build and validate a newly versioned installer** from the corrected source; verify the upgrade, embedded assets, repository installer and release checksums.
-7. **Then address secondary improvements:** the remaining initial Queue-render long task, optional UI refinements and additional hardening that does not block correct operation or the measured speed fix.
+1. Diagnose the affected real slow source using identical-format Claws/standalone comparisons; the controlled measurements do not identify that source's bottleneck.
+2. Preserve the completed lifecycle fixes and follow-up recovery regressions. Do not repeat B1–B5 implementations as new work.
+3. Implement the measured speed improvement: optional parallel HTTP ranges when appropriate, source/concurrency tuning for segmented transfers, or managed processing when conversion/merge/waiting dominates.
+4. Prove integrity and repeated end-to-end benefit before enabling new acceleration. A strict pre-processing disk gate requires control before FFmpeg launch; the existing notification is not such a gate.
+5. Build and validate a newly versioned installer from the final commit, including an upgrade check and matching uploaded checksum.
 
-**Release recommendation:** do not call the branch release-ready or advertise “low download speed fixed” until the correctness blockers are resolved and the intended real-world speed scenario is measured.
+**Release recommendation:** do not call the branch release-ready or advertise “low download speed fixed” until the final lifecycle/installer checks pass and the intended real-world speed scenario is measured.

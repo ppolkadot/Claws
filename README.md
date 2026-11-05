@@ -51,7 +51,7 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
   - Unfinished downloads survive a restart as paused.
   - A paused download keeps the folder and file name it started with, even if you change them in Settings.
 - **Safe with your files.** Each download works in its own hidden folder until it is finished. Cancelling deletes that folder and nothing else. A finished file never replaces a file that already exists.
-- **Disk space check.** Before a large download starts, Claws estimates the space it will need, including the extra copy while merging, and checks again before each processing step. If the disk is too full, it stops with the numbers instead of failing halfway.
+- **Disk space check.** Before a large download starts, Claws estimates the space it will need, including the extra copy while merging, and monitors space when processing starts. Processing checks are best effort; if stopped, owned files are kept for retry.
 - **Library.** Finished downloads with artwork and search. Open them or show them in their folder.
 - **Sign-in.** Use cookies from your browser, or a `cookies.txt` file, for sites that need you to be logged in.
 - **Instant repeat lookups.** Links you have downloaded keep their details, so looking one up again shows it at once while Claws checks the site for changes. Pick any item under **Recent** to see it again.
@@ -75,7 +75,7 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 2. Run it. Releases are not code-signed yet, so Windows SmartScreen may warn on first run; choose **More info → Run anyway**.
 3. On first launch Claws downloads yt-dlp into its own folder and verifies it against the checksum yt-dlp publishes. This happens once and takes a few seconds.
 
-The 1.0.4 installer with the corrected Polaris spacing is also [included in this repository](installers/Claws_1.0.4_x64-setup.exe), alongside its [SHA-256 checksum](installers/Claws_1.0.4_x64-setup.exe.sha256).
+The 1.0.5 installer, with the download reliability work, is also [included in this repository](installers/Claws_1.0.5_x64-setup.exe), alongside its [SHA-256 checksum](installers/Claws_1.0.5_x64-setup.exe.sha256). The earlier [1.0.4 installer](installers/Claws_1.0.4_x64-setup.exe) ([checksum](installers/Claws_1.0.4_x64-setup.exe.sha256)) is kept there too.
 
 ### Requirements
 
@@ -299,7 +299,7 @@ Claws never replaces a file that is already in the output folder. Getting the sa
 <details>
 <summary><b>"Not enough free space"</b></summary>
 
-Large videos need room for the downloaded streams and for the merged file while both exist, plus a safety margin. Space other downloads have already used is not counted twice: each running download holds only what it still needs. The check runs before the transfer and again before each processing step (merging, embedding), so a disk that filled up meanwhile stops the step before it starts. Free up space on the drive named in the message, or choose another output folder for new downloads. Then press **Try Again**: what was already downloaded is kept.
+Large videos need room for the downloaded streams and for the merged file while both exist, plus a safety margin. Space other downloads have already used is not counted twice: each running download holds only what it still needs. The check runs at transfer admission and on processing notifications (merging, embedding). The latter are best effort: the tool may already have begun processing. A late low-space notification does not reject an otherwise successfully finished result. Free up space on the drive named in the message, or choose another output folder for new downloads. Then press **Try Again**: what was already downloaded is kept.
 </details>
 
 <details>

@@ -7,18 +7,14 @@
 //        [--segments 32] [--conn-rate-kib 8192] [--global-rate-kib 0] [--out results.json]
 //
 // Starts scripts/dev/download-fixtures.py on a free localhost port, runs one warm-up and
-// then `--runs` timed runs per configuration, alternating the order of configurations
-// between rounds, and writes one JSON result per configuration in the format of the
-// plan's section 8. Every file of every run is checked against the fixture's SHA-256; a
-// failed integrity check rejects the whole configuration instead of being reported. No
-// cookies, signed URLs or authorization headers are involved or recorded.
+// then `--runs` timed runs per configuration, and writes one JSON result per configuration.
+// Every file is checked against the fixture's SHA-256; a failed check rejects the whole
+// configuration.
 //
 // Configurations are the product of scenario x fragments x downloader x jobs. `--jobs N`
-// starts N downloads of the same fixture at once (separate folders) and times the round
-// from the first start to the last finish, which is the aggregate a user waits for.
-// `--downloader aria2c` routes plain HTTP(S) through aria2c (`--downloader http,https:aria2c`
-// with yt-dlp's own aria2c defaults), which is the transfer-strategy change the plan means;
-// HLS stays native.
+// starts N downloads of the same fixture at once and times the round from the first start
+// to the last finish. `--downloader aria2c` routes plain HTTP(S) through aria2c with
+// yt-dlp's own aria2c defaults; HLS stays native.
 //
 // Measurements and their limits:
 // - extract/transfer/publish seconds come from marker lines yt-dlp prints; with jobs > 1
@@ -105,8 +101,8 @@ function sha256(path) {
   });
 }
 
-// One PowerShell process per round prints, every 0.5 s, the CPU seconds of each root's
-// whole process tree. The highest value seen per root is that run's CPU time.
+// One PowerShell process per round samples each root's process-tree CPU seconds every
+// 0.5 s; the highest value seen is that run's CPU time.
 function treeCpuSampler(roots) {
   const script = `
 $roots = @(${roots.join(",")})
@@ -143,8 +139,7 @@ while ($true) {
 }
 
 // A reference strategy, not a Claws code path: the file fetched as N byte ranges at once
-// and written in place. It shows what a range-parallel transport (Task 8) could gain on a
-// plain HTTP source, without running any additional tool.
+// and written in place, to show what a range-parallel transport could gain.
 function startRanges(baseUrl, scenario, parts) {
   const work = mkdtempSync(join(tmpdir(), "claws-bench-"));
   const started = performance.now();
@@ -291,8 +286,8 @@ try {
   const expected = {};
   for (const scenario of scenarios) expected[scenario] = (await (await fetch(`${fixtures.baseUrl}/sha256/${scenario}`)).text()).trim();
 
-  // Round 0 is the warm-up. Later rounds alternate the order of configurations, so slow
-  // drift (thermal, caches, background work) does not always favour the same one.
+  // Round 0 is the warm-up. Later rounds alternate the order so slow drift (thermal,
+  // caches) does not always favour the same configuration.
   for (let round = 0; round <= runs; round++) {
     const order = round % 2 === 0 ? configs : [...configs].reverse();
     for (const config of order) {

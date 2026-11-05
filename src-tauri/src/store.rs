@@ -50,9 +50,7 @@ fn backup_path(path: &Path) -> PathBuf {
 }
 
 /// Temp file, flushed to the disk, then an atomic rename: a crash leaves either the old
-/// file or the new one, never a half-written one. (A storage device that loses power can
-/// still lose what it acknowledged; no test here can prove otherwise.) Callers must hold
-/// the write lock.
+/// file or the new one, never a half-written one. Callers must hold the write lock.
 fn write_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     use std::io::Write;
     if let Some(parent) = path.parent() {

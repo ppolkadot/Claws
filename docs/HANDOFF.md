@@ -1,12 +1,13 @@
 # Claws: handoff
 
-Everything a new session (human or AI) needs to pick this project up. Lives at `docs/HANDOFF.md`. Last updated 2026-11-04.
+Everything a new session (human or AI) needs to pick this project up. Lives at `docs/HANDOFF.md`. Last updated 2026-11-05.
 
-## Current state: 1.0.4 (2026-11-04)
+## Current state: 1.0.5 (2026-11-05)
 
 This section supersedes the historical font, packaging and publication instructions below. Sections 1–17 record earlier work and observations, including the previous font setup; they are not the current build instructions.
 
-- Current version is **1.0.4** in package.json, package-lock.json, Cargo.toml, Cargo.lock and tauri.conf.json.
+- Source version is **1.0.5** in package.json, package-lock.json, Cargo.toml, Cargo.lock and tauri.conf.json. The installer was rebuilt from the reviewed source with `npm run tauri build` and copied to `installers/Claws_1.0.5_x64-setup.exe`: 2,839,767 bytes, SHA-256 `5380cffc46dd7ef85a52e5d44d5a6eb18b76e176164f9546296d9d19421bcfae`. Its archive passes integrity checks and its executable matches the optimized build exactly after Tauri's expected NSIS bundle marker patch; its executable version is 1.0.5. A fresh Windows installation and upgrade from an installed 1.0.4 remain untested.
+- Release publication is authorized after review. Target: https://github.com/ppolkadot/Claws/releases/tag/v1.0.5. Notes: `docs/releases/1.0.5.md`. Publish from the exact reviewed commit, verify uploaded asset digests and Latest, and retain the speed limitations documented there.
 - **Salted Flutters Polaris** is the interface font. Four WOFF2 weights (400, 500, 600, 700) and an unmodified `LICENSE.txt` ship in `public/fonts/`. Vite copies these to `dist/fonts/`, which Tauri embeds in the application. A fresh checkout needs no separately installed font or Python to build.
 - The four matching OTF sources and their license are project assets in `assets/fonts/polaris/`. To regenerate the WOFF2 files: install `fonttools[woff]`, then run `python scripts/build-fonts.py`. Missing sources fail explicitly. The separate local `Salted-Flutters-Polaris/` clone is optional and ignored.
 - The stylesheet and Settings use Polaris; the Settings download button opens https://github.com/ppolkadot/Salted-Flutters-Polaris. There is no optional proprietary font build path.
@@ -29,14 +30,14 @@ The supplied CFF outline programs inherit oversized default advances that disagr
 
 The issue was reproduced in the browser Settings screen: the 28 px heading measured 341.828 px before the repair and 103.453 px afterward. Regression checks cover every bundled glyph's outline advance, sampled outline geometry and preserved font metadata. Run `python -m unittest discover -s scripts -p test_font_metrics.py`. This is subsequent work after the published 1.0.4 release. A local installer was rebuilt successfully with the corrected fonts: Claws_1.0.4_x64-setup.exe, 2769214 bytes, SHA-256 9aadc5fedde599b89fc53e199366caac465a4c3ddcf4032b0c7454f07efce955. The repaired installer and its SHA-256 file are stored in `installers/` and committed with the font-spacing fix, as requested by the owner. The published release asset has not been replaced.
 
-## Download reliability work (branch `download-reliability`, unreleased)
+## Download reliability work included in 1.0.5 (branch `download-reliability`)
 
 The first pass implemented the original plan's first release candidate (its Tasks 1–10 and 15). A review of that pass (`docs/CURRENT_PROBLEMS_AND_SPEED_REVIEW.md`) found five lifecycle defects, B1–B5, and the plan was rewritten as remaining work only. The second pass (2026-11-05) closed B1–B5, measured the speed question under controlled conditions and batched large queue additions. Its details are under "Remaining-work pass" below; where they differ, they supersede "What changed".
 
 Not done:
 - The real slow-source diagnosis: no affected URL was available. See `docs/performance/speed-diagnosis.md`.
-- The plan's Tasks 6–8 (a measured speed fix, managed processing, optional aria2c) depend on that diagnosis.
-- The version bump, installer and release. Nothing has been pushed or released.
+- The remaining plan's Tasks 2–4 (a measured speed fix, managed processing, optional aria2c) depend on that diagnosis.
+- Fresh Windows installation and upgrade testing. Source versions are now synchronized at 1.0.5; see the release record above for packaging status.
 
 ### Remaining-work pass (2026-11-05)
 
@@ -44,7 +45,7 @@ Not done:
 - **Attempts (B1).** Try Again on a cancelled job calls `start_new_attempt`: cancel, error and progress cleared, `execution` kept, `attempt` + 1, `workspace` cleared. Work folders are `<12 hex>` for attempt 0 and `<12 hex>-<n>` after; `WorkspaceRef::attempt` and the marker's `attempt` must match (both default to 0 for older data). Pending cleanups are kept per work folder. `remove_workspace` deletes the marker last, so a file still in use never leaves an unprovable folder.
 - **Publication journal (B3).** Manifest schema 2 adds `moves`: per output, `Moving` (with a `FileIdentity`) is saved before the move and `Done` after; a side file whose name is taken is `Withheld`. The identity is the NTFS/ReFS volume serial and 128-bit file id (`GetFileInformationByHandleEx(FileIdInfo)`), else size and SHA-256. Recovery accepts a destination only if its identity matches. Schema 1 `published` entries still count. `WorkspaceRef` keeps its own schema (1).
 - **Completion transaction (B2).** `finish` records the Library entry (`history::record` now returns a `Result`) before settling; only after the queue save succeeds is the work folder cleaned, never while a side file is withheld. A failed Library save leaves the job Failed with its manifest; Try Again goes through the `Published` shortcut and only records it. `restore_queue` records an unrecorded completion once (an existing entry is left alone) or leaves the job Failed.
-- **Disk ledger (B5).** `AppState::disk_ledger` (`disk_budget::Ledger`) holds each running job's remaining demand: peak minus the work folder's bytes (sampled every 2 s), plus margin. Admission reads free space under its lock. Each `CLAWSPP|started` rechecks what is still needed and stops the step before it runs if it no longer fits. The claim is released when the process exits. `AppState::free_space` is replaceable for tests.
+- **Disk ledger (B5).** `AppState::disk_ledger` (`disk_budget::Ledger`) holds each running job's remaining demand: peak minus the work folder's bytes (sampled every 2 s), plus margin. Admission reads free space under its lock. Each `CLAWSPP|started` triggers a best-effort space recheck; it cannot gate FFmpeg before launch. Successful completed output wins over a late space notification, and a reaped process PID is never reused by that notification. Stopped jobs retain owned artifacts, which may be streams or merged output. The claim is released when the process exits. `AppState::free_space` is replaceable for tests.
 - **Queue view.** Structural syncs build at most 40 new rows per frame (`ROWS_PER_FRAME`), including when the view opens.
 - **Lifecycle tests** (`src-tauri/src/lifecycle_tests.rs`). The real downloader, writer and stores run through Tauri's mock runtime (`crate::Runtime` is `MockRuntime` under `cfg(test)`), with a disposable data folder and the fixture tool as yt-dlp. The job link selects its behaviour: `https://fixture.invalid/<ok|hang|fail>/<name>[/<planned bytes>]`. Saves are made to fail with a folder where the JSON file must go. The mock runtime needs the Common Controls v6 manifest, so `build.rs` links tauri-build's own manifest (`windows-app-manifest.xml`) into every target. Build the tool first: `cargo build --features test-tools --bin claws-fixture-tool`; without it these tests skip.
 - **Benchmarks.** `download-fixtures.py` adds per-connection (`/capped`, `/capped-hls`) and server-wide (`--global-rate-kib`) caps and `--segments`. `download-bench.mjs` adds `--jobs`, `--downloader native|aria2c|ranges:N` (`ranges:N` is a reference strategy run by the script itself, not a Claws code path) and process-tree CPU. `processing-bench.mjs` times merge, metadata, combined and audio steps with ffmpeg.
@@ -142,6 +143,12 @@ Lock order is unchanged: store write lock, `running`, `jobs`, `live_jobs`. `pend
   - no ffprobe check that Prefer Matching copies without encoding.
 - The disk-shortfall stop inside a running download. The decision logic is unit-tested.
 - Live sites, an installed NSIS build, and the upgrade from an installed 1.0.4.
+
+### Follow-up recovery and processing fixes (2026-11-05)
+
+The published media is validated against the destination's existence and stored identity before publication retry or startup recovery. A missing/replaced media file stays Failed with its recovery record retained. Already-published subtitle sidecars can be renamed or deleted without blocking Try Again. Published completion is considered before stale cancellation during startup; cancellation intent is cleared once publication has committed even if Library persistence fails. Startup restores these jobs as Processing and verifies/records them on a background worker, so FAT/exFAT hashing does not block app setup; they are reserved against duplicate starts. The frontend subscribes before bootstrap and replays buffered events afterward so recovery completion is not lost. Hashing still costs disk time on those filesystems; a large-file USB startup has not been measured.
+
+Processing-space notifications are explicitly best effort, preserve valid completed results and consult the current process registry before stopping a process. A strict pre-launch gate remains work for the managed processing pipeline. The speed diagnosis now limits its uncapped-throughput conclusion to standalone yt-dlp. The fixture's intentionally surviving child has a local Clippy allowance. Validation: 134 Rust tests, 11 queue tests, two font regression tests, a clean dependency install, the frontend build, Clippy with `test-tools` and warnings denied, and whitespace checks passed. These corrections are packaged in the 1.0.5 installer recorded above.
 
 ## Historical handoff (superseded where noted above)
 

@@ -1,9 +1,7 @@
 fn main() {
-    // tauri-build normally embeds its Windows application manifest (a dependency on Common
-    // Controls v6) into the app executables only. Test binaries need it too: without it the
-    // lifecycle tests, which link the mock runtime, fail to load with
-    // STATUS_ENTRYPOINT_NOT_FOUND (TaskDialogIndirect). So the same manifest is linked into
-    // every target here instead, as tauri-build's documentation suggests.
+    // tauri-build embeds its manifest (Common Controls v6) only into app executables; test
+    // binaries linking the mock runtime then fail to load with STATUS_ENTRYPOINT_NOT_FOUND
+    // (TaskDialogIndirect). So the same manifest is linked into every target here instead.
     let windows = tauri_build::WindowsAttributes::new_without_app_manifest();
     tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows)).expect("tauri-build failed");
 

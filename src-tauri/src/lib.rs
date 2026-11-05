@@ -85,7 +85,7 @@ pub fn run() {
             // Only with the notification-area icon, or a hidden window could not be found again.
             let start_hidden = settings.keep_running && std::env::args().any(|a| a == desktop::BACKGROUND_ARG);
             app.manage(AppState::new(data_dir, settings.clone(), history, pending_cleanup, queue_writer, start_hidden));
-            downloader::restore_queue(app.handle(), queue);
+            let _recovery = downloader::restore_queue(app.handle(), queue);
             let state = app.state::<AppState>();
             probe::prune_cache(&state.probe_cache_dir());
             links::prune(&links::cache_dir(&state.data_dir));

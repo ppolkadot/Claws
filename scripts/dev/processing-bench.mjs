@@ -9,7 +9,7 @@
 //
 //   merge            video + audio -> MP4, stream copy (what yt-dlp's merger does)
 //   metadata         rewrite of the merged MP4 with tags, stream copy (--embed-metadata)
-//   merge+metadata   both in a single ffmpeg pass (the combined processing Task 7 asks about)
+//   merge+metadata   both in a single ffmpeg pass
 //   audio-mp3        Opus -> MP3 at libmp3lame -q:a 0 (Claws' --audio-quality 0 conversion)
 //   audio-copy       Opus -> .opus with the stream copied (a matching source, no encoding)
 //
@@ -66,7 +66,6 @@ const median = (values) => {
 };
 
 try {
-  // --- inputs (untimed) ---------------------------------------------------------------
   console.log("generating inputs...");
   // A 60-second lossless chunk with grain (barely compressible, like real high-bitrate
   // video), repeated with the concat demuxer up to the target size.

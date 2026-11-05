@@ -49,8 +49,7 @@ pub struct Settings {
     pub keep_running: bool,
     /// Start (hidden, in the notification area) when the user signs in to Windows.
     pub open_at_login: bool,
-    /// Which audio stream to fetch for audio-only downloads. Missing in older files, which
-    /// keep the behaviour they had (`Best`).
+    /// Which audio stream to fetch for audio-only downloads.
     #[serde(default)]
     pub audio_selection: AudioSelection,
 }

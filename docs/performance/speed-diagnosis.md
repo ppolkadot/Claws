@@ -50,9 +50,8 @@ binary was not permitted in this session.
 
 What the transfer results say:
 
-- **Claws' own overhead is not a ceiling.** Uncapped, one plain HTTP download runs at
-  about 215 MiB/s and 1.3–1.5 CPU-seconds per job (D). A slow real download is limited
-  elsewhere.
+- **The standalone engine is not the measured ceiling.** Uncapped, one plain HTTP download runs at
+  about 215 MiB/s and 1.3–1.5 CPU-seconds per job (D). This does not identify the cause of a slow real source or rule out overhead in the native Claws app.
 - **HLS/DASH against a per-connection limit is already handled.** Throughput scales with
   fragments (B: 7.1 → 22.6 → 34.0 MiB/s for 1/4/8), and Claws already uses 8. No change
   is indicated; raising it is not tested and not recommended without a real source.

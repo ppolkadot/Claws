@@ -1,15 +1,10 @@
-//! Overall progress across the streams of one download, weighted by bytes.
+//! Overall progress across the streams of one download, weighted by bytes:
+//! `sum(downloaded) / sum(expected)`, since a 9 GiB video and a 100 MiB audio track are
+//! not two equal halves. When any expected size is unknown there is no honest percentage,
+//! only bytes and speed.
 //!
-//! yt-dlp reports each stream on its own (video, then audio). A 9 GiB video and a
-//! 100 MiB audio track are not two equal halves, so the overall fraction is
-//! `sum(downloaded) / sum(expected)` over the selected streams. When any expected size is
-//! unknown there is no honest overall percentage: the job reports bytes and speed, and the
-//! interface shows an indeterminate bar. Sizes that are estimates are marked as such, and
-//! an estimate that changes moves the bar with it (it can step back slightly).
-//!
-//! Streams are identified by their format id (from `%(info.format_id)s`), not by noticing
-//! that the file name changed, so repeated or resumed progress for one stream never counts
-//! as another stream.
+//! Streams are identified by format id, not by file-name changes, so resumed progress for
+//! one stream never counts as another.
 
 /// Expected size of one stream and where it came from.
 #[derive(Clone, Copy, Debug, PartialEq)]

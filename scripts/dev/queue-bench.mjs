@@ -9,8 +9,8 @@
 //   2. sends 40 rounds of progress, one event per active job per round, a frame apart.
 // Recorded per phase, from CDP Performance.getMetrics and a longtask observer:
 // script, layout and style-recalculation milliseconds, and long tasks (> 50 ms).
-// If the page exposes window.__clawsQueueStats (dev builds after the incremental queue
-// change), structural syncs and row paints are recorded too.
+// If the page exposes window.__clawsQueueStats (dev builds), structural syncs and row
+// paints are recorded too.
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

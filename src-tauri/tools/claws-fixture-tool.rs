@@ -12,6 +12,7 @@
 //! `fixture-starts.log` two folders above `-P` (the output folder of a work folder).
 //!
 //! ok    two streams (video, audio) with progress, a merge, then CLAWSDONE; exit 0
+//! ok-fast  like ok, but the merge does not pause (for races with a late notification)
 //! fail  one stream that stops halfway with an ERROR line; exit 1
 //! hang  starts a stream and then waits forever (for pause/cancel tests)
 //! tree  like hang, but first starts a copy of itself as a child, which also waits
@@ -77,13 +78,15 @@ fn main() {
     };
 
     match scenario.as_str() {
-        "ok" => {
+        "ok" | "ok-fast" => {
             writeln!(out, "CLAWSFMT|137|{bytes}|NA|140|{}|NA|137+140|NA|NA", bytes / 10).unwrap();
             let video = stream(&mut out, "137", "mp4", bytes, None).unwrap();
             let audio = stream(&mut out, "140", "m4a", bytes / 10, None).unwrap();
             eprintln!("CLAWSPP|started|Merger");
             // A merge takes a while (ffmpeg reads and writes the whole file).
-            std::thread::sleep(Duration::from_millis(1500));
+            if scenario != "ok-fast" {
+                std::thread::sleep(Duration::from_millis(1500));
+            }
             let merged = dir.join(format!("{name}.mp4"));
             std::fs::write(&merged, b"merged").unwrap();
             let _ = std::fs::remove_file(video);
@@ -99,6 +102,8 @@ fn main() {
         }
         "hang" | "tree" => {
             if scenario == "tree" {
+                // Intentionally left alive: the test verifies whole-tree termination.
+                #[allow(clippy::zombie_processes)]
                 let child = std::process::Command::new(std::env::current_exe().unwrap())
                     .args(["-P", &dir.to_string_lossy(), "--scenario", "hang", "--name", &format!("{name}-child")])
                     .stdout(std::process::Stdio::null())
