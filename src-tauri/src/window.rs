@@ -1,4 +1,4 @@
-use tauri::WebviewWindow;
+use crate::WebviewWindow;
 
 /// "glass" uses the accent policy, the only API that blurs the desktop without
 /// Acrylic's tint and noise; "acrylic", "mica" and "tabbed" are DWM system backdrops.

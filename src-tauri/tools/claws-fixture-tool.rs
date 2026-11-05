@@ -7,6 +7,10 @@
 //!
 //!   claws-fixture-tool -P <dir> [--scenario ok|fail|hang|tree] [--bytes N] [--name clip]
 //!
+//! When Claws itself runs it as yt-dlp, the scenario and name come from the job's link,
+//! `https://fixture.invalid/<scenario>[/<name>]`, and every start is appended to
+//! `fixture-starts.log` two folders above `-P` (the output folder of a work folder).
+//!
 //! ok    two streams (video, audio) with progress, a merge, then CLAWSDONE; exit 0
 //! fail  one stream that stops halfway with an ERROR line; exit 1
 //! hang  starts a stream and then waits forever (for pause/cancel tests)
@@ -27,10 +31,25 @@ fn main() {
             "--scenario" => scenario = args.next().expect("--scenario needs a value"),
             "--bytes" => bytes = args.next().and_then(|b| b.parse().ok()).expect("--bytes needs a number"),
             "--name" => name = args.next().expect("--name needs a value"),
+            link if link.starts_with("https://fixture.invalid/") => {
+                let mut parts = link["https://fixture.invalid/".len()..].split('/').filter(|p| !p.is_empty());
+                if let Some(s) = parts.next() {
+                    scenario = s.to_string();
+                }
+                if let Some(n) = parts.next() {
+                    name = n.to_string();
+                }
+            }
             _ => {}
         }
     }
     std::fs::create_dir_all(&dir).expect("cannot create the output directory");
+    if let Some(output) = dir.parent().and_then(|p| p.parent()) {
+        use std::io::Write as _;
+        if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(output.join("fixture-starts.log")) {
+            let _ = writeln!(log, "{scenario} {name} {}", dir.display());
+        }
+    }
     let out = std::io::stdout();
     let mut out = out.lock();
 
@@ -83,9 +102,12 @@ fn main() {
                 writeln!(out, "CHILD|{}", child.id()).unwrap();
             }
             writeln!(out, "CLAWSFMT|18|{bytes}|NA|NA|NA|NA|18|{bytes}|NA").unwrap();
+            // Resumes like yt-dlp: an existing partial file is continued, not replaced.
             let part = dir.join(format!("{name}.f18.mp4.part"));
-            std::fs::write(&part, b"partial").unwrap();
-            writeln!(out, "CLAWS|downloading|7|{bytes}|NA|1000|NA|NA|NA|18|{}", dir.join(format!("{name}.f18.mp4")).display()).unwrap();
+            let mut previous = std::fs::read(&part).unwrap_or_default();
+            previous.extend_from_slice(b"partial");
+            std::fs::write(&part, &previous).unwrap();
+            writeln!(out, "CLAWS|downloading|{}|{bytes}|NA|1000|NA|NA|NA|18|{}", previous.len(), dir.join(format!("{name}.f18.mp4")).display()).unwrap();
             out.flush().unwrap();
             loop {
                 std::thread::sleep(Duration::from_secs(3600));

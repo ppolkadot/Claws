@@ -1,3 +1,6 @@
+// Tests drive the real lifecycle code against a mock app, so the runtime is an alias.
+#![cfg_attr(test, allow(dead_code))]
+
 mod bounded_io;
 mod commands;
 mod desktop;
@@ -9,6 +12,8 @@ mod download_policy;
 mod downloader;
 mod error;
 mod history;
+#[cfg(test)]
+mod lifecycle_tests;
 mod links;
 mod probe;
 mod queue_writer;
@@ -19,20 +24,26 @@ mod tools;
 mod transfer_progress;
 mod window;
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Mutex;
-use std::time::Duration;
+#[cfg(not(test))]
+pub(crate) type Runtime = tauri::Wry;
+#[cfg(test)]
+pub(crate) type Runtime = tauri::test::MockRuntime;
+pub(crate) type AppHandle = tauri::AppHandle<Runtime>;
+pub(crate) type WebviewWindow = tauri::WebviewWindow<Runtime>;
 
-use tauri::Manager;
-
-use crate::downloader::{Job, PendingCleanup};
-use crate::history::HistoryItem;
-use crate::settings::Settings;
-use crate::state::AppState;
-
+#[cfg(not(test))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use tauri::Manager;
+
+    use crate::downloader::{Job, PendingCleanup};
+    use crate::history::HistoryItem;
+    use crate::settings::Settings;
+    use crate::state::AppState;
+
     let app = tauri::Builder::default()
         // Must be registered first. A second launch would run its own queue against the
         // same files, so it brings the existing window forward instead.
@@ -70,53 +81,10 @@ pub fn run() {
             let queue: Vec<Job> = queue_writer::load(&data_dir.join("queue.json"), &mut notices);
             let pending_cleanup: Vec<PendingCleanup> = store::load_or_recover(&data_dir.join("cleanup.json"), "cleanup list", &mut notices);
 
-            let http = reqwest::Client::builder()
-                .user_agent(concat!("Claws/", env!("CARGO_PKG_VERSION")))
-                .connect_timeout(Duration::from_secs(15))
-                .build()?;
-
-            let writer_app = app.handle().clone();
-            let report_app = app.handle().clone();
-            let queue_writer = queue_writer::QueueWriter::start(
-                Box::new(move || {
-                    let state = writer_app.state::<AppState>();
-                    let mut revision = 0;
-                    store::save_snapshot(&state.queue_path(), || {
-                        let snapshot = downloader::queue_snapshot(&state);
-                        revision = snapshot.revision;
-                        snapshot
-                    })
-                    .map(|()| revision)
-                    .map_err(|e| e.to_string())
-                }),
-                Box::new(move |e| error::notify(&report_app, format!("Claws could not save the queue: {e}"))),
-            );
-
-            app.manage(AppState {
-                data_dir,
-                settings: Mutex::new(settings.clone()),
-                history: Mutex::new(history),
-                jobs: Mutex::new(Vec::new()),
-                running: Mutex::new(HashMap::new()),
-                http,
-                engine: tokio::sync::RwLock::new(()),
-                notices: Mutex::new(Vec::new()),
-                shutting_down: AtomicBool::new(false),
-                workers: AtomicUsize::new(0),
-                live_jobs: Mutex::new(std::collections::HashSet::new()),
-                probes: Mutex::new(HashMap::new()),
-                recent_probes: Mutex::new(Vec::new()),
-                // Only with the notification-area icon, or a hidden window could not be found again.
-                start_hidden: AtomicBool::new(
-                    settings.keep_running && std::env::args().any(|a| a == desktop::BACKGROUND_ARG),
-                ),
-                pending_cleanup: Mutex::new(pending_cleanup),
-                destinations: Mutex::new(std::collections::HashSet::new()),
-                queue_revision: std::sync::atomic::AtomicU64::new(0),
-                job_revision: std::sync::atomic::AtomicU64::new(0),
-                disk_reservations: Mutex::new(HashMap::new()),
-                queue_writer,
-            });
+            let queue_writer = downloader::start_queue_writer(app.handle());
+            // Only with the notification-area icon, or a hidden window could not be found again.
+            let start_hidden = settings.keep_running && std::env::args().any(|a| a == desktop::BACKGROUND_ARG);
+            app.manage(AppState::new(data_dir, settings.clone(), history, pending_cleanup, queue_writer, start_hidden));
             downloader::restore_queue(app.handle(), queue);
             let state = app.state::<AppState>();
             probe::prune_cache(&state.probe_cache_dir());

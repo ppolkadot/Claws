@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{Emitter, Manager};
+
+use crate::AppHandle;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
