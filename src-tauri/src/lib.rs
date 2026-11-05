@@ -1,5 +1,6 @@
 mod commands;
 mod desktop;
+mod disk_budget;
 #[cfg(test)]
 mod download_tests;
 mod download_files;
@@ -112,6 +113,7 @@ pub fn run() {
                 destinations: Mutex::new(std::collections::HashSet::new()),
                 queue_revision: std::sync::atomic::AtomicU64::new(0),
                 job_revision: std::sync::atomic::AtomicU64::new(0),
+                disk_reservations: Mutex::new(HashMap::new()),
                 queue_writer,
             });
             downloader::restore_queue(app.handle(), queue);
