@@ -57,6 +57,42 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn new(
+        data_dir: PathBuf,
+        settings: Settings,
+        history: Vec<HistoryItem>,
+        pending_cleanup: Vec<PendingCleanup>,
+        queue_writer: QueueWriter,
+        start_hidden: bool,
+    ) -> Self {
+        Self {
+            data_dir,
+            settings: Mutex::new(settings),
+            history: Mutex::new(history),
+            jobs: Mutex::new(Vec::new()),
+            running: Mutex::new(HashMap::new()),
+            http: reqwest::Client::builder()
+                .user_agent(concat!("Claws/", env!("CARGO_PKG_VERSION")))
+                .connect_timeout(std::time::Duration::from_secs(15))
+                .build()
+                .unwrap_or_default(),
+            engine: tokio::sync::RwLock::new(()),
+            notices: Mutex::new(Vec::new()),
+            shutting_down: AtomicBool::new(false),
+            workers: AtomicUsize::new(0),
+            live_jobs: Mutex::new(HashSet::new()),
+            probes: Mutex::new(HashMap::new()),
+            recent_probes: Mutex::new(Vec::new()),
+            start_hidden: AtomicBool::new(start_hidden),
+            pending_cleanup: Mutex::new(pending_cleanup),
+            destinations: Mutex::new(HashSet::new()),
+            queue_revision: AtomicU64::new(0),
+            disk_reservations: Mutex::new(HashMap::new()),
+            job_revision: AtomicU64::new(0),
+            queue_writer,
+        }
+    }
+
     pub fn settings_path(&self) -> PathBuf {
         self.data_dir.join("settings.json")
     }

@@ -46,6 +46,10 @@ uuid = { version = "1.20.0", features = ["v4"] }
 which = "8.0.6"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
+[dev-dependencies]
+# A mock app handle, so lifecycle tests drive the real downloader functions.
+tauri = { version = "2", features = ["test"] }
+
 [profile.release]
 codegen-units = 1
 lto = true

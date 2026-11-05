@@ -7,7 +7,9 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager};
+use tauri::Manager;
+
+use crate::AppHandle;
 
 use crate::probe::{self, validate_url, ProbeResult};
 use crate::state::AppState;

@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{Emitter, Manager};
+
+use crate::AppHandle;
 
 use crate::downloader::Job;
 use crate::error::notify;

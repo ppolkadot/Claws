@@ -4,7 +4,9 @@ use std::sync::atomic::Ordering;
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{Emitter, Manager};
+
+use crate::AppHandle;
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
@@ -41,7 +43,7 @@ fn quick_open(app: &AppHandle) {
     let _ = app.emit("quick-open", ());
 }
 
-pub fn shortcut_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+pub fn shortcut_plugin() -> tauri::plugin::TauriPlugin<crate::Runtime> {
     tauri_plugin_global_shortcut::Builder::new()
         .with_handler(|app, _shortcut, event| {
             if event.state() != ShortcutState::Pressed {

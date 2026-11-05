@@ -7,7 +7,9 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager};
+use tauri::Manager;
+
+use crate::AppHandle;
 
 use crate::bounded_io;
 use crate::downloader::kill_tree;

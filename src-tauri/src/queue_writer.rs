@@ -40,6 +40,11 @@ struct Progress {
     urgent: bool,
     /// The last attempt failed; reported once until a save succeeds again.
     failing: bool,
+    /// Save attempts begun so far, and the number and error of the latest failed one. A
+    /// barrier fails as soon as an attempt that began after it was requested fails.
+    attempts: u64,
+    failed_attempt: u64,
+    last_error: String,
     stopped: bool,
 }
 
@@ -85,6 +90,7 @@ impl QueueWriter {
                         p = worker.changed.wait_timeout(p, left).unwrap().0;
                     }
                     p.urgent = false;
+                    p.attempts += 1;
                 }
                 let result = save();
                 let mut p = worker.progress.lock().unwrap();
@@ -97,7 +103,10 @@ impl QueueWriter {
                     Err(error) => {
                         let first = !p.failing;
                         p.failing = true;
-                        // Waiters give up at their own timeout; the change stays dirty.
+                        p.failed_attempt = p.attempts;
+                        p.last_error = error.clone();
+                        // Barriers waiting on this attempt fail now; the change stays dirty
+                        // and is retried.
                         worker.changed.notify_all();
                         drop(p);
                         if first {
@@ -126,21 +135,33 @@ impl QueueWriter {
         self.shared.changed.notify_all();
     }
 
-    /// Saves now and waits until `revision` or a newer snapshot is durable. Returns false
-    /// if that did not happen within `timeout` (a failing disk); the change stays pending.
+    /// Saves now and waits until `revision` or a newer snapshot is durable. Fails when a
+    /// save that began after this request fails, when `timeout` passes first, or when the
+    /// writer has stopped; the change then stays pending and is retried in the background.
     /// Blocks: call it from a blocking context, never while holding a state lock.
-    pub fn flush(&self, revision: u64, timeout: Duration) -> bool {
-        self.request(revision, true);
+    pub fn flush(&self, revision: u64, timeout: Duration) -> Result<(), String> {
         let deadline = Instant::now() + timeout;
         let mut p = self.shared.progress.lock().unwrap();
+        // An attempt already running may have taken its snapshot before this revision;
+        // only attempts numbered after this one are sure to contain it.
+        let begun = p.attempts;
+        p.requested = p.requested.max(revision);
+        p.urgent = true;
+        self.shared.changed.notify_all();
         while p.durable < revision {
+            if p.failed_attempt > begun {
+                return Err(p.last_error.clone());
+            }
+            if p.stopped {
+                return Err("the queue writer has stopped".into());
+            }
             let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() || p.stopped {
-                return false;
+            if left.is_zero() {
+                return Err(format!("saving took longer than {} seconds", timeout.as_secs()));
             }
             p = self.shared.changed.wait_timeout(p, left).unwrap().0;
         }
-        true
+        Ok(())
     }
 
     /// Saves anything pending, then ends the thread.
@@ -248,7 +269,7 @@ mod tests {
             let rev = revision.fetch_add(1, Ordering::SeqCst) + 1;
             writer.request(rev, false);
         }
-        assert!(writer.flush(50, Duration::from_secs(5)));
+        assert!(writer.flush(50, Duration::from_secs(5)).is_ok());
         assert!(saves.load(Ordering::SeqCst) <= 3, "{} saves for 50 updates", saves.load(Ordering::SeqCst));
         writer.stop();
     }
@@ -257,7 +278,7 @@ mod tests {
     fn a_barrier_does_not_wait_for_the_coalescing_delay() {
         let (writer, _) = writer_with(|| Ok(1));
         let started = Instant::now();
-        assert!(writer.flush(1, Duration::from_secs(5)));
+        assert!(writer.flush(1, Duration::from_secs(5)).is_ok());
         assert!(started.elapsed() < Duration::from_millis(200), "{:?}", started.elapsed());
         writer.stop();
     }
@@ -270,7 +291,7 @@ mod tests {
         revision.store(5, Ordering::SeqCst);
         writer.request(5, true);
         writer.request(3, true); // a late, older notification
-        assert!(writer.flush(5, Duration::from_secs(5)));
+        assert!(writer.flush(5, Duration::from_secs(5)).is_ok());
         assert_eq!(writer.durable(), 5);
         writer.request(4, true);
         std::thread::sleep(Duration::from_millis(50));
@@ -305,7 +326,7 @@ mod tests {
         threads.into_iter().for_each(|t| t.join().unwrap());
         let last = revision.load(Ordering::SeqCst);
         assert_eq!(last, 80);
-        assert!(writer.flush(last, Duration::from_secs(5)));
+        assert!(writer.flush(last, Duration::from_secs(5)).is_ok());
         assert_eq!(writer.durable(), 80);
         writer.stop();
     }
@@ -321,11 +342,33 @@ mod tests {
                 Ok(1)
             }
         });
-        assert!(!writer.flush(1, Duration::from_millis(300)), "the first attempt fails");
-        // It keeps retrying in the background and succeeds on the third attempt.
-        assert!(writer.flush(1, Duration::from_secs(10)));
+        let started = Instant::now();
+        assert_eq!(writer.flush(1, Duration::from_secs(10)), Err("disk full".to_string()), "the first attempt fails");
+        assert!(started.elapsed() < Duration::from_secs(1), "a failed save is reported at once, not at the timeout");
+        // A new barrier asks for a new attempt; the third one succeeds.
+        assert!(writer.flush(1, Duration::from_secs(10)).is_err());
+        assert!(writer.flush(1, Duration::from_secs(10)).is_ok());
         assert_eq!(reports.lock().unwrap().as_slice(), ["disk full"]);
         writer.stop();
+    }
+
+    #[test]
+    fn a_slow_save_times_the_barrier_out_and_still_lands() {
+        let (writer, _) = writer_with(|| {
+            std::thread::sleep(Duration::from_millis(400));
+            Ok(1)
+        });
+        let err = writer.flush(1, Duration::from_millis(100)).unwrap_err();
+        assert!(err.contains("longer than"), "{err}");
+        assert!(writer.flush(1, Duration::from_secs(5)).is_ok());
+        writer.stop();
+    }
+
+    #[test]
+    fn a_barrier_after_stop_fails() {
+        let (writer, _) = writer_with(|| Ok(1));
+        writer.stop();
+        assert!(writer.flush(2, Duration::from_secs(1)).is_err());
     }
 
     #[test]

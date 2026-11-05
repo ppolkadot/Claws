@@ -1,5 +1,7 @@
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{Manager, State};
+
+use crate::{AppHandle, WebviewWindow};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::desktop;
@@ -91,8 +93,8 @@ pub fn cancel_job(app: AppHandle, id: String) {
 }
 
 #[tauri::command]
-pub fn remove_job(app: AppHandle, id: String) {
-    downloader::remove(&app, &id);
+pub fn remove_job(app: AppHandle, id: String) -> Result<()> {
+    downloader::remove(&app, &id)
 }
 
 #[tauri::command]

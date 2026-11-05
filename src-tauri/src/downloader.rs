@@ -5,7 +5,9 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{Emitter, Manager};
+
+use crate::AppHandle;
 use tokio::io::BufReader;
 
 use crate::bounded_io;
@@ -274,18 +276,45 @@ fn persist_queue(app: &AppHandle) {
     state.queue_writer.request(revision, false);
 }
 
-/// Saves the queue now and waits until it is on disk (bounded). For transitions that
-/// must survive a crash: a job's work folder being committed, a cancel before its files
-/// are deleted, a completion before the library mentions it, and shutdown. Blocking.
-pub fn flush_queue(app: &AppHandle) -> bool {
-    let state = app.state::<AppState>();
-    let revision = state.queue_revision.fetch_add(1, Ordering::SeqCst) + 1;
-    state.queue_writer.flush(revision, Duration::from_secs(5))
+const FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn queue_save_error(detail: impl std::fmt::Display) -> AppError {
+    AppError::msg(format!("Claws could not save its download queue ({detail})."))
 }
 
-async fn flush_queue_async(app: &AppHandle) {
+/// Saves the queue now and waits until it is on disk (bounded). For transitions that
+/// must survive a crash: a job's start (its settings and work folder), a cancel before
+/// its files are deleted, a completion before its recovery record goes, and shutdown.
+/// The caller must not go on with what depends on it when this fails. Blocking.
+pub fn flush_queue(app: &AppHandle) -> Result<()> {
+    let state = app.state::<AppState>();
+    let revision = state.queue_revision.fetch_add(1, Ordering::SeqCst) + 1;
+    state.queue_writer.flush(revision, FLUSH_TIMEOUT).map_err(queue_save_error)
+}
+
+async fn flush_queue_async(app: &AppHandle) -> Result<()> {
     let app = app.clone();
-    let _ = tokio::task::spawn_blocking(move || flush_queue(&app)).await;
+    tokio::task::spawn_blocking(move || flush_queue(&app)).await.map_err(queue_save_error)?
+}
+
+/// The queue writer, saving `queue_snapshot` to queue.json.
+pub fn start_queue_writer(app: &AppHandle) -> crate::queue_writer::QueueWriter {
+    let writer_app = app.clone();
+    let report_app = app.clone();
+    crate::queue_writer::QueueWriter::start(
+        Box::new(move || {
+            let state = writer_app.state::<AppState>();
+            let mut revision = 0;
+            store::save_snapshot(&state.queue_path(), || {
+                let snapshot = queue_snapshot(&state);
+                revision = snapshot.revision;
+                snapshot
+            })
+            .map(|()| revision)
+            .map_err(|e| e.to_string())
+        }),
+        Box::new(move |e| notify(&report_app, format!("Claws could not save the queue: {e}"))),
+    )
 }
 
 fn update_job(app: &AppHandle, id: &str, change: impl FnOnce(&mut Job)) -> Option<Job> {
@@ -365,7 +394,7 @@ pub fn restore_queue(app: &AppHandle, saved: Vec<Job>) {
     let app = app.clone();
     std::thread::spawn(move || {
         for item in cleanup {
-            cleanup_now(&app, item);
+            cleanup_when_recorded(&app, item);
         }
         retry_pending_cleanup(&app);
     });
@@ -660,15 +689,29 @@ impl PendingCleanup {
 }
 
 /// Records a cleanup in cleanup.json before anything is deleted, so a crash midway is
-/// finished at the next start.
-fn register_cleanup(app: &AppHandle, item: &PendingCleanup) {
+/// finished at the next start. Nothing may be deleted when this fails.
+fn register_cleanup(app: &AppHandle, item: &PendingCleanup) -> Result<()> {
     let state = app.state::<AppState>();
     {
         let mut pending = state.pending_cleanup.lock().unwrap();
         pending.retain(|p| p.job_id != item.job_id);
         pending.push(item.clone());
     }
-    save_pending_cleanup(app);
+    save_pending_cleanup(app)
+}
+
+/// Deletes a job's leftovers once the state that explains the deletion and the record
+/// that finishes it after a crash are both on disk; otherwise deletes nothing. Blocking.
+fn cleanup_when_recorded(app: &AppHandle, item: PendingCleanup) {
+    if item.is_empty() {
+        return;
+    }
+    match flush_queue(app).and_then(|()| register_cleanup(app, &item)) {
+        Ok(()) => {
+            cleanup_now(app, item);
+        }
+        Err(e) => notify(app, format!("{e} The unfinished files were left where they are; nothing was deleted.")),
+    }
 }
 
 fn spawn_cleanup(app: &AppHandle, item: PendingCleanup) {
@@ -677,13 +720,7 @@ fn spawn_cleanup(app: &AppHandle, item: PendingCleanup) {
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = tokio::task::spawn_blocking(move || {
-            // The cancelled state is on disk before its files go.
-            flush_queue(&app);
-            register_cleanup(&app, &item);
-            cleanup_now(&app, item)
-        })
-        .await;
+        let _ = tokio::task::spawn_blocking(move || cleanup_when_recorded(&app, item)).await;
     });
 }
 
@@ -713,17 +750,18 @@ fn cleanup_now(app: &AppHandle, item: PendingCleanup) -> bool {
         *pending != before
     };
     if changed {
-        save_pending_cleanup(app);
+        // A stale entry only repeats a deletion that already happened.
+        if let Err(e) = save_pending_cleanup(app) {
+            notify(app, e.to_string());
+        }
     }
     removed
 }
 
-fn save_pending_cleanup(app: &AppHandle) {
+fn save_pending_cleanup(app: &AppHandle) -> Result<()> {
     let state = app.state::<AppState>();
-    let result = store::save_snapshot(&state.cleanup_path(), || state.pending_cleanup.lock().unwrap().clone());
-    if let Err(e) = result {
-        notify(app, format!("Claws could not save its cleanup list: {e}"));
-    }
+    store::save_snapshot(&state.cleanup_path(), || state.pending_cleanup.lock().unwrap().clone())
+        .map_err(|e| AppError::msg(format!("Claws could not save its cleanup list ({e}).")))
 }
 
 /// Retries cleanups that could not finish earlier because a file was still in use.
@@ -734,9 +772,9 @@ pub fn retry_pending_cleanup(app: &AppHandle) {
     }
 }
 
-pub fn remove(app: &AppHandle, id: &str) {
+pub fn remove(app: &AppHandle, id: &str) -> Result<()> {
     let state = app.state::<AppState>();
-    let Some(job) = find_job(app, id) else { return };
+    let Some(job) = find_job(app, id) else { return Ok(()) };
     let leftovers = PendingCleanup::of(&job);
     let handed_off = {
         let mut running = state.running.lock().unwrap();
@@ -757,8 +795,8 @@ pub fn remove(app: &AppHandle, id: &str) {
     // Finished downloads keep their file; anything unfinished loses its leftovers.
     let clean = !handed_off && job.status != JobStatus::Completed && !leftovers.is_empty();
     if clean {
-        // Recorded before the job disappears, so an interrupted cleanup is retried.
-        register_cleanup(app, &leftovers);
+        // Recorded before the job disappears: the queue entry is what finds its files.
+        register_cleanup(app, &leftovers).map_err(|e| AppError::msg(format!("{e} The download was not removed.")))?;
     }
     state.jobs.lock().unwrap().retain(|j| j.id != id);
     emit_removed(app, id);
@@ -766,6 +804,7 @@ pub fn remove(app: &AppHandle, id: &str) {
     if clean {
         spawn_cleanup(app, leftovers);
     }
+    Ok(())
 }
 
 pub fn clear_finished(app: &AppHandle) {
@@ -839,11 +878,20 @@ pub fn shutdown(app: &AppHandle) {
         }
     }
     // The cancellations are saved before anything is deleted, so no deleted file can
-    // belong to a job that comes back paused.
-    flush_queue(app);
-    let leftovers: Vec<PendingCleanup> = leftovers.into_iter().filter(|l| !l.is_empty()).collect();
-    for item in &leftovers {
-        register_cleanup(app, item);
+    // belong to a job that comes back paused. If that save fails, nothing is deleted.
+    let mut leftovers: Vec<PendingCleanup> = leftovers.into_iter().filter(|l| !l.is_empty()).collect();
+    match flush_queue(app) {
+        Ok(()) => leftovers.retain(|item| match register_cleanup(app, item) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("{e} The unfinished files of a cancelled download were kept.");
+                false
+            }
+        }),
+        Err(e) => {
+            eprintln!("{e} The unfinished files of cancelled downloads were kept.");
+            leftovers.clear();
+        }
     }
     if !leftovers.is_empty() {
         // Give Windows a moment to release the killed processes' handles.
@@ -852,7 +900,10 @@ pub fn shutdown(app: &AppHandle) {
             cleanup_now(app, item);
         }
     }
-    flush_queue(app);
+    // Reported, never assumed: the writer stopping does not mean the last state is saved.
+    if let Err(e) = flush_queue(app) {
+        eprintln!("{e} Downloads may come back as they were before the last change.");
+    }
     state.queue_writer.stop();
 }
 
@@ -1301,8 +1352,12 @@ async fn prepare(
             j.execution = Some(execution.clone());
             j.workspace = Some(workspace.clone());
         });
-        flush_queue_async(app).await;
     }
+    // Every start: the job's settings, work folder and state are on disk before yt-dlp
+    // may write a byte. A failed save starts nothing and keeps the work folder.
+    flush_queue_async(app)
+        .await
+        .map_err(|e| format!("{e} The download was not started and nothing was lost. Press Try Again once the problem is fixed."))?;
     Ok((execution, workspace, manifest))
 }
 
@@ -1519,18 +1574,14 @@ async fn finish(app: &AppHandle, id: &str, outcome: Outcome) {
             None
         }
     };
-    // The final state is durable before any file is deleted or the library mentions it.
-    flush_queue_async(app).await;
     if let Some(item) = cancelled.filter(|i| !i.is_empty()) {
         // The process tree is gone, but Windows may release its handles a moment later;
         // `remove_workspace` retries, and a folder still in use is retried at next start.
         tokio::time::sleep(Duration::from_millis(300)).await;
         let app = app.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            register_cleanup(&app, &item);
-            cleanup_now(&app, item)
-        })
-        .await;
+        let _ = tokio::task::spawn_blocking(move || cleanup_when_recorded(&app, item)).await;
+    } else if let Err(e) = flush_queue_async(app).await {
+        notify(app, e.to_string());
     }
     if let Some(job) = completed {
         history::record(app, &job);
