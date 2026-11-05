@@ -51,7 +51,7 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
   - Unfinished downloads survive a restart as paused.
   - A paused download keeps the folder and file name it started with, even if you change them in Settings.
 - **Safe with your files.** Each download works in its own hidden folder until it is finished. Cancelling deletes that folder and nothing else. A finished file never replaces a file that already exists.
-- **Disk space check.** Before a large download starts, Claws estimates the space it will need, including the extra copy while merging. If the disk is too full, it stops with the numbers instead of failing halfway.
+- **Disk space check.** Before a large download starts, Claws estimates the space it will need, including the extra copy while merging, and checks again before each processing step. If the disk is too full, it stops with the numbers instead of failing halfway.
 - **Library.** Finished downloads with artwork and search. Open them or show them in their folder.
 - **Sign-in.** Use cookies from your browser, or a `cookies.txt` file, for sites that need you to be logged in.
 - **Instant repeat lookups.** Links you have downloaded keep their details, so looking one up again shows it at once while Claws checks the site for changes. Pick any item under **Recent** to see it again.
@@ -299,13 +299,21 @@ Claws never replaces a file that is already in the output folder. Getting the sa
 <details>
 <summary><b>"Not enough free space"</b></summary>
 
-Large videos need room for the downloaded streams and for the merged file while both exist, plus a safety margin. Free up space on the drive named in the message, or choose another output folder for new downloads. Then press **Try Again**: what was already downloaded is kept.
+Large videos need room for the downloaded streams and for the merged file while both exist, plus a safety margin. Space other downloads have already used is not counted twice: each running download holds only what it still needs. The check runs before the transfer and again before each processing step (merging, embedding), so a disk that filled up meanwhile stops the step before it starts. Free up space on the drive named in the message, or choose another output folder for new downloads. Then press **Try Again**: what was already downloaded is kept.
+</details>
+
+<details>
+<summary><b>"Claws could not save its download queue" or "…could not add it to your Library"</b></summary>
+
+Claws keeps its own records in `%APPDATA%\dev.claws.downloader\`. When it cannot write there (a full drive, or a folder it may not change), it does not start a download, delete files or forget a finished one without a saved record. Nothing is lost:
+- A download that could not start stays in the queue with its folder; press **Try Again** once the problem is fixed.
+- A finished file that could not be added to the Library is already in the output folder. **Try Again** only adds it to the Library; nothing is downloaded again. If Claws is closed first, it finishes this the next time it starts.
 </details>
 
 <details>
 <summary><b>What is the hidden <code>.claws-work</code> folder?</b></summary>
 
-Unfinished downloads live there, one folder per download, until they are finished or cancelled. Paused and failed downloads keep theirs so they can resume. Leave it alone while Claws is running. A folder that could not be deleted because a file was in use is removed the next time Claws starts.
+Unfinished downloads live there, one folder per download, until they are finished or cancelled. Paused and failed downloads keep theirs so they can resume. Trying a cancelled download again starts it over in a new folder, so the cancelled one's cleanup can never touch it. Leave it alone while Claws is running. A folder that could not be deleted because a file was in use is removed the next time Claws starts.
 </details>
 
 ## Contributing

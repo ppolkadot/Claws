@@ -1,0 +1,107 @@
+{
+  "sourceCommit": "7c4f9815c4dc953fea80631a20463fb629974c3e",
+  "scope": "Direct yt-dlp transfer-policy comparison; not the full Claws application and not an Internet benchmark",
+  "os": "Windows-11-10.0.26200-SP0",
+  "ytdlp": "2026.10.26",
+  "payloadBytes": 67108864,
+  "perConnectionLimitBytesPerSecond": 16777216,
+  "warmupsPerPolicy": 1,
+  "timedRunsPerPolicy": 3,
+  "commonArguments": [
+    "--ignore-config",
+    "--no-colors",
+    "--no-warnings",
+    "--newline",
+    "--no-simulate",
+    "--windows-filenames",
+    "--fixup",
+    "never",
+    "--concurrent-fragments",
+    "8",
+    "--print",
+    "before_dl:REVIEW|START",
+    "--print",
+    "after_move:REVIEW|DONE",
+    "--progress-template",
+    "download:REVIEW|PROGRESS"
+  ],
+  "policies": {
+    "baseline": [
+      "--retries",
+      "5",
+      "--fragment-retries",
+      "5"
+    ],
+    "current": [
+      "--retries",
+      "10",
+      "--fragment-retries",
+      "10",
+      "--retry-sleep",
+      "http:exp=1:30",
+      "--retry-sleep",
+      "fragment:exp=1:30",
+      "--socket-timeout",
+      "30",
+      "--abort-on-unavailable-fragments",
+      "--progress-delta",
+      "0.2"
+    ]
+  },
+  "results": {
+    "baseline": [
+      {
+        "transferSeconds": 4.00534570000309,
+        "elapsedSeconds": 5.739301300010993,
+        "bytes": 67108864,
+        "sha256": "588103138c34228607be7edbb03e32a3fa2ae7ec7bff84a3c77cf2ade605e376"
+      },
+      {
+        "transferSeconds": 4.006418400007533,
+        "elapsedSeconds": 5.775964000000386,
+        "bytes": 67108864,
+        "sha256": "588103138c34228607be7edbb03e32a3fa2ae7ec7bff84a3c77cf2ade605e376"
+      },
+      {
+        "transferSeconds": 4.00519229999918,
+        "elapsedSeconds": 5.724475700000767,
+        "bytes": 67108864,
+        "sha256": "588103138c34228607be7edbb03e32a3fa2ae7ec7bff84a3c77cf2ade605e376"
+      }
+    ],
+    "current": [
+      {
+        "transferSeconds": 4.005548999994062,
+        "elapsedSeconds": 5.711622500006342,
+        "bytes": 67108864,
+        "sha256": "588103138c34228607be7edbb03e32a3fa2ae7ec7bff84a3c77cf2ade605e376"
+      },
+      {
+        "transferSeconds": 4.006693799994537,
+        "elapsedSeconds": 5.716572300007101,
+        "bytes": 67108864,
+        "sha256": "588103138c34228607be7edbb03e32a3fa2ae7ec7bff84a3c77cf2ade605e376"
+      },
+      {
+        "transferSeconds": 4.006953300005989,
+        "elapsedSeconds": 5.769894299999578,
+        "bytes": 67108864,
+        "sha256": "588103138c34228607be7edbb03e32a3fa2ae7ec7bff84a3c77cf2ade605e376"
+      }
+    ]
+  },
+  "medianTransferSeconds": {
+    "baseline": 4.00534570000309,
+    "current": 4.006693799994537
+  },
+  "currentTimeChangePercent": 0.03365751903625647,
+  "integrityPassed": true,
+  "complete": false,
+  "unmeasured": [
+    "full native application lifecycle",
+    "Internet/CDN throughput",
+    "multi-gigabyte media",
+    "conversion and merge time",
+    "CPU and peak disk usage"
+  ]
+}
