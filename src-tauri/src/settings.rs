@@ -2,7 +2,11 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::download_policy::AudioSelection;
 use crate::error::{AppError, Result};
+
+/// Settings written by this version. Older files are migrated in `repair`.
+pub const SETTINGS_SCHEMA: u16 = 2;
 
 /// The system-wide shortcuts offered for Quick Open, in the global-shortcut syntax.
 /// Chosen to avoid combinations Windows, browsers and AltGr layouts already use.
@@ -24,6 +28,9 @@ pub struct CookieSource {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
+    /// Missing in files from before 1.0.5, which read as 0 and are migrated.
+    #[serde(default)]
+    pub schema_version: u16,
     pub output_dir: String,
     pub filename_template: String,
     pub cookie_source: CookieSource,
@@ -42,11 +49,16 @@ pub struct Settings {
     pub keep_running: bool,
     /// Start (hidden, in the notification area) when the user signs in to Windows.
     pub open_at_login: bool,
+    /// Which audio stream to fetch for audio-only downloads. Missing in older files, which
+    /// keep the behaviour they had (`Best`).
+    #[serde(default)]
+    pub audio_selection: AudioSelection,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            schema_version: SETTINGS_SCHEMA,
             output_dir: String::new(),
             filename_template: "%(title).150B [%(id)s].%(ext)s".into(),
             cookie_source: CookieSource {
@@ -61,6 +73,8 @@ impl Default for Settings {
             quick_open_shortcut: "ctrl+alt+d".into(),
             keep_running: true,
             open_at_login: false,
+            // New installations prefer audio that can be copied rather than converted.
+            audio_selection: AudioSelection::PreferMatching,
         }
     }
 }
@@ -128,6 +142,7 @@ impl Settings {
     /// For settings loaded from disk: resets what `validate` would reject (a hand-edited
     /// file, a deleted cookies file). Returns a message when something was reset.
     pub fn repair(&mut self) -> Option<String> {
+        self.migrate();
         let defaults = Settings::default();
         let mut reset = Vec::new();
         // The output folder is filled in by the caller when empty.
@@ -152,6 +167,18 @@ impl Settings {
             self.output_dir.clear();
         }
         (!reset.is_empty()).then(|| format!("Claws reset {} because the saved value could not be used.", reset.join(" and ")))
+    }
+}
+
+impl Settings {
+    /// Brings settings from an older version up to `SETTINGS_SCHEMA` without changing
+    /// behaviour the user already had: fields added since then keep their old meaning.
+    pub fn migrate(&mut self) {
+        if self.schema_version < 2 {
+            // 1.0.4 and earlier always fetched yt-dlp's best audio.
+            self.audio_selection = AudioSelection::Best;
+        }
+        self.schema_version = self.schema_version.max(SETTINGS_SCHEMA);
     }
 }
 
@@ -197,6 +224,19 @@ mod tests {
         assert!(s.validate().is_err());
         s.cookie_source.value = "firefox".into();
         assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn settings_from_1_0_4_keep_best_audio() {
+        let old = r#"{"outputDir":"D:/Downloads","filenameTemplate":"%(title)s.%(ext)s","embedMetadata":true}"#;
+        let mut s: Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(s.schema_version, 0);
+        assert!(s.repair().is_none());
+        assert_eq!(s.audio_selection, AudioSelection::Best);
+        assert_eq!(s.schema_version, SETTINGS_SCHEMA);
+        assert_eq!(Settings::default().audio_selection, AudioSelection::PreferMatching);
+        let round: Settings = serde_json::from_str(&serde_json::to_string(&Settings { audio_selection: AudioSelection::PreferMatching, ..s }).unwrap()).unwrap();
+        assert_eq!(round.audio_selection, AudioSelection::PreferMatching);
     }
 
     #[test]

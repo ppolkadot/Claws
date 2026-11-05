@@ -36,7 +36,6 @@ pub(crate) fn fixture_tool() -> Option<PathBuf> {
 }
 
 #[test]
-#[ignore = "R1 reproduction: the legacy prefix match deletes unrelated files; fixed in task 3"]
 fn legacy_cleanup_leaves_unrelated_files() {
     let dir = temp_dir("prefix");
     for name in ["clip.mp4.part", "clip.mp4.partnership", "clip.mp4.part-Frag2", "clip.mp4.ytdl", "clip.mp4"] {

@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+use crate::download_files::{self, Publication, WorkspaceRef};
+use crate::download_policy::JobExecution;
 use crate::error::{notify, AppError, Result};
 use crate::history;
 use crate::probe::{self, error_text, validate_url};
@@ -115,10 +117,21 @@ pub struct Job {
     pub file_path: Option<String>,
     pub error: Option<String>,
     pub created_at: i64,
-    /// Every file name yt-dlp reported, so leftovers can be cleaned up after a pause,
-    /// resume or restart. Saved as soon as a new one appears.
+    /// Only for downloads started by 1.0.4 or earlier, which wrote straight into the
+    /// output folder: the file names yt-dlp reported, so their exact `.part`/`.ytdl`
+    /// leftovers can be removed on cancel. New jobs keep everything in `workspace`.
     #[serde(default)]
     pub partial_files: Vec<String>,
+    /// Settings bound when the job first started; resumes and retries reuse them.
+    #[serde(default)]
+    pub execution: Option<JobExecution>,
+    /// The job's own work folder (see `download_files`).
+    #[serde(default)]
+    pub workspace: Option<WorkspaceRef>,
+    /// Set durably when the user cancels or removes the job, so a crash before the work
+    /// folder is deleted still ends in a cancelled job and a retried cleanup.
+    #[serde(default)]
+    pub cancel_requested: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -146,8 +159,10 @@ pub struct Running {
     /// `None` once the process has exited, so a late kill never hits a reused pid.
     pid: Option<u32>,
     intent: Intent,
-    /// Leftovers from earlier runs, handed over when a running job is removed.
+    /// Legacy leftovers from earlier runs, handed over when a running job is removed.
     cleanup: Vec<String>,
+    /// The work folder of a running job that was removed from the list meanwhile.
+    workspace: Option<WorkspaceRef>,
 }
 
 impl Running {
@@ -204,7 +219,33 @@ fn job_status(app: &AppHandle, id: &str) -> Option<JobStatus> {
 
 pub fn restore_queue(app: &AppHandle, saved: Vec<Job>) {
     let mut saved = saved;
+    let mut cleanup = Vec::new();
+    let mut recovered = Vec::new();
     for job in &mut saved {
+        // A cancel whose cleanup did not finish before the app closed.
+        if job.cancel_requested && job.status != JobStatus::Completed {
+            job.status = JobStatus::Cancelled;
+            cleanup.push(PendingCleanup::of(job));
+            job.partial_files.clear();
+            continue;
+        }
+        // Published before the app closed, but the completion was not saved yet.
+        if job.status != JobStatus::Completed {
+            let manifest = job.workspace.as_ref().and_then(|w| download_files::verify(w, &job.id).ok());
+            if let Some(manifest) = manifest.filter(|m| m.state == Publication::Published) {
+                if let Some(media) = manifest.published.first().filter(|p| p.is_file()) {
+                    job.status = JobStatus::Completed;
+                    job.progress = 1.0;
+                    job.speed = None;
+                    job.eta = None;
+                    job.error = None;
+                    job.file_path = Some(media.to_string_lossy().into_owned());
+                    recovered.push(job.clone());
+                    cleanup.push(PendingCleanup::of(job));
+                    continue;
+                }
+            }
+        }
         // Nothing survives a restart mid-download; everything resumes on demand.
         if matches!(
             job.status,
@@ -215,7 +256,22 @@ pub fn restore_queue(app: &AppHandle, saved: Vec<Job>) {
             job.eta = None;
         }
     }
-    *app.state::<AppState>().jobs.lock().unwrap() = saved;
+    let state = app.state::<AppState>();
+    *state.jobs.lock().unwrap() = saved;
+    for job in &recovered {
+        let known = state.history.lock().unwrap().iter().any(|h| h.id == job.id);
+        if !known {
+            history::record(app, job);
+        }
+    }
+    // Off the startup path: deleting a large work folder can take a moment.
+    let app = app.clone();
+    std::thread::spawn(move || {
+        for item in cleanup {
+            cleanup_now(&app, item);
+        }
+        retry_pending_cleanup(&app);
+    });
 }
 
 pub fn list(app: &AppHandle) -> Vec<Job> {
@@ -234,9 +290,24 @@ pub fn enqueue(app: &AppHandle, items: Vec<EnqueueItem>, mut options: DownloadOp
     }
     options.validate()?;
 
+    // The same link with the same choices, already waiting or running, would only make a
+    // second copy race the first for the same file name.
+    let state = app.state::<AppState>();
+    let pending: HashSet<(String, Option<u32>, String)> = {
+        let jobs = state.jobs.lock().unwrap();
+        jobs.iter()
+            .filter(|j| !matches!(j.status, JobStatus::Completed | JobStatus::Cancelled | JobStatus::Failed))
+            .map(|j| (j.url.clone(), j.playlist_index, options_key(&j.options)))
+            .collect()
+    };
+    let mut seen = HashSet::new();
     let mut created = Vec::with_capacity(items.len());
     for item in items {
         let url = validate_url(&item.url)?;
+        let key = (url.clone(), item.playlist_index.filter(|i| *i > 0), options_key(&options));
+        if pending.contains(&key) || !seen.insert(key) {
+            continue;
+        }
         created.push(Job {
             id: uuid::Uuid::new_v4().to_string(),
             url,
@@ -258,7 +329,13 @@ pub fn enqueue(app: &AppHandle, items: Vec<EnqueueItem>, mut options: DownloadOp
             error: None,
             created_at: chrono::Utc::now().timestamp_millis(),
             partial_files: Vec::new(),
+            execution: None,
+            workspace: None,
+            cancel_requested: false,
         });
+    }
+    if created.is_empty() {
+        return Err(AppError::msg("That is already in the queue with the same options."));
     }
 
     app.state::<AppState>()
@@ -272,6 +349,10 @@ pub fn enqueue(app: &AppHandle, items: Vec<EnqueueItem>, mut options: DownloadOp
     persist_queue(app);
     pump(app);
     Ok(created)
+}
+
+fn options_key(options: &DownloadOptions) -> String {
+    serde_json::to_string(options).unwrap_or_default()
 }
 
 /// Keeps `AppState::workers` and `live_jobs` accurate however `run_job` ends.
@@ -406,9 +487,10 @@ pub fn cancel(app: &AppHandle, id: &str) {
             if let Some(pid) = entry.pid {
                 kill_tree(pid, false);
             }
-            Vec::new()
+            update_job(app, id, |j| j.cancel_requested = true);
+            None
         } else {
-            let mut files = Vec::new();
+            let mut files = None;
             update_job(app, id, |j| {
                 if matches!(
                     j.status,
@@ -421,46 +503,126 @@ pub fn cancel(app: &AppHandle, id: &str) {
                     j.status = JobStatus::Cancelled;
                     j.speed = None;
                     j.eta = None;
-                    files = std::mem::take(&mut j.partial_files);
+                    j.cancel_requested = true;
+                    files = Some(PendingCleanup::of(j));
+                    j.partial_files.clear();
                 }
             });
             files
         }
     };
-    // No process holds these files, so they can go right away.
-    spawn_cleanup(leftovers, false);
+    // Saved before anything is deleted, so a crash mid-cleanup still ends cancelled.
     persist_queue(app);
+    // No process holds these files, so they can go right away.
+    if let Some(item) = leftovers {
+        spawn_cleanup(app, item);
+    }
 }
 
-fn job_partials(app: &AppHandle, id: &str) -> Vec<String> {
+fn find_job(app: &AppHandle, id: &str) -> Option<Job> {
     app.state::<AppState>()
         .jobs
         .lock()
         .unwrap()
         .iter()
         .find(|j| j.id == id)
-        .map(|j| j.partial_files.clone())
-        .unwrap_or_default()
+        .cloned()
 }
 
-fn spawn_cleanup(files: Vec<String>, after_kill: bool) {
-    if files.is_empty() {
+/// Files a cancelled or removed job leaves behind: its work folder, and for downloads
+/// started before work folders existed, the exact partial files it reported.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingCleanup {
+    pub job_id: String,
+    pub workspace: Option<WorkspaceRef>,
+    #[serde(default)]
+    pub legacy: Vec<String>,
+}
+
+impl PendingCleanup {
+    fn of(job: &Job) -> Self {
+        Self {
+            job_id: job.id.clone(),
+            workspace: job.workspace.clone(),
+            legacy: job.partial_files.clone(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.workspace.is_none() && self.legacy.is_empty()
+    }
+}
+
+fn spawn_cleanup(app: &AppHandle, item: PendingCleanup) {
+    if item.is_empty() {
         return;
     }
-    tauri::async_runtime::spawn(async move { remove_partials(files, after_kill).await });
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = tokio::task::spawn_blocking(move || cleanup_now(&app, item)).await;
+    });
+}
+
+/// Deletes a job's leftovers now. If Windows still holds a file, the cleanup is saved
+/// and retried at the next start rather than reported as done.
+fn cleanup_now(app: &AppHandle, item: PendingCleanup) -> bool {
+    let state = app.state::<AppState>();
+    remove_partials_now(&item.legacy);
+    let removed = match &item.workspace {
+        Some(workspace) => match download_files::remove_workspace(workspace, &item.job_id) {
+            Ok(()) => true,
+            Err(_) if !workspace.path.exists() => true,
+            Err(e) => {
+                notify(app, format!("Claws could not remove the unfinished files of a cancelled download yet ({e}). It will try again the next time it starts."));
+                false
+            }
+        },
+        None => true,
+    };
+    let changed = {
+        let mut pending = state.pending_cleanup.lock().unwrap();
+        let before = pending.clone();
+        pending.retain(|p| p.job_id != item.job_id);
+        if !removed {
+            pending.push(item);
+        }
+        *pending != before
+    };
+    if changed {
+        save_pending_cleanup(app);
+    }
+    removed
+}
+
+fn save_pending_cleanup(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let result = store::save_snapshot(&state.cleanup_path(), || state.pending_cleanup.lock().unwrap().clone());
+    if let Err(e) = result {
+        notify(app, format!("Claws could not save its cleanup list: {e}"));
+    }
+}
+
+/// Retries cleanups that could not finish earlier because a file was still in use.
+pub fn retry_pending_cleanup(app: &AppHandle) {
+    let items = app.state::<AppState>().pending_cleanup.lock().unwrap().clone();
+    for item in items {
+        cleanup_now(app, item);
+    }
 }
 
 pub fn remove(app: &AppHandle, id: &str) {
     let state = app.state::<AppState>();
-    let Some(status) = job_status(app, id) else { return };
-    let partials = job_partials(app, id);
+    let Some(job) = find_job(app, id) else { return };
+    let leftovers = PendingCleanup::of(&job);
     let handed_off = {
         let mut running = state.running.lock().unwrap();
         match running.get_mut(id) {
             Some(entry) => {
                 // `finish` cleans up once the process is really gone.
                 entry.request(Intent::Cancel);
-                entry.cleanup.extend(partials.iter().cloned());
+                entry.cleanup.extend(leftovers.legacy.iter().cloned());
+                entry.workspace = leftovers.workspace.clone();
                 if let Some(pid) = entry.pid {
                     kill_tree(pid, false);
                 }
@@ -470,12 +632,18 @@ pub fn remove(app: &AppHandle, id: &str) {
         }
     };
     // Finished downloads keep their file; anything unfinished loses its leftovers.
-    if !handed_off && status != JobStatus::Completed {
-        spawn_cleanup(partials, false);
+    let clean = !handed_off && job.status != JobStatus::Completed && !leftovers.is_empty();
+    if clean {
+        // Recorded before the job disappears, so an interrupted cleanup is retried.
+        state.pending_cleanup.lock().unwrap().push(leftovers.clone());
+        save_pending_cleanup(app);
     }
     state.jobs.lock().unwrap().retain(|j| j.id != id);
     let _ = app.emit("job-removed", id);
     persist_queue(app);
+    if clean {
+        spawn_cleanup(app, leftovers);
+    }
 }
 
 pub fn clear_finished(app: &AppHandle) {
@@ -503,13 +671,14 @@ pub fn shutdown(app: &AppHandle) {
     let state = app.state::<AppState>();
     state.shutting_down.store(true, Ordering::SeqCst);
 
-    let stopping: Vec<(String, Option<u32>, Intent, Vec<String>)> = {
+    type Stopping = (String, Option<u32>, Intent, Vec<String>, Option<WorkspaceRef>);
+    let stopping: Vec<Stopping> = {
         let mut running = state.running.lock().unwrap();
         running
             .iter_mut()
             .map(|(id, entry)| {
                 entry.request(Intent::Pause);
-                (id.clone(), entry.pid, entry.intent, entry.cleanup.clone())
+                (id.clone(), entry.pid, entry.intent, entry.cleanup.clone(), entry.workspace.clone())
             })
             .collect()
     };
@@ -531,7 +700,9 @@ pub fn shutdown(app: &AppHandle) {
             let intent = stopping.iter().find(|(id, ..)| *id == job.id).map(|s| s.2);
             if intent == Some(Intent::Cancel) && job.status != JobStatus::Completed {
                 job.status = JobStatus::Cancelled;
-                leftovers.append(&mut job.partial_files);
+                job.cancel_requested = true;
+                leftovers.push(PendingCleanup::of(job));
+                job.partial_files.clear();
             } else if job.status.is_active() || job.status == JobStatus::Queued {
                 job.status = JobStatus::Paused;
                 job.speed = None;
@@ -539,22 +710,35 @@ pub fn shutdown(app: &AppHandle) {
             }
         }
     }
-    for (_, _, intent, cleanup) in stopping {
-        if intent == Intent::Cancel {
-            leftovers.extend(cleanup);
+    for (id, _, intent, cleanup, workspace) in stopping {
+        // Removed from the list while running: only the handed-over files are left.
+        if intent == Intent::Cancel && !leftovers.iter().any(|l| l.job_id == id) {
+            leftovers.push(PendingCleanup { job_id: id, workspace, legacy: cleanup });
         }
     }
+    // The cancellations are saved before anything is deleted, so no deleted file can
+    // belong to a job that comes back paused.
+    persist_queue(app);
     if !leftovers.is_empty() {
         // Give Windows a moment to release the killed processes' handles.
         std::thread::sleep(Duration::from_millis(300));
-        remove_partials_now(&leftovers);
+        for item in leftovers.into_iter().filter(|l| !l.is_empty()) {
+            cleanup_now(app, item);
+        }
     }
-    persist_queue(app);
 }
 
 /// The source goes last: the probe's cached info, or the URL after `--` so it can
 /// never be read as an option.
-fn build_args(app: &AppHandle, job: &Job, settings: &Settings, info_json: Option<&Path>) -> Vec<String> {
+fn build_args(
+    app: &AppHandle,
+    job: &Job,
+    settings: &Settings,
+    execution: &JobExecution,
+    workspace: &Path,
+    info_json: Option<&Path>,
+) -> Vec<String> {
+    // Sign-in and tool locations stay current; everything shaping the files is frozen.
     let mut args = tools::common_args(app, settings);
     let mut push = |items: &[&str]| args.extend(items.iter().map(|s| s.to_string()));
 
@@ -614,11 +798,14 @@ fn build_args(app: &AppHandle, job: &Job, settings: &Settings, info_json: Option
             }
         }
     }
-    if settings.embed_metadata {
+    if execution.embed_metadata {
         push(&["--embed-metadata"]);
     }
 
-    push(&["-P", &settings.output_dir, "-o", &settings.filename_template]);
+    // Everything, including the finished file, is written inside the job's work folder;
+    // Claws publishes it to the output folder afterwards.
+    let workspace = workspace.to_string_lossy();
+    push(&["-P", &workspace, "-o", &execution.filename_template]);
     match info_json {
         Some(path) => {
             args.push("--load-info-json".into());
@@ -636,7 +823,6 @@ struct Outcome {
     success: bool,
     error: Option<String>,
     final_path: Option<String>,
-    partial_files: HashSet<String>,
     used_cache: bool,
 }
 
@@ -646,7 +832,6 @@ impl Outcome {
             success: false,
             error: Some(message.into()),
             final_path: None,
-            partial_files: HashSet::new(),
             used_cache: false,
         }
     }
@@ -739,15 +924,44 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
         return Outcome::failed("yt-dlp is not installed yet. Open Settings to install it.");
     };
     let settings = state.settings.lock().unwrap().clone();
-    if let Err(e) = std::fs::create_dir_all(&settings.output_dir) {
-        return Outcome::failed(format!("Cannot use the output folder: {e}"));
+    let (execution, workspace, manifest) = match prepare(app, &job, &settings).await {
+        Ok(prepared) => prepared,
+        Err(message) => return Outcome::failed(message),
+    };
+    // Downloaded and verified before; only the publication is left to do. Registered as
+    // running (without a process) so a cancel meanwhile is settled by `finish`.
+    if matches!(manifest.state, Publication::Ready | Publication::Publishing) {
+        let mut running = state.running.lock().unwrap();
+        if state.shutting_down.load(Ordering::SeqCst) {
+            return Outcome::failed("");
+        }
+        let entry = running.entry(id.to_string()).or_insert(Running {
+            pid: None,
+            intent: Intent::None,
+            cleanup: Vec::new(),
+            workspace: None,
+        });
+        match job_status(app, id) {
+            Some(JobStatus::Paused) => entry.request(Intent::Pause),
+            Some(JobStatus::Cancelled) | None => entry.request(Intent::Cancel),
+            _ => {}
+        }
+        if entry.intent != Intent::None {
+            return Outcome::failed("");
+        }
+        return Outcome {
+            success: true,
+            error: None,
+            final_path: None,
+            used_cache: false,
+        };
     }
 
     // Playlist items picked by index are never cached: the cache holds single videos.
     let info_json = (allow_cache && job.playlist_index.is_none())
         .then(|| probe::cached_info(app, &job.url))
         .flatten();
-    let args = build_args(app, &job, &settings, info_json.as_deref());
+    let args = build_args(app, &job, &settings, &execution, &workspace.path, info_json.as_deref());
     let mut command = tools::command(&ytdlp);
     command
         .args(&args)
@@ -780,6 +994,7 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
                 pid: Some(pid),
                 intent: Intent::None,
                 cleanup: Vec::new(),
+                workspace: None,
             });
             entry.pid = Some(pid);
             // A pause or cancel may have landed (as a status) before the entry existed.
@@ -830,7 +1045,6 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
         success: false,
         error: None,
         final_path: None,
-        partial_files: HashSet::new(),
         used_cache: info_json.is_some(),
     };
     let mut progress = Progress::new(&job.options.mode);
@@ -898,24 +1112,8 @@ fn handle_line(app: &AppHandle, id: &str, line: &str, progress: &mut Progress, o
         if fields.len() < 9 {
             return;
         }
-        let filename = fields[8].trim().to_string();
-        if !filename.is_empty() && outcome.partial_files.insert(filename.clone()) {
-            let added = {
-                let state = app.state::<AppState>();
-                let mut jobs = state.jobs.lock().unwrap();
-                match jobs.iter_mut().find(|j| j.id == id) {
-                    Some(job) if !job.partial_files.contains(&filename) => {
-                        job.partial_files.push(filename);
-                        true
-                    }
-                    _ => false,
-                }
-            };
-            // Saved now, so a crash can still clean up later.
-            if added {
-                persist_queue(app);
-            }
-        }
+        // Every file this run writes is inside the job's work folder, which is what
+        // cleanup removes, so no per-file bookkeeping (or save) is needed here.
         let Some(overall) = progress.overall(&fields) else { return };
 
         let finished = fields[0] == "finished";
@@ -931,6 +1129,126 @@ fn handle_line(app: &AppHandle, id: &str, line: &str, progress: &mut Progress, o
                 j.speed = speed;
                 j.eta = eta;
             });
+        }
+    }
+}
+
+/// Binds the job's settings and opens its work folder the first time it starts; later
+/// starts reuse both, whatever the settings say now. Saved before yt-dlp starts, so every
+/// file it writes already has a recorded owner.
+async fn prepare(
+    app: &AppHandle,
+    job: &Job,
+    settings: &Settings,
+) -> std::result::Result<(JobExecution, WorkspaceRef, download_files::Manifest), String> {
+    let first_start = job.execution.is_none();
+    let execution = job
+        .execution
+        .clone()
+        .unwrap_or_else(|| JobExecution::freeze(settings, false));
+    let output = execution.output_dir.clone();
+    let id = job.id.clone();
+    let (workspace, manifest) = tokio::task::spawn_blocking(move || download_files::open_workspace(&output, &id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("Cannot use the output folder: {e}"))?;
+    if first_start || job.workspace.as_ref() != Some(&workspace) {
+        if first_start && !job.partial_files.is_empty() {
+            notify(
+                app,
+                format!(
+                    "“{}” was started by an earlier version of Claws. It now downloads in a private work folder, so it starts again from the beginning. Its earlier partial files were left where they were.",
+                    job.title
+                ),
+            );
+        }
+        update_job(app, &job.id, |j| {
+            j.execution = Some(execution.clone());
+            j.workspace = Some(workspace.clone());
+        });
+        let app = app.clone();
+        let _ = tokio::task::spawn_blocking(move || persist_queue(&app)).await;
+    }
+    Ok((execution, workspace, manifest))
+}
+
+/// Turns a successful yt-dlp run into published files: records what to publish, then
+/// moves it to the output folder without replacing anything. On failure the files stay
+/// in the work folder, so Try Again only has to publish them.
+async fn publish(app: &AppHandle, id: &str, outcome: &mut Outcome) {
+    let Some(job) = find_job(app, id) else {
+        // Removed while finishing: the running entry carries its cleanup.
+        outcome.success = false;
+        outcome.error = None;
+        return;
+    };
+    let Some(workspace) = job.workspace.clone() else {
+        outcome.success = false;
+        outcome.error = Some("This download has no work folder.".into());
+        return;
+    };
+    let reported = outcome.final_path.clone();
+    let wants_sidecars = !job.options.subtitle_langs.is_empty() && !job.options.embed_subs;
+    let app_for_reservations = app.clone();
+    let id_owned = id.to_string();
+    let result = tokio::task::spawn_blocking(move || -> std::result::Result<download_files::Published, String> {
+        let mut manifest = download_files::verify(&workspace, &id_owned).map_err(|e| e.to_string())?;
+        if manifest.state == Publication::Active {
+            let reported = reported.ok_or("yt-dlp did not report the finished file.")?;
+            let media = download_files::owned_relative(&workspace.path, Path::new(&reported))
+                .ok_or("yt-dlp reported a finished file outside the download's work folder.")?;
+            let mut outputs = vec![media.to_string_lossy().into_owned()];
+            if wants_sidecars {
+                outputs.extend(download_files::sidecars(&workspace.path, &media).iter().map(|p| p.to_string_lossy().into_owned()));
+            }
+            manifest.outputs = outputs;
+            manifest.state = Publication::Ready;
+            download_files::write_manifest(&manifest).map_err(|e| e.to_string())?;
+        }
+        let state = app_for_reservations.state::<AppState>();
+        let mut held = Vec::new();
+        let result = download_files::publish(&mut manifest, &mut |target| {
+            let key = target.to_string_lossy().to_lowercase();
+            let free = state.destinations.lock().unwrap().insert(key.clone());
+            if free {
+                held.push(key);
+            }
+            free
+        });
+        {
+            let mut destinations = state.destinations.lock().unwrap();
+            for key in held {
+                destinations.remove(&key);
+            }
+        }
+        result.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                let name = manifest.outputs.first().map(|o| o.as_str()).unwrap_or("The file");
+                let folder = manifest.destination_root.display();
+                format!("“{name}” already exists in {folder}. Move or rename that file, then press Try Again; the download is kept until then.")
+            } else {
+                format!("The finished file could not be saved to the output folder: {e}")
+            }
+        })
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+
+    match result {
+        Ok(published) => {
+            outcome.final_path = Some(published.media.to_string_lossy().into_owned());
+            if published.skipped.is_empty() {
+                // Only the marker (and nothing of value) is left in the work folder.
+                let leftover = PendingCleanup { job_id: id.to_string(), workspace: job.workspace.clone(), legacy: Vec::new() };
+                spawn_cleanup(app, leftover);
+            } else {
+                let names: Vec<String> = published.skipped.iter().filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
+                notify(app, format!("Saved “{}”, but {} already existed, so the new copy was kept in the download's work folder.", job.title, names.join(", ")));
+            }
+        }
+        Err(message) => {
+            outcome.success = false;
+            outcome.error = Some(message);
         }
     }
 }
@@ -965,10 +1283,20 @@ async fn run_job(app: AppHandle, id: String) {
         if let Some(job) = retry {
             emit_job(&app, &job);
             probe::forget(&app, &job.url);
-            let first_files = std::mem::take(&mut outcome.partial_files);
             outcome = execute(&app, &id, false).await;
-            outcome.partial_files.extend(first_files);
         }
+    }
+
+    // Success wins over a pause or cancel that arrives now: the file is published.
+    if outcome.success {
+        update_job(&app, &id, |j| {
+            if j.status.is_active() {
+                j.status = JobStatus::Processing;
+            }
+            j.speed = None;
+            j.eta = None;
+        });
+        publish(&app, &id, &mut outcome).await;
     }
 
     finish(&app, &id, outcome).await;
@@ -989,6 +1317,7 @@ fn settle(app: &AppHandle, id: &str, intent: Intent, outcome: &Outcome) -> Optio
             j.error = None;
             j.file_path = outcome.final_path.clone();
             j.partial_files.clear();
+            j.cancel_requested = false;
         });
     }
     match intent {
@@ -1026,51 +1355,58 @@ fn settle(app: &AppHandle, id: &str, intent: Intent, outcome: &Outcome) -> Optio
 
 async fn finish(app: &AppHandle, id: &str, outcome: Outcome) {
     let state = app.state::<AppState>();
-    let mut cleaned = false;
     let mut completed = None;
-    loop {
-        // Either clean up after a cancel and look again (the intent may have changed), or
-        // remove the entry and settle the job in one critical section.
-        let to_clean = {
-            let mut running = state.running.lock().unwrap();
-            let entry = running.get(id);
-            let intent = entry.map(|r| r.intent).unwrap_or(Intent::None);
-            if intent == Intent::Cancel && !outcome.success && !cleaned {
-                let mut files = entry.map(|r| r.cleanup.clone()).unwrap_or_default();
-                files.extend(job_partials(app, id));
-                files.extend(outcome.partial_files.iter().cloned());
-                files.sort();
-                files.dedup();
-                Some(files)
-            } else {
-                running.remove(id);
-                completed = settle(app, id, intent, &outcome);
-                None
+    // Remove the entry and settle the job in one critical section. A cancel is sticky
+    // (nothing downgrades it), so the files it leaves are collected right there.
+    let cancelled = {
+        let mut running = state.running.lock().unwrap();
+        let entry = running.remove(id);
+        let intent = entry.as_ref().map(|r| r.intent).unwrap_or(Intent::None);
+        if intent == Intent::Cancel && !outcome.success {
+            let job = find_job(app, id);
+            let mut item = match &job {
+                Some(job) => PendingCleanup::of(job),
+                None => PendingCleanup { job_id: id.to_string(), workspace: None, legacy: Vec::new() },
+            };
+            if let Some(entry) = entry {
+                item.legacy.extend(entry.cleanup);
+                item.workspace = item.workspace.or(entry.workspace);
             }
-        };
-        match to_clean {
-            Some(files) => {
-                remove_partials(files, true).await;
-                cleaned = true;
-            }
-            None => break,
+            item.legacy.sort();
+            item.legacy.dedup();
+            settle(app, id, intent, &outcome);
+            Some(item)
+        } else {
+            completed = settle(app, id, intent, &outcome);
+            None
         }
+    };
+    // The final state is durable before any file is deleted or the library mentions it.
+    {
+        let app = app.clone();
+        let _ = tokio::task::spawn_blocking(move || persist_queue(&app)).await;
+    }
+    if let Some(item) = cancelled.filter(|i| !i.is_empty()) {
+        // The process tree is gone, but Windows may release its handles a moment later;
+        // `remove_workspace` retries, and a folder still in use is retried at next start.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let app = app.clone();
+        let _ = tokio::task::spawn_blocking(move || cleanup_now(&app, item)).await;
     }
     if let Some(job) = completed {
         history::record(app, &job);
     }
-    persist_queue(app);
 }
 
-/// Removes `<name>.part`, `<name>.part-FragN` and `<name>.ytdl`; never the finished file.
+/// For downloads started before work folders existed: removes exactly `<name>.part`,
+/// `<name>.ytdl` and `<name>.part-Frag<n>` next to each reported file, never anything
+/// else that merely starts with the same name.
 pub(crate) fn remove_partials_now(files: &[String]) {
     for file in files {
         let path = Path::new(file);
         let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
             continue;
         };
-        let part_prefix = format!("{name}.part");
-        let ytdl_name = format!("{name}.ytdl");
         let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
         };
@@ -1079,19 +1415,12 @@ pub(crate) fn remove_partials_now(files: &[String]) {
             let Some(entry_name) = entry_name.to_str() else {
                 continue;
             };
-            if entry_name.starts_with(&part_prefix) || entry_name == ytdl_name {
+            let is_file = entry.file_type().is_ok_and(|t| t.is_file());
+            if is_file && download_files::is_legacy_partial(name, entry_name) {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
     }
-}
-
-async fn remove_partials(files: Vec<String>, after_kill: bool) {
-    if after_kill {
-        // Give Windows a moment to release the handles of the killed process.
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    let _ = tokio::task::spawn_blocking(move || remove_partials_now(&files)).await;
 }
 
 #[cfg(test)]
@@ -1142,11 +1471,49 @@ mod tests {
     }
 
     #[test]
+    fn jobs_saved_by_1_0_4_still_load() {
+        // queue.json as 1.0.4 wrote it: none of the fields added since.
+        let saved = r#"[
+          {"id":"0b7f6a43-5d0c-4f43-9a61-3f8fb4d3a1a0","url":"https://example.com/v","title":"Paused one",
+           "thumbnail":null,"uploader":null,"duration":12.0,
+           "options":{"mode":"video","maxHeight":1080,"audioFormat":"mp3","subtitleLangs":[],"autoSubs":false,"embedSubs":false},
+           "status":"paused","progress":0.4,"speed":null,"eta":null,"filePath":null,"error":null,"createdAt":1,
+           "partialFiles":["D:/Downloads/Claws/v.f137.mp4"]},
+          {"id":"1c8e7b54-6e1d-4054-8b72-4a9fc5e4b2b1","url":"https://example.com/w","title":"Failed one",
+           "thumbnail":null,"uploader":null,"duration":null,
+           "options":{"mode":"audio","maxHeight":null,"audioFormat":"m4a","subtitleLangs":[],"autoSubs":false,"embedSubs":false},
+           "status":"failed","progress":0.0,"speed":null,"eta":null,"filePath":null,"error":"HTTP Error 403","createdAt":2}
+        ]"#;
+        let jobs: Vec<Job> = serde_json::from_str(saved).unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs.iter().all(|j| j.execution.is_none() && j.workspace.is_none() && !j.cancel_requested));
+        assert_eq!(jobs[0].status, JobStatus::Paused);
+        assert_eq!(jobs[0].partial_files.len(), 1);
+        assert_eq!(jobs[1].status, JobStatus::Failed);
+    }
+
+    #[test]
+    fn execution_is_frozen_from_the_settings_at_first_start() {
+        let mut settings = Settings { output_dir: "D:/First".into(), ..Settings::default() };
+        let frozen = JobExecution::freeze(&settings, false);
+        settings.output_dir = "E:/Second".into();
+        settings.filename_template = "%(id)s.%(ext)s".into();
+        settings.embed_metadata = false;
+        assert_eq!(frozen.output_dir, std::path::PathBuf::from("D:/First"));
+        assert_eq!(frozen.filename_template, Settings::default().filename_template);
+        assert!(frozen.embed_metadata);
+        // Survives a save and reload unchanged.
+        let round: JobExecution = serde_json::from_str(&serde_json::to_string(&frozen).unwrap()).unwrap();
+        assert_eq!(round, frozen);
+    }
+
+    #[test]
     fn cancel_is_not_downgraded_by_pause() {
         let mut entry = Running {
             pid: Some(1),
             intent: Intent::None,
             cleanup: Vec::new(),
+            workspace: None,
         };
         entry.request(Intent::Cancel);
         entry.request(Intent::Pause);

@@ -2,6 +2,8 @@ mod commands;
 mod desktop;
 #[cfg(test)]
 mod download_tests;
+mod download_files;
+mod download_policy;
 mod downloader;
 mod error;
 mod history;
@@ -20,7 +22,7 @@ use std::time::Duration;
 
 use tauri::Manager;
 
-use crate::downloader::Job;
+use crate::downloader::{Job, PendingCleanup};
 use crate::history::HistoryItem;
 use crate::settings::Settings;
 use crate::state::AppState;
@@ -62,6 +64,7 @@ pub fn run() {
             tools::recover_bin(&data_dir.join("bin"));
             let history: Vec<HistoryItem> = store::load_or_recover(&data_dir.join("history.json"), "library", &mut notices);
             let queue: Vec<Job> = store::load_or_recover(&data_dir.join("queue.json"), "download queue", &mut notices);
+            let pending_cleanup: Vec<PendingCleanup> = store::load_or_recover(&data_dir.join("cleanup.json"), "cleanup list", &mut notices);
 
             let http = reqwest::Client::builder()
                 .user_agent(concat!("Claws/", env!("CARGO_PKG_VERSION")))
@@ -86,6 +89,8 @@ pub fn run() {
                 start_hidden: AtomicBool::new(
                     settings.keep_running && std::env::args().any(|a| a == desktop::BACKGROUND_ARG),
                 ),
+                pending_cleanup: Mutex::new(pending_cleanup),
+                destinations: Mutex::new(std::collections::HashSet::new()),
             });
             downloader::restore_queue(app.handle(), queue);
             let state = app.state::<AppState>();

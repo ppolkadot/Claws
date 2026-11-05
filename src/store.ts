@@ -29,6 +29,7 @@ const sameValue = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringi
 type Listener = (detail?: unknown) => void;
 
 const defaultSettings: Settings = {
+  schemaVersion: 2,
   outputDir: "",
   filenameTemplate: "%(title).150B [%(id)s].%(ext)s",
   cookieSource: { kind: "none", value: "" },
@@ -40,6 +41,7 @@ const defaultSettings: Settings = {
   quickOpenShortcut: "ctrl+alt+d",
   keepRunning: true,
   openAtLogin: false,
+  audioSelection: "preferMatching",
 };
 
 class Store {
