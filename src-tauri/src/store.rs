@@ -65,11 +65,27 @@ fn write_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
             file.write_all(&bytes)?;
             file.sync_all()
         })
-        .and_then(|_| fs::rename(&tmp, path));
+        .and_then(|_| rename_retrying(&tmp, path));
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     Ok(result?)
+}
+
+/// A rename that tolerates a moment's lock: an antivirus or indexer opening the freshly
+/// written file (or the one it replaces) makes Windows refuse the rename with "access
+/// denied" for a few milliseconds. Lasting failures are still returned, after about 300 ms.
+fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut attempt = 0;
+    loop {
+        match fs::rename(from, to) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && attempt < 6 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            result => return result,
+        }
+    }
 }
 
 /// Snapshots under the write lock, so a writer that snapshots later also writes later.
