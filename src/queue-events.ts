@@ -9,6 +9,22 @@
 
 export const EVENT_SCHEMA = 1;
 
+/** Subscribe before bootstrap, then replay changes after its snapshot is installed. */
+export class StartupEvents {
+  private pending: Array<() => void> | null = [];
+
+  accept(change: () => void) {
+    if (this.pending) this.pending.push(change);
+    else change();
+  }
+
+  flush() {
+    const pending = this.pending ?? [];
+    this.pending = null;
+    for (const change of pending) change();
+  }
+}
+
 export interface JobEvent<T> {
   schemaVersion: number;
   jobId: string;
@@ -130,8 +146,7 @@ export class JobTable<T extends Ordered> {
       return false;
     }
     const known = this.revisions.get(event.jobId);
-    // A removal older than what is known (a re-added job cannot happen: ids are unique,
-    // but keep the rule symmetric) is ignored.
+    // Ids are never reused, but a stale removal is still ignored, symmetric with apply().
     if (known !== undefined && event.revision < known) return false;
     this.tombstones.set(event.jobId, event.revision);
     if (this.tombstones.size > TOMBSTONE_LIMIT) {

@@ -9,16 +9,14 @@ use crate::probe::ProbeResult;
 use crate::queue_writer::QueueWriter;
 use crate::settings::Settings;
 
+pub type FreeSpace = Box<dyn Fn(&std::path::Path) -> std::io::Result<u64> + Send + Sync>;
+
 /// Everything the commands share. Locks are only ever held for short, synchronous
 /// sections and never across an `.await`.
 ///
 /// Lock order, outermost first: `store`'s write lock, `running`, `jobs`, `live_jobs`.
-/// `settings`, `history`, `probes`, `recent_probes`, `pending_cleanup` and `destinations`
-/// are leaf locks and are never held
-/// while another one is taken.
-/// Reads the free bytes on the volume holding a path.
-pub type FreeSpace = Box<dyn Fn(&std::path::Path) -> std::io::Result<u64> + Send + Sync>;
-
+/// `settings`, `history`, `probes`, `recent_probes`, `pending_cleanup`, `destinations` and
+/// `disk_ledger` are leaf locks and are never held while another one is taken.
 pub struct AppState {
     pub data_dir: PathBuf,
     pub settings: Mutex<Settings>,
@@ -55,8 +53,7 @@ pub struct AppState {
     /// Disk space running jobs may still need (see `disk_budget::Ledger`). Leaf lock;
     /// free space is read while it is held.
     pub disk_ledger: Mutex<crate::disk_budget::Ledger>,
-    /// Free bytes on the volume holding a path. Replaced in tests, so budgets can be
-    /// checked against set numbers instead of the real disk.
+    /// Free bytes on the volume holding a path; replaced in tests.
     pub free_space: FreeSpace,
     /// Source of `Job::revision`; only advanced with the jobs lock held.
     pub job_revision: AtomicU64,

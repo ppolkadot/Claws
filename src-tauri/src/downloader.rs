@@ -144,9 +144,9 @@ pub struct Job {
     pub file_path: Option<String>,
     pub error: Option<String>,
     pub created_at: i64,
-    /// Only for downloads started by 1.0.4 or earlier, which wrote straight into the
-    /// output folder: the file names yt-dlp reported, so their exact `.part`/`.ytdl`
-    /// leftovers can be removed on cancel. New jobs keep everything in `workspace`.
+    /// Only for jobs from 1.0.4 or earlier, which wrote straight into the output folder:
+    /// the file names yt-dlp reported, so their exact `.part`/`.ytdl` leftovers can be
+    /// removed on cancel.
     #[serde(default)]
     pub partial_files: Vec<String>,
     /// Settings bound when the job first started; resumes and retries reuse them.
@@ -344,31 +344,29 @@ fn job_status(app: &AppHandle, id: &str) -> Option<JobStatus> {
         .map(|j| j.status)
 }
 
-pub fn restore_queue(app: &AppHandle, saved: Vec<Job>) {
+pub fn restore_queue(app: &AppHandle, saved: Vec<Job>) -> std::thread::JoinHandle<()> {
     let mut saved = saved;
     let mut cleanup = Vec::new();
     let mut recovered = Vec::new();
     for job in &mut saved {
-        // A cancel whose cleanup did not finish before the app closed.
+        // Committed publication wins over late cancellation, even after Library failure.
+        let manifest = job.workspace.as_ref().and_then(|w| download_files::verify(w, &job.id).ok());
+        if let Some(manifest) = manifest.filter(|m| m.state == Publication::Published) {
+            job.cancel_requested = false;
+            // Identity verification can hash gigabytes on FAT/exFAT. Load a safe
+            // visible state now, and verify/record it on the recovery worker below.
+            job.status = JobStatus::Processing;
+            job.speed = None;
+            job.eta = None;
+            job.error = None;
+            recovered.push((job.id.clone(), manifest));
+            continue;
+        }
         if job.cancel_requested && job.status != JobStatus::Completed {
             job.status = JobStatus::Cancelled;
             cleanup.push(PendingCleanup::of(job));
             job.partial_files.clear();
             continue;
-        }
-        // Published before the app closed, but its completion was not recorded yet:
-        // finished below, Library first.
-        if job.status != JobStatus::Completed {
-            let manifest = job.workspace.as_ref().and_then(|w| download_files::verify(w, &job.id).ok());
-            if let Some(manifest) = manifest.filter(|m| m.state == Publication::Published) {
-                if let Some(media) = manifest.media().filter(|p| p.is_file()) {
-                    job.file_path = Some(media.to_string_lossy().into_owned());
-                    job.speed = None;
-                    job.eta = None;
-                    recovered.push((job.id.clone(), manifest.withheld().is_empty()));
-                    continue;
-                }
-            }
         }
         // Nothing survives a restart mid-download; everything resumes on demand.
         if matches!(
@@ -385,42 +383,77 @@ pub fn restore_queue(app: &AppHandle, saved: Vec<Job>) {
     let highest = saved.iter().map(|j| j.revision).max().unwrap_or(0);
     state.job_revision.store(highest, Ordering::SeqCst);
     *state.jobs.lock().unwrap() = saved;
-    for (id, disposable) in recovered {
-        let Some(job) = find_job(app, &id) else { continue };
-        // An entry loaded from disk is already durable; recording again would duplicate
-        // nothing but would move it to the top of the Library.
-        let known = state.history.lock().unwrap().iter().any(|h| h.id == id);
-        let recorded = if known { Ok(()) } else { history::record(app, &job) };
-        match recorded {
-            Ok(()) => {
-                if let Some(done) = update_job(app, &id, |j| {
-                    j.status = JobStatus::Completed;
-                    j.progress = 1.0;
-                    j.progress_known = true;
-                    j.error = None;
-                }) {
-                    if disposable {
-                        cleanup.push(PendingCleanup::of(&done));
+    // Claim all recovery jobs before returning: Resume/pump cannot start another
+    // worker for one while its identity is being checked in the background.
+    for (id, _) in &recovered {
+        let workspace = find_job(app, id).and_then(|j| j.workspace);
+        state.live_jobs.lock().unwrap().insert(id.clone());
+        state.running.lock().unwrap().insert(id.clone(), Running {
+            pid: None, intent: Intent::None, cleanup: Vec::new(), workspace,
+        });
+        state.workers.fetch_add(1, Ordering::SeqCst);
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        for (id, manifest) in recovered {
+            let slot = WorkerSlot { app: app.clone(), id: id.clone() };
+            let state = app.state::<AppState>();
+            if !state.shutting_down.load(Ordering::SeqCst) {
+                let verified = manifest.validated_media();
+                if !state.shutting_down.load(Ordering::SeqCst) {
+                    if let Some(mut job) = find_job(&app, &id) {
+                        match verified {
+                            Ok(media) => {
+                                job.file_path = Some(media.to_string_lossy().into_owned());
+                                update_job(&app, &id, |j| j.file_path = job.file_path.clone());
+                                let known = state.history.lock().unwrap().iter().any(|h| h.id == id);
+                                let recorded = if known { Ok(()) } else { history::record(&app, &job) };
+                                match recorded {
+                                    Ok(()) => {
+                                        if let Some(done) = update_job(&app, &id, |j| {
+                                            j.status = JobStatus::Completed;
+                                            j.progress = 1.0;
+                                            j.progress_known = true;
+                                            j.error = None;
+                                        }) {
+                                            if manifest.withheld().is_empty() {
+                                                cleanup.push(PendingCleanup::of(&done));
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let path = job.file_path.unwrap_or_default();
+                                        update_job(&app, &id, |j| {
+                                            j.status = JobStatus::Failed;
+                                            j.error = Some(format!("The download was saved as {path}, but Claws could not add it to your Library ({e}). Press Try Again to finish; nothing is downloaded again."));
+                                        });
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                update_job(&app, &id, |j| {
+                                    j.status = JobStatus::Failed;
+                                    j.file_path = None;
+                                    j.error = Some(format!("The published file could not be verified ({e}). Recovery files were kept; restore the original output before trying again."));
+                                });
+                            }
+                        }
+                    } else {
+                        // Removed from the UI while verification was pending.
+                        let workspace = state.running.lock().unwrap().get(&id).and_then(|r| r.workspace.clone());
+                        cleanup.push(PendingCleanup { job_id: id.clone(), workspace, legacy: Vec::new() });
                     }
                 }
             }
-            Err(e) => {
-                let path = job.file_path.clone().unwrap_or_default();
-                update_job(app, &id, |j| {
-                    j.status = JobStatus::Failed;
-                    j.error = Some(format!("The download was saved as “{path}”, but Claws could not add it to your Library ({e}). Press Try Again to finish; nothing is downloaded again."));
-                });
-            }
+            state.running.lock().unwrap().remove(&id);
+            drop(slot);
+            pump(&app);
         }
-    }
-    // Off the startup path: deleting a large work folder can take a moment.
-    let app = app.clone();
-    std::thread::spawn(move || {
         for item in cleanup {
             cleanup_when_recorded(&app, item);
         }
         retry_pending_cleanup(&app);
-    });
+    })
 }
 
 pub fn list(app: &AppHandle) -> Vec<Job> {
@@ -660,6 +693,16 @@ fn start_new_attempt(job: &mut Job) {
 }
 
 pub fn cancel(app: &AppHandle, id: &str) {
+    // A stale Cancel click can arrive after publication but before Library persistence.
+    // Do not delete that transaction's recovery record, even when the job is Failed.
+    let committed = find_job(app, id)
+        .and_then(|j| j.workspace.and_then(|w| download_files::verify(&w, id).ok()))
+        .is_some_and(|m| m.state == Publication::Published);
+    if committed {
+        update_job(app, id, |j| j.cancel_requested = false);
+        persist_queue(app);
+        return;
+    }
     let state = app.state::<AppState>();
     let leftovers = {
         let mut running = state.running.lock().unwrap();
@@ -1142,7 +1185,6 @@ async fn run_prepared(
     let stopped: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
     let stderr_stopped = stopped.clone();
     let stderr_workspace = workspace.path.clone();
-    let stderr_pid = child.id();
     // While the job runs, what reached its work folder stops being reserved.
     let ledger_ticker = {
         let app = app.clone();
@@ -1170,9 +1212,10 @@ async fn run_prepared(
                 if rest.starts_with("started") {
                     stderr_processing.store(true, Ordering::SeqCst);
                     mark_processing(&stderr_app, &stderr_id);
-                    // Each processing step writes a whole new file: it must still fit.
-                    if let Some(reason) = recheck_before_processing(&stderr_app, &stderr_id, &stderr_workspace).await {
-                        if let Some(pid) = stderr_pid {
+                    // Best-effort notification check; this cannot gate yt-dlp before processing.
+                    if let Some(reason) = recheck_processing_space(&stderr_app, &stderr_id, &stderr_workspace).await {
+                        // A disk sample may finish after the process has been reaped.
+                        if let Some(pid) = stderr_app.state::<AppState>().running.lock().unwrap().get(&stderr_id).and_then(|r| r.pid) {
                             kill_tree(pid, false);
                         }
                         stderr_stopped.lock().unwrap().get_or_insert(reason);
@@ -1259,7 +1302,7 @@ async fn run_prepared(
         Err(e) => outcome.error = Some(format!("yt-dlp stopped unexpectedly: {e}")),
     }
     let stopped = stopped.lock().unwrap().take();
-    if let Some(reason) = stopped {
+    if let Some(reason) = stopped.filter(|_| !outcome.success) {
         outcome.success = false;
         outcome.kind = Some(FailureKind::LocalIo);
         outcome.error = Some(reason);
@@ -1358,9 +1401,9 @@ impl Budget {
 /// How often a running job's work folder is measured to shrink its reservation.
 const LEDGER_REFRESH: Duration = Duration::from_secs(2);
 
-/// Before a whole-file processing step: refreshes the job's reservation from its work
-/// folder and returns a reason to stop if what it still needs no longer fits.
-async fn recheck_before_processing(app: &AppHandle, id: &str, workspace: &Path) -> Option<String> {
+/// Refreshes the job's reservation from its work folder (best effort, on a processing
+/// notification) and returns a reason to stop if what it still needs no longer fits.
+async fn recheck_processing_space(app: &AppHandle, id: &str, workspace: &Path) -> Option<String> {
     let sample = workspace.to_path_buf();
     let on_disk = tokio::task::spawn_blocking(move || disk_budget::bytes_in(&sample)).await.ok()?;
     let state = app.state::<AppState>();
@@ -1369,7 +1412,7 @@ async fn recheck_before_processing(app: &AppHandle, id: &str, workspace: &Path) 
     let free = (state.free_space)(workspace).ok()?;
     let short = ledger.recheck(id, free).err()?;
     Some(format!(
-        "Not enough free space on {} to finish processing this download. It needs about {} more (estimated, including a safety margin) and about {} is available. Free up space, then press Try Again; the downloaded streams are kept.",
+        "Not enough free space on {} to finish processing this download. It needs about {} more (estimated, including a safety margin) and about {} is available. Free up space, then press Try Again; the downloaded files are kept in the work folder.",
         disk_budget::volume_key(workspace).to_uppercase(),
         human_bytes(short.required),
         human_bytes(short.available),
@@ -1423,8 +1466,8 @@ fn handle_line(
         // status|downloaded|total|estimate|speed|eta|fragment|fragments|format_id|filename
         // (the file name goes last and may itself contain '|').
         let fields: Vec<&str> = rest.splitn(10, '|').collect();
-        // Every file this run writes is inside the job's work folder, which is what
-        // cleanup removes, so no per-file bookkeeping (or save) is needed here.
+        // Every file this run writes is inside the work folder, which cleanup removes
+        // whole, so no per-file bookkeeping is needed.
         let Some(snapshot) = progress.update(&fields) else { return };
 
         let finished = fields[0] == "finished";
@@ -1705,11 +1748,15 @@ async fn finish(app: &AppHandle, id: &str, mut outcome: Outcome) {
     }
     let mut completed = None;
     // Remove the entry and settle the job in one critical section. A cancel is sticky
-    // (nothing downgrades it), so the files it leaves are collected right there. Once the
-    // files are published, a cancel has nothing left to undo.
+    // (nothing downgrades it), so the files it leaves are collected right there.
     let cancelled = {
         let mut running = state.running.lock().unwrap();
         let entry = running.remove(id);
+        // Clear even a cancel that arrived during the asynchronous Library save.
+        // Holding running makes this reset and final settlement atomic with Cancel.
+        if outcome.published {
+            update_job(app, id, |j| j.cancel_requested = false);
+        }
         let intent = match entry.as_ref().map(|r| r.intent) {
             Some(_) if outcome.published => Intent::None,
             Some(intent) => intent,
@@ -1817,7 +1864,6 @@ mod tests {
         assert_eq!(frozen.output_dir, std::path::PathBuf::from("D:/First"));
         assert_eq!(frozen.filename_template, Settings::default().filename_template);
         assert!(frozen.embed_metadata);
-        // Survives a save and reload unchanged.
         let round: JobExecution = serde_json::from_str(&serde_json::to_string(&frozen).unwrap()).unwrap();
         assert_eq!(round, frozen);
     }

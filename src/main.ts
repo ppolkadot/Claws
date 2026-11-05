@@ -7,6 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { api, onEvent, errorMessage, type Job, type JobEvent, type JobRemoved, type JobsAdded, type ToolProgress } from "./api";
 import { store } from "./store";
+import { StartupEvents } from "./queue-events";
 import { h } from "./ui/dom";
 import { toast } from "./ui/components";
 import { installSprings } from "./ui/motion";
@@ -38,7 +39,15 @@ async function start() {
 
   let notices: string[] = [];
   try {
+    // Recovery can finish while bootstrap is in flight. Subscribe first and replay
+    // its events after loading the snapshot so no completion/removal is lost.
+    const startup = new StartupEvents();
+    await onEvent<JobEvent<Job>>("job-update", (event) => startup.accept(() => store.updateJob(event)));
+    await onEvent<JobsAdded<Job>>("jobs-added", (batch) => startup.accept(() => store.addJobs(batch)));
+    await onEvent<JobRemoved>("job-removed", (event) => startup.accept(() => store.removeJob(event)));
+    await onEvent<null>("history-changed", () => startup.accept(() => void store.refreshHistory()));
     notices = await store.load();
+    startup.flush();
   } catch (error) {
     root.replaceChildren(
       h("div", { class: "fatal glass" }, h("h1", { text: "Claws could not start" }), h("p", { text: errorMessage(error) })),
@@ -67,10 +76,6 @@ async function start() {
     settings: { title: "Settings", mount: mountSettings },
   });
 
-  await onEvent<JobEvent<Job>>("job-update", (event) => store.updateJob(event));
-  await onEvent<JobsAdded<Job>>("jobs-added", (batch) => store.addJobs(batch));
-  await onEvent<JobRemoved>("job-removed", (event) => store.removeJob(event));
-  await onEvent<null>("history-changed", () => void store.refreshHistory());
   await onEvent<ToolProgress>("tool-progress", (progress) => store.setToolProgress(progress));
   await onEvent<string>("notice", (message) => toast(message, { tone: "error" }));
   notices.forEach((message) => toast(message, { tone: "error" }));

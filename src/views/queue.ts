@@ -171,11 +171,9 @@ export const mountQueue: MountView = (container, ctx) => {
     clearBtn.disabled = store.finishedCount() === 0;
   };
 
-  // Adding or removing jobs. Runs at most once per frame however many arrive, touches only
-  // new and removed rows, and moves only rows that are out of place, so a row mid-animation
-  // is never re-inserted. A large addition (a playlist) is built ROWS_PER_FRAME rows at a
-  // time over consecutive frames, so no single frame blocks the window; rows not built yet
-  // are drawn from the job's latest state when their turn comes.
+  // Adding or removing jobs, at most once per frame. Only rows that are out of place move,
+  // so a row mid-animation is never re-inserted. A large addition is built ROWS_PER_FRAME
+  // rows per frame so no single frame blocks the window.
   const sync = () => {
     frame = 0;
     stats.structuralSyncs += 1;

@@ -5,11 +5,29 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { JobTable } from "../../.test-build/queue-events.js";
+import { JobTable, StartupEvents } from "../../.test-build/queue-events.js";
 
 const job = (id, createdAt, status = "queued", extra = {}) => ({ id, createdAt, status, progress: 0, ...extra });
 const event = (j, revision, schemaVersion = 1) => ({ schemaVersion, jobId: j.id, revision, job: j });
 const batch = (events) => ({ schemaVersion: 1, jobs: events });
+
+test("startup replays recovery and removal after bootstrap, then accepts live events", () => {
+  const table = new JobTable();
+  const startup = new StartupEvents();
+  startup.accept(() => table.apply(event(job("a", 1, "completed"), 12)));
+  startup.accept(() => table.remove({ schemaVersion: 1, jobId: "b", revision: 13 }));
+  assert.equal(table.size, 0);
+  table.load([job("a", 1, "processing"), job("b", 2)], () => 10);
+  startup.flush();
+  assert.equal(table.get("a").status, "completed");
+  assert.equal(table.get("b"), undefined);
+  startup.accept(() => table.apply(event(job("b", 2), 11)));
+  assert.equal(table.get("b"), undefined);
+  startup.accept(() => table.apply(event(job("c", 3), 14)));
+  assert.equal(table.get("c").status, "queued");
+  startup.flush();
+  assert.equal(table.size, 2);
+});
 
 test("a 500-job batch is added once, in creation order", () => {
   const table = new JobTable();

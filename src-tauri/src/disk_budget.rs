@@ -1,21 +1,14 @@
 //! Free-space checks for large downloads.
 //!
-//! Before a transfer starts, the peak extra space the download will need is estimated from
-//! its plan (selected stream sizes and the processing steps yt-dlp will run) and checked
-//! against the free space on the volume holding the job's work folder, minus what other
-//! running jobs have reserved there, plus a safety margin. When the shortfall is certain,
-//! the job stops before the transfer and keeps what it already has. Unknown sizes are
-//! treated as unknown, never as zero: those jobs are watched instead (every few seconds at
-//! most), and stopped if the volume is about to run out.
+//! Before a transfer, the download's peak extra space is estimated from its plan (stream
+//! sizes and processing steps) and checked against the free space on the work folder's
+//! volume, minus other running jobs' reservations, plus a safety margin for estimate
+//! error. Unknown sizes are never treated as zero: those jobs are watched instead and
+//! stopped if the volume is about to run out.
 //!
-//! Reservations are of *remaining* demand: a job holds its estimated peak minus what it
-//! already has on disk, because the free space a later check reads already reflects those
-//! bytes. As a job's files grow, its reservation shrinks by the same amount (sampled every
-//! few seconds, not per progress line); what it still needs for a pending merge or rewrite
+//! Reservations are of *remaining* demand (estimated peak minus bytes already on disk),
+//! because free space already reflects written bytes. Space for a pending merge or rewrite
 //! stays reserved until the job ends.
-//!
-//! These are estimates. A merge or conversion can come out larger or smaller than the
-//! inputs; the margin is there for that.
 
 use std::collections::HashMap;
 use std::io;
@@ -109,9 +102,9 @@ impl Reservation {
     }
 }
 
-/// The reservations of running jobs. Admission and updates happen under one lock, and
-/// free space is read while it is held, so no admission can count space another job has
-/// claimed, and no job's written bytes can be subtracted twice.
+/// The reservations of running jobs. Free space must be read while the ledger's lock is
+/// held, so no admission counts space another job has claimed or subtracts written bytes
+/// twice.
 #[derive(Debug, Default)]
 pub struct Ledger {
     jobs: HashMap<String, Reservation>,
@@ -249,7 +242,6 @@ mod tests {
     #[test]
     fn two_jobs_cannot_both_count_the_same_free_space() {
         let free = 10 * GIB;
-        // The first job reserves 6 GiB (plus margin) of the 10 GiB.
         assert!(check(6 * GIB, free, 0).is_ok());
         let first = 6 * GIB + margin(6 * GIB);
         // On its own the second would fit; with the first's reservation it does not.
@@ -259,8 +251,8 @@ mod tests {
 
     #[test]
     fn written_bytes_are_not_reserved_twice() {
-        // The review's case: a job reserving about 22 GiB (a 20 GiB peak) has written
-        // 10 GiB, and the volume now shows 30 GiB free.
+        // A job reserving about 22 GiB (a 20 GiB peak) has written 10 GiB, and the volume
+        // now shows 30 GiB free.
         let mut ledger = Ledger::default();
         assert!(ledger.admit("a", "d:\\", 20 * GIB, 0, 40 * GIB).is_ok());
         assert_eq!(ledger.held("a"), Some(22 * GIB));
@@ -333,7 +325,6 @@ mod tests {
         assert!(free_bytes(&dir).unwrap() > 0);
         let key = volume_key(&dir);
         assert!(key.ends_with('\\'), "{key}");
-        // A deep path that does not exist yet on the same drive shares the volume.
         // A long path that does not exist yet still resolves to its volume.
         let deep = dir.join("claws-budget-not-created").join("a".repeat(200)).join("b");
         assert_eq!(volume_key(&deep), key);

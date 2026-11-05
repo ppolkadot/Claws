@@ -12,7 +12,6 @@ use crate::settings::Settings;
 
 pub const EXECUTION_SCHEMA: u16 = 1;
 
-/// The fragment concurrency used until benchmarks justify another value (plan task 13).
 pub const FRAGMENT_CONCURRENCY: u8 = 8;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -62,8 +61,7 @@ impl JobExecution {
 }
 
 // ---------------------------------------------------------------------------------------
-// yt-dlp arguments. Pure: everything comes in as parameters, so the exact command line can
-// be tested without a running app.
+// yt-dlp arguments. Pure, so the exact command line can be tested without a running app.
 
 /// Where the media comes from. The source always goes last, after `--` when it is a URL,
 /// so it can never be read as an option.
@@ -75,9 +73,8 @@ pub enum Source<'a> {
     InfoJson(&'a Path),
 }
 
-/// Resilience defaults for ordinary media downloads. Finite on purpose, and no wall-clock
-/// limit is added, so a healthy multi-hour transfer is never cut short; a cancel kills the
-/// process tree whether it is transferring or sleeping between retries.
+/// Finite retries and no wall-clock limit, so a healthy multi-hour transfer is never cut
+/// short; a cancel kills the process tree even while it sleeps between retries.
 pub const RETRY_ARGS: &[&str] = &[
     "--retries",
     "10",
@@ -106,15 +103,9 @@ pub const POSTPROCESS_TEMPLATE: &str = "postprocess:CLAWSPP|%(progress.status)s|
 pub const FORMATS_PRINT: &str = "before_dl:CLAWSFMT|%(requested_formats.0.format_id)s|%(requested_formats.0.filesize)s|%(requested_formats.0.filesize_approx)s|%(requested_formats.1.format_id)s|%(requested_formats.1.filesize)s|%(requested_formats.1.filesize_approx)s|%(format_id)s|%(filesize)s|%(filesize_approx)s";
 pub const DONE_PRINT: &str = "after_move:CLAWSDONE|%(filepath)s";
 
-/// The format selection for an audio-only download.
-///
-/// `Best` is yt-dlp's own pick of the best audio, converted to the chosen format. With
-/// `PreferMatching`, an audio stream already in the chosen codec comes first, so yt-dlp's
-/// audio extraction can copy (or just remux) it instead of encoding; that stream can have
-/// a different bitrate than the best one. The codec is matched on the stream's codec
-/// field, not guessed from its extension (except M4A, whose container implies AAC). Every
+/// The format selection for an audio-only download. Codecs are matched on the stream's
+/// codec field, not its extension (except M4A, whose container implies AAC). Every
 /// selector ends in `ba/b`, so a site without a matching stream behaves like `Best`.
-/// "Original" (`best`) never forces a codec.
 pub fn audio_selector(audio_format: &str, selection: AudioSelection) -> &'static str {
     match (selection, audio_format) {
         (AudioSelection::Best, _) | (_, "best") => "ba/b",
@@ -193,8 +184,7 @@ pub fn download_args(
         push(&["--embed-metadata"]);
     }
 
-    // Everything, including the finished file, is written inside the job's work folder;
-    // Claws publishes it to the output folder afterwards.
+    // Everything, including the finished file, is written inside the work folder.
     let workspace = workspace.to_string_lossy();
     push(&["-P", &workspace, "-o", &execution.filename_template]);
     match source {

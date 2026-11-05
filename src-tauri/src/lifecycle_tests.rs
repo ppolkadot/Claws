@@ -25,6 +25,7 @@ pub(crate) struct TestApp {
     pub out: PathBuf,
     /// Free bytes the app reads, in order; the last value repeats. Plenty by default.
     pub free: Arc<Mutex<VecDeque<u64>>>,
+    pub low_space_delay: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl TestApp {
@@ -60,20 +61,25 @@ impl TestApp {
         let free: Arc<Mutex<VecDeque<u64>>> = Arc::new(Mutex::new(VecDeque::from([u64::MAX / 4])));
         let mut state = AppState::new(dir.clone(), settings, history, cleanup, writer, false);
         let readings = free.clone();
+        let low_space_delay = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let delay = low_space_delay.clone();
         state.free_space = Box::new(move |_| {
             let mut readings = readings.lock().unwrap();
             let value = *readings.front().unwrap();
             if readings.len() > 1 {
                 readings.pop_front();
             }
+            drop(readings);
+            if value < 512 * 1024 * 1024 {
+                std::thread::sleep(Duration::from_millis(delay.load(std::sync::atomic::Ordering::SeqCst)));
+            }
             Ok(value)
         });
         app.manage(state);
-        downloader::restore_queue(app.handle(), queue);
-        Self { app, dir, out, free }
+        downloader::restore_queue(app.handle(), queue).join().expect("startup recovery");
+        Self { app, dir, out, free, low_space_delay }
     }
 
-    /// Sets the free-space readings the app will see, in order.
     pub fn set_free(&self, readings: &[u64]) {
         *self.free.lock().unwrap() = readings.iter().copied().collect();
     }
@@ -137,7 +143,6 @@ impl TestApp {
         std::fs::remove_dir_all(self.dir.join(name)).unwrap();
     }
 
-    /// The queue as it is on disk.
     pub fn saved_queue(&self) -> Vec<Job> {
         let text = std::fs::read_to_string(self.dir.join("queue.json")).unwrap_or_default();
         serde_json::from_str::<crate::queue_writer::QueueSnapshot>(&text).map(|s| s.jobs).unwrap_or_default()
@@ -172,8 +177,6 @@ fn part_file(workspace: &Path) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-// --- B4: required saves ----------------------------------------------------------------
-
 #[test]
 fn a_start_that_cannot_be_saved_starts_nothing_and_retries_in_place() {
     let Some(t) = TestApp::new("b4-start") else { return };
@@ -186,7 +189,6 @@ fn a_start_that_cannot_be_saved_starts_nothing_and_retries_in_place() {
     let workspace = job.workspace.clone().expect("the work folder is kept");
     assert!(workspace.path.is_dir());
 
-    // Once saving works, Try Again starts in the same frozen folder.
     t.unblock("queue.json");
     downloader::resume(t.handle(), &id);
     let job = t.wait_job(&id, running, "the retry to run");
@@ -210,7 +212,6 @@ fn a_cancel_that_cannot_be_saved_deletes_nothing() {
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(part_file(&workspace), b"partial", "files went before the cancel was saved");
 
-    // Removing it once saving works again deletes the files.
     t.unblock("queue.json");
     downloader::remove(t.handle(), &id).unwrap();
     wait_until("the work folder to go", || !workspace.exists());
@@ -239,8 +240,6 @@ fn nothing_is_deleted_or_forgotten_without_a_saved_cleanup_record() {
     wait_until("the work folder to go", || !workspace.exists());
     assert!(t.job(&id).is_none());
 }
-
-// --- B2/B3: publication and completion -------------------------------------------------
 
 fn library_entries(t: &TestApp, id: &str) -> usize {
     let text = std::fs::read_to_string(t.dir.join("history.json")).unwrap_or_default();
@@ -290,7 +289,6 @@ fn an_unrecorded_completion_is_finished_at_the_next_start_exactly_once() {
     assert_eq!(library_entries(&t, &id), 1);
     wait_until("the work folder to go", || !workspace.exists());
     wait_until("the queue to retire the job", || t.saved_queue().iter().all(|j| j.id != id));
-    // Starting again finds nothing more to do and adds nothing.
     let t = t.restart();
     assert!(t.job(&id).is_none());
     assert_eq!(library_entries(&t, &id), 1);
@@ -349,8 +347,6 @@ fn a_taken_name_never_overwrites_and_try_again_publishes_after_it_is_moved() {
     assert_eq!(t.starts().len(), 1);
 }
 
-// --- B5: disk reservations ------------------------------------------------------------
-
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
 
@@ -363,17 +359,14 @@ fn a_second_download_is_admitted_only_beside_what_the_first_still_needs() {
     let workspace = t.wait_job(&first, running, "the first download").workspace.unwrap().path;
     let held = || t.state().disk_ledger.lock().unwrap().held(&first);
     let admitted = held().expect("the first is reserved");
-    // 64 MiB of it reach the disk: they stop being reserved.
     std::fs::write(workspace.join("alpha.f18.mp4.part-Frag1"), vec![0u8; 64 * MIB as usize]).unwrap();
-    // (At least: the tool's own few bytes may land after the first sample too.)
+    // At least 64 MiB: the tool's own few bytes may land after the first sample too.
     wait_until("the reservation to shrink as bytes land", || held().is_some_and(|h| h <= admitted - 64 * MIB));
 
-    // The second does not fit beside it and stops before transferring.
     let second = t.enqueue(&format!("https://fixture.invalid/hang/bravo/{GIB}"));
     let job = t.wait_job(&second, |j| j.status == JobStatus::Failed, "the second to be refused");
     assert!(job.error.unwrap_or_default().contains("Not enough free space"));
 
-    // Once the first ends, its claim is released and the second fits.
     downloader::cancel(t.handle(), &first);
     t.wait_job(&first, |j| j.status == JobStatus::Cancelled, "the cancel");
     wait_until("the first's claim to go", || held().is_none());
@@ -382,25 +375,28 @@ fn a_second_download_is_admitted_only_beside_what_the_first_still_needs() {
 }
 
 #[test]
-fn a_merge_that_no_longer_fits_is_stopped_before_it_runs_and_keeps_the_streams() {
+fn low_space_during_processing_keeps_retryable_files_or_a_valid_result() {
     let Some(t) = TestApp::new("b5-merge") else { return };
-    // Room at admission; then something else fills the disk before the merge.
     t.set_free(&[2 * GIB, 100 * MIB]);
     let id = t.enqueue("https://fixture.invalid/ok/papa");
-    let job = t.wait_job(&id, |j| j.status == JobStatus::Failed, "the merge to be stopped");
+    let job = t.wait_job(&id, |j| matches!(j.status, JobStatus::Failed | JobStatus::Completed), "processing to settle");
+    if job.status == JobStatus::Completed {
+        assert_eq!(std::fs::read(t.out.join("papa.mp4")).unwrap(), b"merged");
+        assert_eq!(library_entries(&t, &id), 1);
+        return;
+    }
     let error = job.error.unwrap_or_default();
-    assert!(error.contains("to finish processing") && error.contains("streams are kept"), "{error}");
+    assert!(error.contains("to finish processing") && error.contains("files are kept"), "{error}");
     assert!(!t.out.join("papa.mp4").exists());
-    let kept = crate::download_tests::names(&job.workspace.unwrap().path);
-    assert!(kept.iter().any(|n| n.ends_with(".f137.mp4")) && kept.iter().any(|n| n.ends_with(".f140.m4a")), "{kept:?}");
-    assert!(t.state().disk_ledger.lock().unwrap().held(&id).is_none(), "a stopped job keeps no claim");
-
+    let workspace = job.workspace.unwrap().path;
+    let kept = crate::download_tests::names(&workspace);
+    let streams = workspace.join("papa.f137.mp4").is_file() && workspace.join("papa.f140.m4a").is_file();
+    assert!(streams || workspace.join("papa.mp4").is_file(), "{kept:?}");
+    assert!(t.state().disk_ledger.lock().unwrap().held(&id).is_none());
     t.set_free(&[2 * GIB]);
     downloader::resume(t.handle(), &id);
     t.wait_job(&id, |j| j.status == JobStatus::Completed, "the retry");
 }
-
-// --- B1: trying a cancelled job again --------------------------------------------------
 
 #[test]
 fn a_retried_cancel_survives_a_restart_with_its_new_bytes() {
@@ -417,7 +413,6 @@ fn a_retried_cancel_survives_a_restart_with_its_new_bytes() {
     let second = job.workspace.unwrap().path;
     assert_eq!(part_file(&second), b"partial");
 
-    // Closing mid-retry and starting again keeps the retry, paused, with its bytes.
     let t = t.restart();
     let job = t.job(&id).expect("the retry is still in the queue");
     assert_eq!(job.status, JobStatus::Paused);
@@ -440,7 +435,6 @@ fn a_retry_while_old_files_are_locked_keeps_both_safe() {
     downloader::cancel(t.handle(), &id);
     t.wait_job(&id, |j| j.status == JobStatus::Cancelled, "the cancel");
 
-    // Try Again right away: the new attempt gets its own folder.
     downloader::resume(t.handle(), &id);
     let second = t.wait_job(&id, running, "the retry").workspace.unwrap().path;
     assert_ne!(first, second);
@@ -448,7 +442,6 @@ fn a_retry_while_old_files_are_locked_keeps_both_safe() {
     assert!(first.exists(), "the locked folder cannot have gone");
     assert!(t.state().pending_cleanup.lock().unwrap().iter().any(|p| p.workspace.as_ref().is_some_and(|w| w.path == first)));
 
-    // Once released, the retried cleanup removes the old attempt and only that.
     drop(lock);
     downloader::retry_pending_cleanup(t.handle());
     assert!(!first.exists());
@@ -519,4 +512,87 @@ fn shutdown_that_cannot_save_keeps_cancelled_files() {
     downloader::remove(t.handle(), &id).unwrap();
     downloader::shutdown(t.handle());
     assert!(workspace.join(crate::download_files::MARKER).is_file(), "deleted while the queue could not be saved");
+}
+
+#[test]
+fn a_published_completion_outlives_a_late_cancel_and_library_failure() {
+    let Some(t) = TestApp::new("published-cancel") else { return };
+    let (id, workspace) = published_but_not_recorded(&t, "latecancel");
+    // The persisted state from Cancel during publication plus a failed Library save.
+    t.state().jobs.lock().unwrap().iter_mut().find(|j| j.id == id).unwrap().cancel_requested = true;
+    downloader::flush_queue(t.handle()).unwrap();
+    t.unblock("history.json");
+    let t = t.restart();
+    assert_eq!(t.job(&id).unwrap().status, JobStatus::Completed);
+    assert_eq!(library_entries(&t, &id), 1);
+    assert!(!t.job(&id).unwrap().cancel_requested);
+    wait_until("the completed workspace cleanup", || !workspace.exists());
+}
+
+#[test]
+fn a_late_low_space_notification_does_not_fail_a_completed_transfer() {
+    let Some(t) = TestApp::new("late-budget") else { return };
+    t.low_space_delay.store(300, std::sync::atomic::Ordering::SeqCst);
+    // The delayed low-space sample resolves after the fast fixture has already exited.
+    t.set_free(&[2 * GIB, 100 * MIB]);
+    let id = t.enqueue("https://fixture.invalid/ok-fast/fastbudget");
+    let job = t.wait_job(&id, |j| matches!(j.status, JobStatus::Completed | JobStatus::Failed), "the fast transfer");
+    if job.status == JobStatus::Completed {
+        assert_eq!(std::fs::read(t.out.join("fastbudget.mp4")).unwrap(), b"merged");
+    } else {
+        assert!(job.workspace.unwrap().path.join("fastbudget.mp4").is_file());
+        panic!("valid completed output was rejected: {:?}", job.error);
+    }
+}
+
+#[test]
+fn a_missing_published_output_is_not_restored_as_completed() {
+    let Some(t) = TestApp::new("missing-output") else { return };
+    let (id, workspace) = published_but_not_recorded(&t, "missingoutput");
+    std::fs::remove_file(t.out.join("missingoutput.mp4")).unwrap();
+    t.unblock("history.json");
+    let t = t.restart();
+    assert_eq!(t.job(&id).unwrap().status, JobStatus::Failed);
+    assert_eq!(library_entries(&t, &id), 0);
+    assert!(workspace.exists());
+    downloader::resume(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Failed, "verification failure");
+    assert_eq!(t.starts().len(), 1);
+}
+
+#[test]
+fn cancel_after_publication_does_not_delete_unrecorded_completion() {
+    let Some(t) = TestApp::new("cancel-published") else { return };
+    let (id, workspace) = published_but_not_recorded(&t, "savedcancel");
+    downloader::cancel(t.handle(), &id);
+    assert!(!t.job(&id).unwrap().cancel_requested);
+    assert_eq!(t.job(&id).unwrap().status, JobStatus::Failed);
+    assert!(workspace.exists());
+    t.unblock("history.json");
+    let t = t.restart();
+    assert_eq!(t.job(&id).unwrap().status, JobStatus::Completed);
+    assert_eq!(library_entries(&t, &id), 1);
+}
+
+#[test]
+fn startup_recovery_returns_before_library_work_and_prevents_duplicate_starts() {
+    let Some(t) = TestApp::new("background-recovery") else { return };
+    let (id, _) = published_but_not_recorded(&t, "background");
+    t.unblock("history.json");
+    let queue = t.saved_queue();
+    let state = t.state();
+    wait_until("the original worker to settle", || state.workers.load(std::sync::atomic::Ordering::SeqCst) == 0);
+    // Hold a leaf lock that the recovery worker needs. Startup must return anyway.
+    let mut history = state.history.lock().unwrap();
+    // A real restart reloads the disk Library, losing the failed in-memory insert.
+    history.clear();
+    let recovery = downloader::restore_queue(t.handle(), queue);
+    assert_eq!(t.job(&id).unwrap().status, JobStatus::Processing);
+    downloader::resume(t.handle(), &id);
+    assert_eq!(t.starts().len(), 1, "recovery must not start another download");
+    drop(history);
+    recovery.join().unwrap();
+    assert_eq!(t.job(&id).unwrap().status, JobStatus::Completed);
+    assert_eq!(library_entries(&t, &id), 1);
+    assert_eq!(t.starts().len(), 1);
 }

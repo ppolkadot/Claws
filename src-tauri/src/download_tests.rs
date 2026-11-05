@@ -87,9 +87,6 @@ fn kill_tree_stops_the_whole_process_tree() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-// ---------------------------------------------------------------------------------------
-// Real yt-dlp against the localhost fixtures.
-
 fn ytdlp() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("CLAWS_TEST_YTDLP") {
         return Some(PathBuf::from(path));
@@ -377,7 +374,6 @@ fn yt_dlp_picks_the_matching_audio_stream() {
 
     // Best keeps yt-dlp's own choice, whatever the output format.
     assert_eq!(pick(&youtube_like, "m4a", Best), "251");
-    // Prefer matching: AAC in M4A for M4A, Opus for Opus.
     assert_eq!(pick(&youtube_like, "m4a", PreferMatching), "140");
     assert_eq!(pick(&youtube_like, "opus", PreferMatching), "251");
     // No matching stream (no MP3 or FLAC here): the same as Best, still audio only.
@@ -386,13 +382,11 @@ fn yt_dlp_picks_the_matching_audio_stream() {
     // AAC in another container is still preferred for M4A.
     let aac_in_ts = serde_json::json!([audio("hls-aac", "mp4", "aac", 96.0), audio("251", "webm", "opus", 160.0)]);
     assert_eq!(pick(&aac_in_ts, "m4a", PreferMatching), "hls-aac");
-    // Native MP3 is picked for MP3.
     let with_mp3 = serde_json::json!([audio("mp3-128", "mp3", "mp3", 128.0), audio("251", "webm", "opus", 160.0)]);
     assert_eq!(pick(&with_mp3, "mp3", PreferMatching), "mp3-128");
     // A stream with no codec information is never taken for a codec match.
     let unknown_codec = serde_json::json!([{"format_id": "a1", "ext": "m4a", "vcodec": "none", "url": "https://example.com/a1", "protocol": "https"}, audio("251", "webm", "opus", 160.0)]);
     assert_eq!(pick(&unknown_codec, "opus", PreferMatching), "251");
-    // Only a combined format: both choices fall back to it the same way.
     let only_combined = serde_json::json!([combined]);
     assert_eq!(pick(&only_combined, "m4a", PreferMatching), pick(&only_combined, "m4a", Best));
 }

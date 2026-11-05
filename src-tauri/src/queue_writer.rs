@@ -1,14 +1,11 @@
 //! Saves the download queue on one background thread, in order.
 //!
-//! Callers never write the file themselves: they bump the queue revision and ask for it to
-//! be saved. Ordinary changes (progress, status) are coalesced for up to 250 ms; a flush
-//! barrier asks for the save at once and waits until that revision, or a newer snapshot,
-//! is on disk. The snapshot is taken when the writer owns the store lock, so a stale copy
-//! of the queue is never scheduled or written over a newer one.
+//! Ordinary changes are coalesced for up to 250 ms; a flush barrier saves at once and
+//! waits until that revision or a newer one is on disk. The snapshot is taken while the
+//! writer holds the store lock, so a stale copy is never written over a newer one.
 //!
-//! On disk the queue is versioned: `{ schemaVersion, revision, jobs }`. The bare job list
-//! that 1.0.4 wrote is still read (and backed up once before it is replaced); a file from
-//! a newer version is set aside with a notice rather than replaced by an empty queue.
+//! On disk: `{ schemaVersion, revision, jobs }`. The bare job list 1.0.4 wrote is still
+//! read (and backed up once); a file from a newer version is set aside, not emptied.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -135,10 +132,9 @@ impl QueueWriter {
         self.shared.changed.notify_all();
     }
 
-    /// Saves now and waits until `revision` or a newer snapshot is durable. Fails when a
-    /// save that began after this request fails, when `timeout` passes first, or when the
-    /// writer has stopped; the change then stays pending and is retried in the background.
-    /// Blocks: call it from a blocking context, never while holding a state lock.
+    /// Saves now and waits until `revision` or newer is durable. Fails if a save begun after
+    /// this request fails, on timeout, or once the writer stopped; the change stays pending
+    /// and is retried. Blocks: never call it while holding a state lock.
     pub fn flush(&self, revision: u64, timeout: Duration) -> Result<(), String> {
         let deadline = Instant::now() + timeout;
         let mut p = self.shared.progress.lock().unwrap();
@@ -183,8 +179,8 @@ impl QueueWriter {
     }
 }
 
-/// Reads the queue, accepting the 1.0.4 format. Damaged files are moved aside (as before);
-/// a file from a newer version is kept aside untouched, with a notice.
+/// Reads the queue, accepting the 1.0.4 format. Damaged files and files from a newer
+/// version are moved aside untouched, with a notice.
 pub fn load(path: &Path, notices: &mut Vec<String>) -> Vec<Job> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -209,7 +205,7 @@ pub fn load(path: &Path, notices: &mut Vec<String>) -> Vec<Job> {
         }
     };
     if value.is_array() {
-        // Written by 1.0.4 or earlier. Kept once, untouched, before the new format replaces it.
+        // 1.0.4 or earlier: backed up once before the new format replaces it.
         let backup = path.with_file_name("queue.pre-1.0.5.json");
         if !backup.exists() {
             let _ = std::fs::copy(path, &backup);

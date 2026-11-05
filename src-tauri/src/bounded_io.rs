@@ -1,9 +1,6 @@
-//! Reading tool output with fixed memory limits.
-//!
-//! yt-dlp's output is untrusted in size: an extractor can return an enormous JSON
-//! document, and a misbehaving process can write a line without end. These readers keep
-//! memory bounded while always draining the pipe (a child blocked on a full pipe would
-//! never exit). The limits are defensive; ordinary metadata is far below them.
+//! Reading tool output with fixed memory limits. yt-dlp's output is untrusted in size, so
+//! these readers keep memory bounded while still draining the pipe (a child blocked on a
+//! full pipe would never exit).
 
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt};
 

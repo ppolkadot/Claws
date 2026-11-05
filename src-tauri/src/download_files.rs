@@ -23,8 +23,7 @@ pub const WORK_DIR: &str = ".claws-work";
 pub const MARKER: &str = ".claws-job.json";
 /// 2: per-output move journal (`moves`) with file identities.
 pub const MANIFEST_SCHEMA: u16 = 2;
-/// The saved reference to a work folder; unchanged by the manifest's schema 2 (an absent
-/// attempt reads as 0).
+/// The saved reference to a work folder; an absent `attempt` reads as 0.
 pub const WORKSPACE_REF_SCHEMA: u16 = 1;
 
 /// Side files published next to the media when they share its name.
@@ -123,6 +122,28 @@ impl Manifest {
         self.is_done(first, &target).then_some(target)
     }
 
+    /// A recorded move is not enough: the published file must still be present and ours.
+    fn validate_done(&self, relative: &str, target: &Path) -> io::Result<()> {
+        let metadata = fs::symlink_metadata(target)?;
+        if !metadata.is_file() || is_link(&metadata) {
+            return Err(io::Error::other(format!("{} is not a regular published file", target.display())));
+        }
+        if let Some(entry) = self.moves.iter().find(|m| m.relative == relative && m.state == MoveState::Done) {
+            if identify(target)? != entry.identity {
+                return Err(io::Error::other(format!("{} is no longer the file this download published", target.display())));
+            }
+        }
+        // Schema 1 has no identity evidence; require existence, without inventing an identity.
+        Ok(())
+    }
+
+    pub fn validated_media(&self) -> io::Result<PathBuf> {
+        let relative = self.outputs.first().ok_or_else(|| io::Error::other("no published media recorded"))?;
+        let target = self.media().ok_or_else(|| io::Error::other("media publication is incomplete"))?;
+        self.validate_done(relative, &target)?;
+        Ok(target)
+    }
+
     /// Side files kept back because their names were taken.
     pub fn withheld(&self) -> Vec<PathBuf> {
         self.moves.iter().filter(|m| m.state == MoveState::Withheld).map(|m| m.destination.clone()).collect()
@@ -140,7 +161,6 @@ impl Manifest {
     }
 }
 
-/// The identity a moved file keeps (see `FileIdentity`).
 pub fn identify(path: &Path) -> io::Result<FileIdentity> {
     #[cfg(windows)]
     if let Some(identity) = file_id(path)? {
@@ -406,12 +426,11 @@ pub struct Published {
     pub skipped: Vec<PathBuf>,
 }
 
-/// Publishes the manifest's outputs. Each move is journalled: its intent and the file's
-/// identity are saved before the move and its result after, so a publication interrupted
-/// at any point continues where it stopped, and a move whose record was lost is recognised
-/// by identity rather than by name. The media file must publish; a side file whose name
-/// is taken is kept back (`Withheld`) and reported. `reserve` claims a destination against
-/// other jobs for the duration of the move and returns false when another job holds it.
+/// Publishes the manifest's outputs. Each move's intent and file identity are saved before
+/// the move and its result after, so an interrupted publication resumes where it stopped
+/// and a move whose result was lost is recognised by identity, not by name. The media file
+/// must publish; a side file whose name is taken is `Withheld`. `reserve` claims a
+/// destination against other jobs and returns false when another job holds it.
 pub fn publish(manifest: &mut Manifest, reserve: &mut dyn FnMut(&Path) -> bool) -> io::Result<Published> {
     if manifest.state == Publication::Ready {
         manifest.state = Publication::Publishing;
@@ -423,6 +442,11 @@ pub fn publish(manifest: &mut Manifest, reserve: &mut dyn FnMut(&Path) -> bool) 
         let target = destination(&manifest.destination_root, Path::new(relative))?;
         let source = manifest.workspace.join(relative);
         if manifest.is_done(relative, &target) {
+            // Published sidecars now belong to the user: moving or editing one must
+            // not block recording an otherwise valid video in the Library.
+            if media {
+                manifest.validate_done(relative, &target)?;
+            }
             continue;
         }
         let interrupted = manifest.moves.iter().find(|m| m.relative == *relative && m.state == MoveState::Moving).cloned();
@@ -476,6 +500,8 @@ pub fn publish(manifest: &mut Manifest, reserve: &mut dyn FnMut(&Path) -> bool) 
             }
         }
     }
+    // Every move was validated or performed above; no re-check here, which would hash a
+    // freshly moved file again on FAT/exFAT.
     let media = manifest.media().ok_or_else(|| io::Error::other("nothing to publish"))?;
     manifest.state = Publication::Published;
     write_manifest(manifest)?;
@@ -705,7 +731,7 @@ mod tests {
         let job = id();
         let folder = workspace_path(&out, &job, 0);
         fs::create_dir_all(&folder).unwrap();
-        // Exactly what the previous build wrote.
+        // A schema-1 marker, written before attempts existed.
         let marker = format!(
             r#"{{"schemaVersion":1,"jobId":"{job}","workspace":{},"destinationRoot":{},"state":"active","outputs":[],"published":[]}}"#,
             serde_json::to_string(&folder).unwrap(),
@@ -883,4 +909,37 @@ mod tests {
             assert!(!is_legacy_partial("clip.mp4", bad), "{bad}");
         }
     }
+    #[test]
+    fn a_done_move_with_a_missing_destination_is_not_success() {
+        let (out, mut manifest) = ready("done-missing", false);
+        publish(&mut manifest, &mut |_| true).unwrap();
+        fs::remove_file(out.join("clip.mp4")).unwrap();
+        manifest.state = Publication::Publishing;
+        assert!(publish(&mut manifest, &mut |_| true).is_err());
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn a_done_move_with_a_replaced_destination_is_not_success() {
+        let (out, mut manifest) = ready("done-replaced", false);
+        publish(&mut manifest, &mut |_| true).unwrap();
+        fs::rename(out.join("clip.mp4"), out.join("original.mp4")).unwrap();
+        fs::write(out.join("clip.mp4"), b"someone else's file").unwrap();
+        manifest.state = Publication::Publishing;
+        assert!(publish(&mut manifest, &mut |_| true).is_err());
+        assert_eq!(fs::read(out.join("clip.mp4")).unwrap(), b"someone else's file");
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn missing_published_subtitle_does_not_block_media_retry() {
+        let (out, mut manifest) = ready("missing-sidecar", true);
+        publish(&mut manifest, &mut |_| true).unwrap();
+        fs::rename(out.join("clip.en.srt"), out.join("renamed.srt")).unwrap();
+        let result = publish(&mut manifest, &mut |_| true).unwrap();
+        assert!(result.media.is_file());
+        assert_eq!(fs::read(out.join("renamed.srt")).unwrap(), b"subs");
+        let _ = fs::remove_dir_all(out);
+    }
+
 }
