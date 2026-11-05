@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::download_files::{self, Publication, WorkspaceRef};
-use crate::download_policy::JobExecution;
+use crate::download_policy::{self, FailureKind, JobExecution, Source};
 use crate::error::{notify, AppError, Result};
 use crate::history;
 use crate::probe::{self, error_text, validate_url};
@@ -728,8 +728,6 @@ pub fn shutdown(app: &AppHandle) {
     }
 }
 
-/// The source goes last: the probe's cached info, or the URL after `--` so it can
-/// never be read as an option.
 fn build_args(
     app: &AppHandle,
     job: &Job,
@@ -739,84 +737,12 @@ fn build_args(
     info_json: Option<&Path>,
 ) -> Vec<String> {
     // Sign-in and tool locations stay current; everything shaping the files is frozen.
-    let mut args = tools::common_args(app, settings);
-    let mut push = |items: &[&str]| args.extend(items.iter().map(|s| s.to_string()));
-
-    push(&[
-        "--newline",
-        "--no-warnings",
-        "--progress",
-        "--no-simulate",
-        "--windows-filenames",
-        "--retries",
-        "5",
-        "--fragment-retries",
-        "5",
-        // 4 already saturates a fast line; 8 helps on high-latency and HLS sites.
-        "--concurrent-fragments",
-        "8",
-    ]);
-    let index = job.playlist_index.map(|i| i.to_string());
-    match &index {
-        // An entry without its own link: take just that item from the playlist.
-        Some(index) => push(&["--yes-playlist", "--playlist-items", index]),
-        None => push(&["--no-playlist"]),
-    }
-    push(&[
-        "--progress-template",
-        "download:CLAWS|%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(progress.fragment_index)s|%(progress.fragment_count)s|%(progress.filename)s",
-        "--progress-template",
-        "postprocess:CLAWSPP|%(progress.status)s|%(progress.postprocessor)s",
-        "--print",
-        "before_dl:CLAWSFMT|%(requested_formats.0.format_id)s|%(requested_formats.1.format_id)s",
-        "--print",
-        "after_move:CLAWSDONE|%(filepath)s",
-    ]);
-
-    let options = &job.options;
-    if options.mode == "audio" {
-        push(&["-f", "ba/b", "-x", "--audio-format", &options.audio_format, "--audio-quality", "0"]);
-        if matches!(options.audio_format.as_str(), "mp3" | "m4a") {
-            push(&["--embed-thumbnail"]);
-        }
-    } else {
-        let sort = match options.max_height {
-            Some(h) => format!("res:{h},vcodec:h264,acodec:aac"),
-            None => "res,vcodec:h264,acodec:aac".to_string(),
-        };
-        push(&["-f", "bv*+ba/b", "-S", &sort, "--merge-output-format", "mp4"]);
-        if !options.subtitle_langs.is_empty() {
-            let langs = options.subtitle_langs.join(",");
-            push(&["--write-subs", "--sub-langs", &langs]);
-            if options.auto_subs {
-                push(&["--write-auto-subs"]);
-            }
-            if options.embed_subs {
-                push(&["--embed-subs"]);
-            } else {
-                push(&["--convert-subs", "srt"]);
-            }
-        }
-    }
-    if execution.embed_metadata {
-        push(&["--embed-metadata"]);
-    }
-
-    // Everything, including the finished file, is written inside the job's work folder;
-    // Claws publishes it to the output folder afterwards.
-    let workspace = workspace.to_string_lossy();
-    push(&["-P", &workspace, "-o", &execution.filename_template]);
-    match info_json {
-        Some(path) => {
-            args.push("--load-info-json".into());
-            args.push(path.to_string_lossy().into_owned());
-        }
-        None => {
-            args.push("--".into());
-            args.push(job.url.clone());
-        }
-    }
-    args
+    let source = match (info_json, job.playlist_index) {
+        (Some(path), _) => Source::InfoJson(path),
+        (None, Some(index)) => Source::PlaylistItem { url: &job.url, index },
+        (None, None) => Source::Url(&job.url),
+    };
+    download_policy::download_args(tools::common_args(app, settings), &job.options, execution, workspace, source)
 }
 
 struct Outcome {
@@ -824,6 +750,8 @@ struct Outcome {
     error: Option<String>,
     final_path: Option<String>,
     used_cache: bool,
+    /// What kind of failure, when yt-dlp itself failed.
+    kind: Option<FailureKind>,
 }
 
 impl Outcome {
@@ -833,6 +761,7 @@ impl Outcome {
             error: Some(message.into()),
             final_path: None,
             used_cache: false,
+            kind: None,
         }
     }
 }
@@ -954,6 +883,7 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
             error: None,
             final_path: None,
             used_cache: false,
+            kind: None,
         };
     }
 
@@ -1015,6 +945,8 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
     let stderr = child.stderr.take();
     let stderr_app = app.clone();
     let stderr_id = id.to_string();
+    let processing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stderr_processing = processing.clone();
     let stderr_task = tauri::async_runtime::spawn(async move {
         let mut text = String::new();
         let Some(stream) = stderr else { return text };
@@ -1029,6 +961,7 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
                     let line = line.trim_end();
                     if let Some(rest) = line.strip_prefix(TAG_POST) {
                         if rest.starts_with("started") {
+                            stderr_processing.store(true, Ordering::SeqCst);
                             mark_processing(&stderr_app, &stderr_id);
                         }
                     } else if text.len() < 64 * 1024 {
@@ -1046,6 +979,7 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
         error: None,
         final_path: None,
         used_cache: info_json.is_some(),
+        kind: None,
     };
     let mut progress = Progress::new(&job.options.mode);
 
@@ -1073,11 +1007,16 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
     match status {
         Ok(s) if s.success() => outcome.success = true,
         Ok(s) => {
-            let message = error_text(&stderr_text);
-            outcome.error = Some(if stderr_text.trim().is_empty() {
+            let kind = download_policy::classify(&stderr_text, processing.load(Ordering::SeqCst));
+            let message = if stderr_text.trim().is_empty() {
                 format!("yt-dlp stopped with exit code {}.", s.code().unwrap_or(-1))
             } else {
-                message
+                error_text(&stderr_text)
+            };
+            outcome.kind = Some(kind);
+            outcome.error = Some(match kind.summary() {
+                Some(summary) => format!("{summary} {message}"),
+                None => message,
             });
         }
         Err(e) => outcome.error = Some(format!("yt-dlp stopped unexpectedly: {e}")),
@@ -1261,16 +1200,17 @@ async fn run_job(app: AppHandle, id: String) {
     let mut outcome = execute(&app, &id, true).await;
 
     // Cached media links can expire. If a cached run failed on its own (not paused or
-    // cancelled), read the link again and retry once.
+    // cancelled) in a way fresh links can fix, read the link again and retry once. A full
+    // disk or a failed merge would only repeat the whole transfer.
     let interrupted = state
         .running
         .lock()
         .unwrap()
         .get(&id)
         .is_some_and(|r| r.intent != Intent::None);
-    let failed = !outcome.success && outcome.error.as_deref().is_some_and(|e| !e.is_empty());
+    let refreshable = !outcome.success && outcome.kind.is_some_and(FailureKind::refresh_helps);
     let closing = state.shutting_down.load(Ordering::SeqCst);
-    if outcome.used_cache && failed && !interrupted && !closing {
+    if outcome.used_cache && refreshable && !interrupted && !closing {
         let retry = {
             let mut jobs = state.jobs.lock().unwrap();
             jobs.iter_mut()
