@@ -1,9 +1,9 @@
 # Current problems and download-speed review
 
-**Date:** 2026-11-04  
-**Reviewed branch:** `download-reliability`  
-**Reviewed commit:** `7c4f981`  
-**Baseline before this branch:** `a9b6cbb`  
+**Date:** 2026-11-04\\
+**Reviewed branch:** `download-reliability`\\
+**Reviewed commit:** `7c4f981`\\
+**Baseline before this branch:** `a9b6cbb`\\
 **Scope:** consolidate unresolved review findings, distinguish implemented fixes from unfinished performance work, and check whether the current transfer policy resolves low download speed.
 
 ## Executive conclusion
