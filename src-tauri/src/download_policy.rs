@@ -182,7 +182,7 @@ pub fn download_args(
             if options.auto_subs {
                 push(&["--write-auto-subs"]);
             }
-            if options.embed_subs {
+            if options.embeds_subtitles() {
                 push(&["--embed-subs"]);
             } else {
                 push(&["--convert-subs", "srt"]);
@@ -311,6 +311,40 @@ mod tests {
         let args = download_args(vec![], &options("video"), &execution, Path::new("W"), Source::Url("https://e.com/v"));
         assert!(!args.contains(&"--embed-metadata".to_string()));
         assert_eq!(value_after(&args, "-o"), ["%(uploader)s/%(title)s.%(ext)s"]);
+    }
+
+    #[test]
+    fn fast_save_skips_the_whole_file_passes_but_not_the_streams() {
+        let settings = Settings { output_dir: "D:/Out".into(), embed_metadata: true, ..Settings::default() };
+        let options = DownloadOptions {
+            mode: "video".into(),
+            max_height: Some(1080),
+            subtitle_langs: vec!["en".into()],
+            embed_subs: true,
+            fast_save: true,
+            ..DownloadOptions::default()
+        };
+        let fast = JobExecution::freeze(&settings, options.fast_save);
+        assert!(!fast.embed_metadata);
+        let args = download_args(vec![], &options, &fast, Path::new("W"), Source::Url("https://e.com/v"));
+        assert!(!args.contains(&"--embed-metadata".to_string()));
+        assert!(!args.contains(&"--embed-subs".to_string()));
+        assert_eq!(value_after(&args, "--convert-subs"), ["srt"], "subtitles are kept, as files");
+        assert_eq!(value_after(&args, "--sub-langs"), ["en"]);
+        // The same streams as without Fast Save.
+        let normal_options = DownloadOptions { fast_save: false, ..options.clone() };
+        let normal = download_args(vec![], &normal_options, &JobExecution::freeze(&settings, false), Path::new("W"), Source::Url("https://e.com/v"));
+        assert_eq!(value_after(&args, "-f"), value_after(&normal, "-f"));
+        assert_eq!(value_after(&args, "-S"), value_after(&normal, "-S"));
+        assert!(normal.contains(&"--embed-subs".to_string()) && normal.contains(&"--embed-metadata".to_string()));
+    }
+
+    #[test]
+    fn options_saved_by_1_0_4_have_fast_save_off() {
+        let old = r#"{"mode":"video","maxHeight":null,"audioFormat":"mp3","subtitleLangs":["en"],"autoSubs":false,"embedSubs":true}"#;
+        let options: DownloadOptions = serde_json::from_str(old).unwrap();
+        assert!(!options.fast_save);
+        assert!(options.embeds_subtitles());
     }
 
     #[test]
