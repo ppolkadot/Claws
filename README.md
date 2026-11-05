@@ -39,10 +39,19 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 - **Paste and go.** Paste a link, or press <kbd>Ctrl</kbd>+<kbd>V</kbd> anywhere in the window, and Claws reads the title, artwork, duration and the qualities on offer.
 - **Many sites.** Claws runs on [yt-dlp](https://github.com/yt-dlp/yt-dlp), so it works with any site yt-dlp supports, which is well over a thousand. It has been tested against YouTube; other sites rely on yt-dlp's support for them.
 - **Format picker.** Best quality or a height cap from 144p to 4K, saved as MP4 when possible. Audio only in MP3, M4A, Opus, FLAC, WAV or the original stream. Subtitles as separate `.srt` files or embedded.
+- **Fast Save.** An optional per-download switch. It skips writing metadata into the file and keeps subtitles as separate `.srt` files, so a large file is not rewritten after it downloads. The video and audio are the same either way.
+- **Audio without needless conversion.** With *Prefer matching source audio* on, an audio stream already in the chosen format is saved by copying it instead of converting it.
 - **Playlists and channels.** Pick exactly which videos to download.
 
 **Managing**
-- **Queue.** Several downloads at once, with live progress, speed and time left. Pause, resume, cancel and retry. Unfinished downloads survive a restart as paused, and cancelling cleans up the partial files.
+- **Queue.** Several downloads at once, with live progress, speed and time left.
+  - Progress is weighted by bytes across the video and audio streams.
+  - When a size is only an estimate it says "about"; when it is unknown, the row shows bytes downloaded instead of a guessed percentage.
+  - Pause, resume, cancel and retry.
+  - Unfinished downloads survive a restart as paused.
+  - A paused download keeps the folder and file name it started with, even if you change them in Settings.
+- **Safe with your files.** Each download works in its own hidden folder until it is finished. Cancelling deletes that folder and nothing else. A finished file never replaces a file that already exists.
+- **Disk space check.** Before a large download starts, Claws estimates the space it will need, including the extra copy while merging. If the disk is too full, it stops with the numbers instead of failing halfway.
 - **Library.** Finished downloads with artwork and search. Open them or show them in their folder.
 - **Sign-in.** Use cookies from your browser, or a `cookies.txt` file, for sites that need you to be logged in.
 - **Instant repeat lookups.** Links you have downloaded keep their details, so looking one up again shows it at once while Claws checks the site for changes. Pick any item under **Recent** to see it again.
@@ -99,7 +108,7 @@ The 1.0.4 installer with the corrected Polaris spacing is also [included in this
 
 | Section | Options |
 | --- | --- |
-| **Downloads** | Output folder (default `Downloads\Claws`), filename template (a yt-dlp output template), simultaneous downloads (1–8), embed metadata |
+| **Downloads** | Output folder (default `Downloads\Claws`), filename template (a yt-dlp output template), simultaneous downloads (1–8), embed metadata, prefer matching source audio |
 | **Quick Access** | Quick Open shortcut (Ctrl+Alt+D, Ctrl+Alt+Space, Ctrl+Shift+Space or off), keep running when closed, open at login |
 | **Appearance** | Theme (System, Light, Dark), window material (Glass, Acrylic, Mica, Solid), transparency, font status |
 | **Sign-in** | Cookies from none, a browser (Firefox, Chrome, Edge, Brave, Opera, Vivaldi), or a `cookies.txt` file |
@@ -111,6 +120,8 @@ The window materials:
 - **Solid** turns the material off.
 
 Settings, the library, the unfinished queue, the downloaded tools and the caches are stored in `%APPDATA%\dev.claws.downloader\`.
+
+Changes to the output folder, the filename template, *Embed metadata* and *Prefer matching source audio* apply to downloads that have not started yet. A download that has started, even one that is paused, keeps the choices it started with.
 
 ## How it works
 
@@ -136,6 +147,11 @@ Claws is a [Tauri 2](https://tauri.app) app. The backend is written in Rust and 
 
 - **Reading a link** runs `yt-dlp --dump-single-json --flat-playlist` and turns the result into a preview, the available qualities, subtitles and playlist entries.
 - **Downloading** runs yt-dlp with progress markers that the backend parses live. Download progress arrives on stdout and post-processing progress on stderr. Each job runs in its own process tree, so pause and cancel stop yt-dlp and its ffmpeg children together.
+- **Work folders.** yt-dlp writes only inside the job's own folder, `<output folder>\.claws-work\<id>\`.
+  - When the download succeeds, Claws moves the finished file, and any separate subtitles, into the output folder. The move never replaces an existing file.
+  - If a file with that name already exists, the download is kept and **Try Again** only finishes the move.
+  - Cancelling deletes the job's work folder, which Claws identifies by a marker inside it.
+- **Network trouble.** yt-dlp retries up to 10 times, with waits that grow from 1 to 30 seconds. A stream that is missing a piece fails instead of saving a file with a gap in it.
 - **The glass** uses the Windows composition API to blur the desktop behind the transparent window. The interface adds only tint layers, a bright liquid edge and depth on top of that blur.
 
 ## Performance
@@ -153,7 +169,8 @@ What makes the difference:
 - **Faster start-up.** yt-dlp is installed as its folder build, which starts about three times faster than the single-file build.
 - **Parallel fragments.** Streams served in fragments (HLS and DASH) download 8 fragments at a time, which helps on high-latency links.
 - **No waiting at launch.** The window draws immediately, and tool checks run in the background.
-- **Embed metadata** costs one extra rewrite of each file after merging. Turn it off for the fastest finish on long videos.
+- **Embed metadata** costs one extra rewrite of each file after merging. Turn it off, or use **Fast Save** for a single download, for the fastest finish on long videos.
+- **A responsive queue.** Progress updates repaint only their own row, and a whole playlist is added in one step. With 500 queued jobs and 8 downloading, layout and style work over the same stretch of progress fell from about 730 ms to 63 ms. See [`docs/performance/queue-ui.md`](docs/performance/queue-ui.md).
 
 ## Privacy and security
 
@@ -196,10 +213,13 @@ npm run tauri build     # produce the installer in src-tauri/target/release/bund
 | `npm run dev` | Runs the interface in a browser with synthetic sample data. Useful for styling work without the backend. |
 | `npm run build` | Type-checks and builds the frontend. |
 | `cargo clippy` (in `src-tauri/`) | Lints the backend. |
-| `cargo test` (in `src-tauri/`) | Runs the backend's unit tests. |
+| `cargo test` (in `src-tauri/`) | Runs the backend's tests. Tests that drive the real yt-dlp against local fixtures need Python and yt-dlp (`CLAWS_TEST_YTDLP`, or the copy Claws installed), and skip without them. |
+| `npm run test:queue` | Runs the queue event tests with Node's test runner. |
 | `python scripts/build-fonts.py` | Regenerates the committed Polaris web fonts (optional, see [Fonts](#fonts)). |
 
 `scripts/dev/` has the tools used to test the real app:
+- `download-fixtures.py`, a localhost server with controlled faults: a missing HLS segment, servers with and without Range support, 503s, a dropped connection, an expired link, and a slow link;
+- `download-bench.mjs` and `queue-bench.mjs`, which measure transfers and the Queue view;
 - a DevTools driver for the WebView;
 - a capture script that verifies the desktop glass against a test pattern, and refuses to capture if another window overlaps Claws;
 - a download-phase timer.
@@ -216,7 +236,12 @@ claws/
 │   └── styles/               Materials and tokens, components, screens, fonts
 ├── src-tauri/                Backend (Rust)
 │   └── src/
-│       ├── downloader.rs     Queue, concurrency, progress, pause/resume/cancel
+│       ├── downloader.rs     Queue, concurrency, pause/resume/cancel, publication
+│       ├── download_policy.rs  Frozen job settings, the yt-dlp command line, failure kinds
+│       ├── download_files.rs Work folders, safe publication and cleanup
+│       ├── transfer_progress.rs  Byte-weighted progress and time left
+│       ├── disk_budget.rs    Free-space estimates
+│       ├── queue_writer.rs   Ordered background saves of the queue
 │       ├── probe.rs          Reading links, and the 20-minute probe cache
 │       ├── links.rs          Saved details of downloaded links, for instant lookups
 │       ├── history.rs        The library and its artwork
@@ -266,9 +291,21 @@ That is on purpose, so downloads continue and Quick Open keeps working. Press <k
 </details>
 
 <details>
-<summary><b>The same video in another quality is skipped</b></summary>
+<summary><b>A download says the file already exists</b></summary>
 
-yt-dlp skips files that already exist under the same name. Add the quality to the filename template, for example `%(title).150B [%(id)s] %(height)sp.%(ext)s`, or move the earlier file.
+Claws never replaces a file that is already in the output folder. Getting the same video again, even in another quality, produces the same name. Move or rename the earlier file, then press **Try Again**: the download was kept, so only the move is left. To keep several qualities side by side, add the quality to the filename template, for example `%(title).150B [%(id)s] %(height)sp.%(ext)s`.
+</details>
+
+<details>
+<summary><b>"Not enough free space"</b></summary>
+
+Large videos need room for the downloaded streams and for the merged file while both exist, plus a safety margin. Free up space on the drive named in the message, or choose another output folder for new downloads. Then press **Try Again**: what was already downloaded is kept.
+</details>
+
+<details>
+<summary><b>What is the hidden <code>.claws-work</code> folder?</b></summary>
+
+Unfinished downloads live there, one folder per download, until they are finished or cancelled. Paused and failed downloads keep theirs so they can resume. Leave it alone while Claws is running. A folder that could not be deleted because a file was in use is removed the next time Claws starts.
 </details>
 
 ## Contributing

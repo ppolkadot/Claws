@@ -186,20 +186,24 @@ def make_handler(fx: Fixtures):
             seg = re.fullmatch(r"/(hls|hls-ok)/seg(\d+)\.ts", path)
             if seg:
                 return self.segment(int(seg.group(2)), missing=seg.group(1) == "hls")
-            if path == "/range/file.bin":
+            # Any file name works under the file routes (/range/a.bin, /range/b.bin, ...),
+            # so tests can produce distinct downloads of the same bytes.
+            route = re.fullmatch(r"/([a-z-]+)/[A-Za-z0-9_.-]+\.bin", path)
+            kind = route.group(1) if route else None
+            if kind == "range":
                 return self.serve_file(True)
-            if path == "/no-range/file.bin":
+            if kind == "no-range":
                 return self.serve_file(False)
-            if path == "/slow/file.bin":
+            if kind == "slow":
                 return self.serve_file(True, rate=fx.rate)
-            if path == "/unstable/file.bin":
+            if kind == "unstable":
                 if fx.count("unstable-attempts") <= fx.unstable_failures:
                     return self.send_plain(503, b"try again later")
                 return self.serve_file(True)
-            if path == "/reset/file.bin":
+            if kind == "reset":
                 first = fx.count("reset-attempts") == 1
                 return self.serve_file(True, reset_at=fx.size // 2 if first else None)
-            if path == "/expired/file.bin":
+            if kind == "expired":
                 return self.send_plain(403, b"link expired")
             digest = re.fullmatch(r"/sha256/([a-z-]+)", path)
             if digest:
