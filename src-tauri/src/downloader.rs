@@ -13,6 +13,7 @@ use crate::download_policy::{self, FailureKind, JobExecution, Source};
 use crate::error::{notify, AppError, Result};
 use crate::history;
 use crate::queue_writer::{QueueSnapshot, QUEUE_SCHEMA};
+use crate::transfer_progress::TransferProgress;
 use crate::probe::{self, error_text, validate_url};
 use crate::settings::Settings;
 use crate::state::AppState;
@@ -111,8 +112,20 @@ pub struct Job {
     pub duration: Option<f64>,
     pub options: DownloadOptions,
     pub status: JobStatus,
-    /// Overall progress, 0.0 to 1.0.
+    /// Overall progress, 0.0 to 1.0, weighted by bytes. Meaningful only when
+    /// `progress_known`; 1.0 only once the file is published.
     pub progress: f64,
+    /// False while some stream's size is unknown: the interface then shows bytes and speed
+    /// with an indeterminate bar instead of a made-up percentage.
+    #[serde(default)]
+    pub progress_known: bool,
+    /// Some expected size is an estimate, so the percentage and time left are approximate.
+    #[serde(default)]
+    pub progress_estimated: bool,
+    #[serde(default)]
+    pub downloaded_bytes: Option<u64>,
+    #[serde(default)]
+    pub total_bytes: Option<u64>,
     pub speed: Option<f64>,
     pub eta: Option<u64>,
     pub file_path: Option<String>,
@@ -396,6 +409,10 @@ pub fn enqueue(app: &AppHandle, items: Vec<EnqueueItem>, mut options: DownloadOp
             options: options.clone(),
             status: JobStatus::Queued,
             progress: 0.0,
+            progress_known: false,
+            progress_estimated: false,
+            downloaded_bytes: None,
+            total_bytes: None,
             speed: None,
             eta: None,
             file_path: None,
@@ -866,80 +883,6 @@ impl Outcome {
     }
 }
 
-fn number(field: &str) -> Option<f64> {
-    field.trim().parse().ok()
-}
-
-/// Subtitles, thumbnails and info files report progress too, but are not media streams.
-fn is_side_file(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    let ext = lower.rsplit('.').next().unwrap_or("");
-    matches!(
-        ext,
-        "vtt" | "srt" | "ass" | "ssa" | "ttml" | "srv1" | "srv2" | "srv3" | "json3" | "lrc" | "sbv"
-            | "dfxp" | "jpg" | "jpeg" | "png" | "webp" | "json" | "description"
-    )
-}
-
-/// Tracks progress across the separate video and audio streams of one download so the
-/// bar moves forward once instead of restarting for every stream.
-struct Progress {
-    total_streams: usize,
-    stream_index: usize,
-    current_file: String,
-    last_emit: Instant,
-}
-
-impl Progress {
-    fn new(mode: &str) -> Self {
-        Self {
-            total_streams: if mode == "audio" { 1 } else { 2 },
-            stream_index: 0,
-            current_file: String::new(),
-            last_emit: Instant::now() - Duration::from_secs(1),
-        }
-    }
-
-    /// The stream count from yt-dlp's format selection ("NA" when only one format).
-    fn set_formats(&mut self, line: &str) {
-        let streams = line.split('|').filter(|f| !f.is_empty() && *f != "NA").count();
-        self.total_streams = streams.max(1);
-    }
-
-    /// Overall fraction for one progress line, or `None` for a side file.
-    fn overall(&mut self, fields: &[&str]) -> Option<f64> {
-        let filename = fields[8].trim();
-        if is_side_file(filename) {
-            return None;
-        }
-        if filename != self.current_file {
-            if !self.current_file.is_empty() {
-                self.stream_index += 1;
-            }
-            self.current_file = filename.to_string();
-        }
-        let finished = fields[0] == "finished";
-        let downloaded = number(fields[1]);
-        let total = number(fields[2]).or_else(|| number(fields[3]));
-        let fraction = if finished {
-            1.0
-        } else {
-            match (downloaded, total) {
-                (Some(done), Some(total)) if total > 0.0 => (done / total).clamp(0.0, 1.0),
-                // Fragmented streams (HLS/DASH) report fragments instead of bytes.
-                _ => match (number(fields[6]), number(fields[7])) {
-                    (Some(index), Some(count)) if count > 0.0 => {
-                        ((index - 1.0).max(0.0) / count).clamp(0.0, 1.0)
-                    }
-                    _ => 0.0,
-                },
-            }
-        };
-        let streams = self.total_streams.max(self.stream_index + 1);
-        Some(((self.stream_index as f64 + fraction) / streams as f64).min(0.99))
-    }
-}
-
 async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
     let state = app.state::<AppState>();
     let Some(job) = list(app).into_iter().find(|j| j.id == id) else {
@@ -1081,7 +1024,8 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
         used_cache: info_json.is_some(),
         kind: None,
     };
-    let mut progress = Progress::new(&job.options.mode);
+    let mut progress = TransferProgress::new(&job.options.mode);
+    let mut last_emit = Instant::now() - Duration::from_secs(1);
 
     if let Some(stdout) = child.stdout.take() {
         let mut reader = BufReader::new(stdout);
@@ -1092,7 +1036,7 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
                     let line = String::from_utf8_lossy(&buf);
-                    handle_line(app, id, line.trim_end(), &mut progress, &mut outcome);
+                    handle_line(app, id, line.trim_end(), &mut progress, &mut last_emit, &mut outcome);
                 }
             }
         }
@@ -1134,9 +1078,16 @@ fn mark_processing(app: &AppHandle, id: &str) {
     });
 }
 
-fn handle_line(app: &AppHandle, id: &str, line: &str, progress: &mut Progress, outcome: &mut Outcome) {
+fn handle_line(
+    app: &AppHandle,
+    id: &str,
+    line: &str,
+    progress: &mut TransferProgress,
+    last_emit: &mut Instant,
+    outcome: &mut Outcome,
+) {
     if let Some(rest) = line.strip_prefix(TAG_FORMATS) {
-        progress.set_formats(rest);
+        progress.set_plan(rest);
     } else if let Some(rest) = line.strip_prefix(TAG_DONE) {
         if !rest.trim().is_empty() {
             outcome.final_path = Some(rest.trim().to_string());
@@ -1146,27 +1097,27 @@ fn handle_line(app: &AppHandle, id: &str, line: &str, progress: &mut Progress, o
             mark_processing(app, id);
         }
     } else if let Some(rest) = line.strip_prefix(TAG_PROGRESS) {
-        // status|downloaded|total|estimate|speed|eta|fragment|fragments|filename
-        let fields: Vec<&str> = rest.splitn(9, '|').collect();
-        if fields.len() < 9 {
-            return;
-        }
+        // status|downloaded|total|estimate|speed|eta|fragment|fragments|format_id|filename
+        // (the file name goes last and may itself contain '|').
+        let fields: Vec<&str> = rest.splitn(10, '|').collect();
         // Every file this run writes is inside the job's work folder, which is what
         // cleanup removes, so no per-file bookkeeping (or save) is needed here.
-        let Some(overall) = progress.overall(&fields) else { return };
+        let Some(snapshot) = progress.update(&fields) else { return };
 
         let finished = fields[0] == "finished";
-        if finished || progress.last_emit.elapsed() >= Duration::from_millis(150) {
-            progress.last_emit = Instant::now();
-            let speed = number(fields[4]);
-            let eta = number(fields[5]).map(|e| e as u64);
+        if finished || last_emit.elapsed() >= Duration::from_millis(150) {
+            *last_emit = Instant::now();
             update_job(app, id, |j| {
                 if j.status.is_active() {
                     j.status = JobStatus::Downloading;
                 }
-                j.progress = overall;
-                j.speed = speed;
-                j.eta = eta;
+                j.progress_known = snapshot.fraction.is_some();
+                j.progress = snapshot.fraction.unwrap_or(j.progress);
+                j.progress_estimated = snapshot.estimated;
+                j.downloaded_bytes = Some(snapshot.downloaded);
+                j.total_bytes = snapshot.total;
+                j.speed = snapshot.speed;
+                j.eta = snapshot.eta;
             });
         }
     }
@@ -1352,6 +1303,7 @@ fn settle(app: &AppHandle, id: &str, intent: Intent, outcome: &Outcome) -> Optio
         return update_job(app, id, |j| {
             j.status = JobStatus::Completed;
             j.progress = 1.0;
+            j.progress_known = true;
             j.speed = None;
             j.eta = None;
             j.error = None;
@@ -1467,49 +1419,6 @@ pub(crate) fn remove_partials_now(files: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn line(status: &str, done: &str, total: &str, file: &str) -> Vec<String> {
-        vec![status, done, total, "NA", "1000", "5", "NA", "NA", file]
-            .into_iter()
-            .map(String::from)
-            .collect()
-    }
-
-    fn overall(progress: &mut Progress, fields: &[String]) -> Option<f64> {
-        let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
-        progress.overall(&refs)
-    }
-
-    #[test]
-    fn two_streams_progress_once() {
-        let mut p = Progress::new("video");
-        p.set_formats("137|140");
-        assert_eq!(overall(&mut p, &line("downloading", "50", "100", "v.f137.mp4")), Some(0.25));
-        assert_eq!(overall(&mut p, &line("finished", "100", "100", "v.f137.mp4")), Some(0.5));
-        assert_eq!(overall(&mut p, &line("downloading", "50", "100", "v.f140.m4a")), Some(0.75));
-    }
-
-    #[test]
-    fn single_format_counts_one_stream() {
-        let mut p = Progress::new("video");
-        p.set_formats("NA|NA");
-        assert_eq!(overall(&mut p, &line("downloading", "50", "100", "v.mp4")), Some(0.5));
-    }
-
-    #[test]
-    fn subtitles_do_not_advance_streams() {
-        let mut p = Progress::new("video");
-        p.set_formats("137|140");
-        assert_eq!(overall(&mut p, &line("finished", "10", "10", "v.en.vtt")), None);
-        assert_eq!(overall(&mut p, &line("downloading", "50", "100", "v.f137.mp4")), Some(0.25));
-    }
-
-    #[test]
-    fn progress_never_reaches_one_before_done() {
-        let mut p = Progress::new("audio");
-        p.set_formats("NA|NA");
-        assert_eq!(overall(&mut p, &line("finished", "100", "100", "a.webm")), Some(0.99));
-    }
 
     #[test]
     fn jobs_saved_by_1_0_4_still_load() {

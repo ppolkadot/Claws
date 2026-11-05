@@ -1,5 +1,5 @@
 import { api, errorMessage, type Job } from "../api";
-import { folderName, formatEta, formatSpeed } from "../format";
+import { folderName, formatBytes, formatEta, formatSpeed } from "../format";
 import { store } from "../store";
 import { button, toast } from "../ui/components";
 import { h, replace } from "../ui/dom";
@@ -18,17 +18,29 @@ interface RowRefs {
   thumb: HTMLElement;
 }
 
-function statusText(job: Job): string {
+/** A percentage only when every stream's size is known; "about" when a size is an estimate. */
+function percent(job: Job): string | null {
+  if (!job.progressKnown) return null;
   const pct = `${Math.round(job.progress * 100)}%`;
+  return job.progressEstimated ? `About ${pct}` : pct;
+}
+
+function statusText(job: Job): string {
   switch (job.status) {
     case "queued":
       return "Waiting for a free slot";
-    case "downloading":
-      return [pct, formatSpeed(job.speed), formatEta(job.eta)].filter(Boolean).join("  ·  ");
+    case "downloading": {
+      const amount = percent(job) ?? (job.downloadedBytes ? `${formatBytes(job.downloadedBytes)} downloaded` : "Starting");
+      // Time left only when the total and a real speed support it (the backend decides).
+      const left = job.eta != null ? (job.progressEstimated ? `about ${formatEta(job.eta)}` : formatEta(job.eta)) : null;
+      return [amount, formatSpeed(job.speed), left].filter(Boolean).join("  ·  ");
+    }
     case "processing":
       return "Processing the file";
-    case "paused":
-      return job.progress > 0 ? `Paused at ${pct}` : "Paused";
+    case "paused": {
+      const at = percent(job) ?? (job.downloadedBytes ? formatBytes(job.downloadedBytes) : job.progress > 0 ? `${Math.round(job.progress * 100)}%` : null);
+      return at ? `Paused at ${at}` : "Paused";
+    }
     case "completed":
       return job.filePath ? `Saved to ${folderName(job.filePath.replace(/[\\/][^\\/]*$/, ""))}` : "Completed";
     case "cancelled":
@@ -112,7 +124,8 @@ function paintRow(refs: RowRefs, job: Job, previous: Job | undefined) {
   refs.el.dataset.status = job.status;
   refs.status.textContent = statusText(job);
   refs.status.title = job.status === "failed" ? job.error ?? "" : "";
-  setProgress(refs.bar, job.status === "processing" ? null : job.status === "completed" ? 1 : job.progress);
+  const unknown = job.status === "processing" || (job.status === "downloading" && !job.progressKnown);
+  setProgress(refs.bar, unknown ? null : job.status === "completed" ? 1 : job.progress);
   if (!previous || previous.status !== job.status) paintActions(refs, job);
 }
 

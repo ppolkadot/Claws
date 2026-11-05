@@ -55,7 +55,7 @@ const job = (id: string, title: string, hues: [number, number], over: Partial<Jo
 });
 
 const jobs: Job[] = [
-  job("a1", "Sample: Coastal timelapse in 4K", [200, 250], { status: "downloading", progress: 0.62, speed: 6_400_000, eta: 41, createdAt: now - 5000 }),
+  job("a1", "Sample: Coastal timelapse in 4K", [200, 250], { status: "downloading", progress: 0.62, progressKnown: true, downloadedBytes: 620_000_000, totalBytes: 1_000_000_000, speed: 6_400_000, eta: 41, createdAt: now - 5000 }),
   job("a2", "Sample: Studio session, full set", [280, 330], { status: "processing", progress: 0.99, createdAt: now - 4000, options: { ...defaults, mode: "audio", audioFormat: "mp3" } }),
   job("a3", "Sample: Interview, part two", [20, 350], { status: "paused", progress: 0.34, createdAt: now - 3000 }),
   job("a4", "Sample: A very long title that should be truncated gracefully when the window is narrow", [140, 190], { status: "failed", error: "This video is private. Sign in with cookies to download it.", createdAt: now - 2000 }),

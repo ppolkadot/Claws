@@ -60,7 +60,14 @@ export interface Job {
   duration: number | null;
   options: DownloadOptions;
   status: JobStatus;
+  /** 0..1, weighted by bytes; only meaningful when `progressKnown`. 1 only once saved. */
   progress: number;
+  /** False while a stream's size is unknown: show bytes and speed, not a percentage. */
+  progressKnown?: boolean;
+  /** Some size is an estimate, so the percentage and time left are approximate. */
+  progressEstimated?: boolean;
+  downloadedBytes?: number | null;
+  totalBytes?: number | null;
   speed: number | null;
   eta: number | null;
   filePath: string | null;

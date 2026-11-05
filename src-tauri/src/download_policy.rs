@@ -97,9 +97,13 @@ pub const RETRY_ARGS: &[&str] = &[
 /// few updates a second. First, final and status-change lines still come through.
 pub const PROGRESS_DELTA: &str = "0.2";
 
-pub const PROGRESS_TEMPLATE: &str = "download:CLAWS|%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(progress.fragment_index)s|%(progress.fragment_count)s|%(progress.filename)s";
+/// Progress per stream. The format id identifies the stream; the file name goes last
+/// because it may contain the separator.
+pub const PROGRESS_TEMPLATE: &str = "download:CLAWS|%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(progress.fragment_index)s|%(progress.fragment_count)s|%(info.format_id)s|%(progress.filename)s";
 pub const POSTPROCESS_TEMPLATE: &str = "postprocess:CLAWSPP|%(progress.status)s|%(progress.postprocessor)s";
-pub const FORMATS_PRINT: &str = "before_dl:CLAWSFMT|%(requested_formats.0.format_id)s|%(requested_formats.1.format_id)s";
+/// The selected streams and their sizes (exact, then approximate), before any byte:
+/// two groups for a merged download, then the single format of an unmerged one.
+pub const FORMATS_PRINT: &str = "before_dl:CLAWSFMT|%(requested_formats.0.format_id)s|%(requested_formats.0.filesize)s|%(requested_formats.0.filesize_approx)s|%(requested_formats.1.format_id)s|%(requested_formats.1.filesize)s|%(requested_formats.1.filesize_approx)s|%(format_id)s|%(filesize)s|%(filesize_approx)s";
 pub const DONE_PRINT: &str = "after_move:CLAWSDONE|%(filepath)s";
 
 /// The format selection for an audio-only download.
