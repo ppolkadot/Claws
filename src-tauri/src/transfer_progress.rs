@@ -89,6 +89,12 @@ pub fn is_side_file(name: &str) -> bool {
 }
 
 impl TransferProgress {
+    /// Expected size of each selected stream (None where unknown), once the selection is
+    /// known; `None` before that.
+    pub fn planned_sizes(&self) -> Option<Vec<Option<u64>>> {
+        self.planned.then(|| self.streams.iter().map(|s| s.expected().map(|e| e.bytes)).collect())
+    }
+
     pub fn new(mode: &str) -> Self {
         Self {
             streams: Vec::new(),

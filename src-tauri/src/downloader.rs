@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+use crate::disk_budget;
 use crate::download_files::{self, Publication, WorkspaceRef};
 use crate::download_policy::{self, FailureKind, JobExecution, Source};
 use crate::error::{notify, AppError, Result};
@@ -1035,6 +1036,9 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
     };
     let mut progress = TransferProgress::new(&job.options.mode);
     let mut last_emit = Instant::now() - Duration::from_secs(1);
+    let mut budget = Budget::new(&job, &execution, &workspace.path);
+    let pid = child.id();
+    let mut stopped: Option<String> = None;
 
     if let Some(stdout) = child.stdout.take() {
         let mut reader = BufReader::new(stdout);
@@ -1045,7 +1049,18 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
                     let line = String::from_utf8_lossy(&buf);
-                    handle_line(app, id, line.trim_end(), &mut progress, &mut last_emit, &mut outcome);
+                    let line = line.trim_end();
+                    handle_line(app, id, line, &mut progress, &mut last_emit, &mut outcome);
+                    if stopped.is_none() {
+                        if let Some(reason) = budget.after_line(app, id, line, &progress).await {
+                            // Not enough space: stop before the transfer (or before the
+                            // disk fills), keeping what is already downloaded.
+                            if let Some(pid) = pid {
+                                kill_tree(pid, false);
+                            }
+                            stopped = Some(reason);
+                        }
+                    }
                 }
             }
         }
@@ -1074,7 +1089,125 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
         }
         Err(e) => outcome.error = Some(format!("yt-dlp stopped unexpectedly: {e}")),
     }
+    if let Some(reason) = stopped {
+        outcome.success = false;
+        outcome.kind = Some(FailureKind::LocalIo);
+        outcome.error = Some(reason);
+    }
     outcome
+}
+
+/// Disk-space checks for one run: once the selection (and so the sizes) is known, the
+/// estimated peak is checked and reserved; when a size is unknown, free space is watched.
+struct Budget {
+    job_id: String,
+    workspace: std::path::PathBuf,
+    volume: String,
+    mode: String,
+    audio_format: String,
+    duration: Option<f64>,
+    rewrite: bool,
+    checked: bool,
+    watching: bool,
+    last_watch: Instant,
+}
+
+impl Budget {
+    fn new(job: &Job, execution: &JobExecution, workspace: &Path) -> Self {
+        Self {
+            job_id: job.id.clone(),
+            workspace: workspace.to_path_buf(),
+            volume: disk_budget::volume_key(workspace),
+            mode: job.options.mode.clone(),
+            audio_format: job.options.audio_format.clone(),
+            duration: job.duration,
+            rewrite: execution.embed_metadata || job.options.embeds_subtitles(),
+            checked: false,
+            watching: false,
+            last_watch: Instant::now(),
+        }
+    }
+
+    /// A reason to stop, if the volume cannot hold this download.
+    async fn after_line(&mut self, app: &AppHandle, id: &str, line: &str, progress: &TransferProgress) -> Option<String> {
+        if !self.checked && line.starts_with(TAG_FORMATS) {
+            self.checked = true;
+            let Some(sizes) = progress.planned_sizes() else {
+                self.watching = true;
+                return None;
+            };
+            let total: Option<u64> = sizes.iter().copied().sum();
+            let steps = disk_budget::Steps {
+                merge: sizes.len() > 1,
+                rewrite: self.rewrite,
+                audio_output: (self.mode == "audio" && self.audio_format != "best")
+                    .then(|| disk_budget::audio_output(&self.audio_format, total, self.duration))
+                    .flatten(),
+            };
+            let unconvertible_audio = self.mode == "audio" && self.audio_format != "best" && steps.audio_output.is_none();
+            let Some(peak) = disk_budget::peak_bytes(&sizes, steps).filter(|_| !unconvertible_audio) else {
+                self.watching = true;
+                return None;
+            };
+            let workspace = self.workspace.clone();
+            let (on_disk, free) = tokio::task::spawn_blocking(move || (disk_budget::bytes_in(&workspace), disk_budget::free_bytes(&workspace)))
+                .await
+                .ok()?;
+            // An unreadable volume is not evidence of a shortfall: watch instead.
+            let Ok(free) = free else {
+                self.watching = true;
+                return None;
+            };
+            let additional = peak.saturating_sub(on_disk);
+            let state = app.state::<AppState>();
+            let mut reservations = state.disk_reservations.lock().unwrap();
+            let others: u64 = reservations
+                .iter()
+                .filter(|(job, (volume, _))| **job != self.job_id && *volume == self.volume)
+                .map(|(_, (_, bytes))| *bytes)
+                .sum();
+            return match disk_budget::check(additional, free, others) {
+                Ok(()) => {
+                    reservations.insert(id.to_string(), (self.volume.clone(), additional + disk_budget::margin(additional)));
+                    None
+                }
+                Err(short) => Some(format!(
+                    "Not enough free space on {} for this download. It needs about {} more (estimated, including a safety margin) and about {} is available. Free up space, then press Try Again; what was downloaded is kept.",
+                    self.volume.to_uppercase(),
+                    human_bytes(short.required),
+                    human_bytes(short.available),
+                )),
+            };
+        }
+        if self.watching && line.starts_with(TAG_PROGRESS) && self.last_watch.elapsed() >= Duration::from_secs(5) {
+            self.last_watch = Instant::now();
+            let workspace = self.workspace.clone();
+            let free = tokio::task::spawn_blocking(move || disk_budget::free_bytes(&workspace)).await.ok()?.ok()?;
+            if free < disk_budget::WATCH_FLOOR {
+                return Some(format!(
+                    "{} is almost full ({} free), so the download was stopped before the disk filled up. Free up space, then press Try Again; what was downloaded is kept.",
+                    self.volume.to_uppercase(),
+                    human_bytes(free),
+                ));
+            }
+        }
+        None
+    }
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 || value >= 100.0 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 fn mark_processing(app: &AppHandle, id: &str) {
@@ -1300,6 +1433,7 @@ async fn run_job(app: AppHandle, id: String) {
     }
 
     finish(&app, &id, outcome).await;
+    state.disk_reservations.lock().unwrap().remove(&id);
     // Free the job before pumping, so a resume that arrived meanwhile can start it.
     state.live_jobs.lock().unwrap().remove(&id);
     pump(&app);
