@@ -1,0 +1,482 @@
+[
+  {
+    "scenario": "capped downloader=native fragments=1 jobs=1",
+    "complete": false,
+    "unmeasured": [
+      "longTasks"
+    ],
+    "sourceCommit": "5167328af040ebcaa5f3e7a46a27c62380ec12dd",
+    "toolVersions": {
+      "ytDlp": "2026.10.26",
+      "aria2c": null,
+      "ffmpeg": "not used (--fixup never)"
+    },
+    "environment": {
+      "os": "win32 10.0.26200",
+      "cpu": "AMD Ryzen 7 5700X 8-Core Processor             ",
+      "logicalCpus": 16,
+      "ramBytes": 34301759488,
+      "storage": "temp folder on C: (NVMe/SATA SSD; exact device unrecorded)",
+      "network": "localhost fixtures; caps stand in for server limits"
+    },
+    "settings": {
+      "jobs": 1,
+      "fragments": 1,
+      "transport": "native",
+      "metadata": false,
+      "subtitles": false
+    },
+    "fixture": {
+      "route": "capped",
+      "perConnectionRateBytesPerSecond": 8388608,
+      "globalRateBytesPerSecond": null,
+      "segments": null
+    },
+    "payload": {
+      "advertisedBytes": 134217728,
+      "sha256": "5c51bd08a4a7309610c36de50217338947ab1a3243713e4fbf83bb10a862d356"
+    },
+    "integrityPassed": true,
+    "runs": [
+      {
+        "roundSeconds": 17.21476239999999,
+        "peakDiskBytes": 130022400,
+        "jobs": [
+          {
+            "extractSeconds": 1.067035400000008,
+            "transferSeconds": 16.00105279999999,
+            "processSeconds": 0,
+            "publishSeconds": 0.14608180000001447,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.03125,
+            "longTasks": null
+          }
+        ]
+      },
+      {
+        "roundSeconds": 17.212910399999995,
+        "peakDiskBytes": 134217728,
+        "jobs": [
+          {
+            "extractSeconds": 1.06721179999999,
+            "transferSeconds": 16.000049,
+            "processSeconds": 0,
+            "publishSeconds": 0.14501079999998912,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 3.765625,
+            "longTasks": null
+          }
+        ]
+      },
+      {
+        "roundSeconds": 17.46529800000001,
+        "peakDiskBytes": 134217728,
+        "jobs": [
+          {
+            "extractSeconds": 1.2612636000000057,
+            "transferSeconds": 16.001218200000004,
+            "processSeconds": 0,
+            "publishSeconds": 0.202007900000026,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.546875,
+            "longTasks": null
+          }
+        ]
+      }
+    ],
+    "summary": {
+      "roundMedianSeconds": 17.21476239999999,
+      "roundSpreadSeconds": 0.2523876000000165,
+      "aggregateMiBPerSecond": 7.435478749332031,
+      "transferMedianSeconds": 16.00105279999999,
+      "cpuMedianSeconds": 1.546875
+    }
+  },
+  {
+    "scenario": "capped downloader=native fragments=1 jobs=3",
+    "complete": false,
+    "unmeasured": [
+      "longTasks"
+    ],
+    "sourceCommit": "5167328af040ebcaa5f3e7a46a27c62380ec12dd",
+    "toolVersions": {
+      "ytDlp": "2026.10.26",
+      "aria2c": null,
+      "ffmpeg": "not used (--fixup never)"
+    },
+    "environment": {
+      "os": "win32 10.0.26200",
+      "cpu": "AMD Ryzen 7 5700X 8-Core Processor             ",
+      "logicalCpus": 16,
+      "ramBytes": 34301759488,
+      "storage": "temp folder on C: (NVMe/SATA SSD; exact device unrecorded)",
+      "network": "localhost fixtures; caps stand in for server limits"
+    },
+    "settings": {
+      "jobs": 3,
+      "fragments": 1,
+      "transport": "native",
+      "metadata": false,
+      "subtitles": false
+    },
+    "fixture": {
+      "route": "capped",
+      "perConnectionRateBytesPerSecond": 8388608,
+      "globalRateBytesPerSecond": null,
+      "segments": null
+    },
+    "payload": {
+      "advertisedBytes": 134217728,
+      "sha256": "5c51bd08a4a7309610c36de50217338947ab1a3243713e4fbf83bb10a862d356"
+    },
+    "integrityPassed": true,
+    "runs": [
+      {
+        "roundSeconds": 17.5812114,
+        "peakDiskBytes": 402653184,
+        "jobs": [
+          {
+            "extractSeconds": 1.3281785999999993,
+            "transferSeconds": 16.001901200000006,
+            "processSeconds": 0,
+            "publishSeconds": 0.2397603999999992,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.15625,
+            "longTasks": null
+          },
+          {
+            "extractSeconds": 1.3324412999999913,
+            "transferSeconds": 16.001623300000006,
+            "processSeconds": 0,
+            "publishSeconds": 0.24250770000000194,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.234375,
+            "longTasks": null
+          },
+          {
+            "extractSeconds": 1.31234169999999,
+            "transferSeconds": 16.00092520000001,
+            "processSeconds": 0,
+            "publishSeconds": 0.2365743999999977,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.234375,
+            "longTasks": null
+          }
+        ]
+      },
+      {
+        "roundSeconds": 17.54942849999998,
+        "peakDiskBytes": 402653184,
+        "jobs": [
+          {
+            "extractSeconds": 1.3579809999999997,
+            "transferSeconds": 16.001887400000008,
+            "processSeconds": 0,
+            "publishSeconds": 0.16723679999998423,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 3.765625,
+            "longTasks": null
+          },
+          {
+            "extractSeconds": 1.3575737999999837,
+            "transferSeconds": 16.00115910000002,
+            "processSeconds": 0,
+            "publishSeconds": 0.16411520000000018,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.265625,
+            "longTasks": null
+          },
+          {
+            "extractSeconds": 1.3614467000000003,
+            "transferSeconds": 16.0206011,
+            "processSeconds": 0,
+            "publishSeconds": 0.1583871999999974,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 3.609375,
+            "longTasks": null
+          }
+        ]
+      },
+      {
+        "roundSeconds": 17.391616799999987,
+        "peakDiskBytes": 402653184,
+        "jobs": [
+          {
+            "extractSeconds": 1.1641846000000078,
+            "transferSeconds": 16.000605299999997,
+            "processSeconds": 0,
+            "publishSeconds": 0.2127799000000232,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.125,
+            "longTasks": null
+          },
+          {
+            "extractSeconds": 1.1546499999999942,
+            "transferSeconds": 16.000982100000023,
+            "processSeconds": 0,
+            "publishSeconds": 0.2047519999999786,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.515625,
+            "longTasks": null
+          },
+          {
+            "extractSeconds": 1.1752163999999756,
+            "transferSeconds": 16.001701300000015,
+            "processSeconds": 0,
+            "publishSeconds": 0.20798670000000857,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.125,
+            "longTasks": null
+          }
+        ]
+      }
+    ],
+    "summary": {
+      "roundMedianSeconds": 17.54942849999998,
+      "roundSpreadSeconds": 0.1895946000000137,
+      "aggregateMiBPerSecond": 21.881054417242158,
+      "transferMedianSeconds": 16.001623300000006,
+      "cpuMedianSeconds": 1.234375
+    }
+  },
+  {
+    "scenario": "capped downloader=native fragments=8 jobs=1",
+    "complete": false,
+    "unmeasured": [
+      "longTasks"
+    ],
+    "sourceCommit": "5167328af040ebcaa5f3e7a46a27c62380ec12dd",
+    "toolVersions": {
+      "ytDlp": "2026.10.26",
+      "aria2c": null,
+      "ffmpeg": "not used (--fixup never)"
+    },
+    "environment": {
+      "os": "win32 10.0.26200",
+      "cpu": "AMD Ryzen 7 5700X 8-Core Processor             ",
+      "logicalCpus": 16,
+      "ramBytes": 34301759488,
+      "storage": "temp folder on C: (NVMe/SATA SSD; exact device unrecorded)",
+      "network": "localhost fixtures; caps stand in for server limits"
+    },
+    "settings": {
+      "jobs": 1,
+      "fragments": 8,
+      "transport": "native",
+      "metadata": false,
+      "subtitles": false
+    },
+    "fixture": {
+      "route": "capped",
+      "perConnectionRateBytesPerSecond": 8388608,
+      "globalRateBytesPerSecond": null,
+      "segments": null
+    },
+    "payload": {
+      "advertisedBytes": 134217728,
+      "sha256": "5c51bd08a4a7309610c36de50217338947ab1a3243713e4fbf83bb10a862d356"
+    },
+    "integrityPassed": true,
+    "runs": [
+      {
+        "roundSeconds": 17.7271556,
+        "peakDiskBytes": 134217728,
+        "jobs": [
+          {
+            "extractSeconds": 1.5718613999999944,
+            "transferSeconds": 16.002291800000005,
+            "processSeconds": 0,
+            "publishSeconds": 0.15204880000000412,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.34375,
+            "longTasks": null
+          }
+        ]
+      },
+      {
+        "roundSeconds": 17.447284799999995,
+        "peakDiskBytes": 134217728,
+        "jobs": [
+          {
+            "extractSeconds": 1.285241399999999,
+            "transferSeconds": 16.000686599999987,
+            "processSeconds": 0,
+            "publishSeconds": 0.1606091000000015,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.203125,
+            "longTasks": null
+          }
+        ]
+      },
+      {
+        "roundSeconds": 17.47074060000002,
+        "peakDiskBytes": 130022400,
+        "jobs": [
+          {
+            "extractSeconds": 1.3337613000000128,
+            "transferSeconds": 15.999792699999992,
+            "processSeconds": 0,
+            "publishSeconds": 0.13647020000001067,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.265625,
+            "longTasks": null
+          }
+        ]
+      }
+    ],
+    "summary": {
+      "roundMedianSeconds": 17.47074060000002,
+      "roundSpreadSeconds": 0.27987080000000475,
+      "aggregateMiBPerSecond": 7.3265354303297165,
+      "transferMedianSeconds": 16.000686599999987,
+      "cpuMedianSeconds": 1.265625
+    }
+  },
+  {
+    "scenario": "capped downloader=native fragments=8 jobs=3",
+    "complete": false,
+    "unmeasured": [
+      "longTasks"
+    ],
+    "sourceCommit": "5167328af040ebcaa5f3e7a46a27c62380ec12dd",
+    "toolVersions": {
+      "ytDlp": "2026.10.26",
+      "aria2c": null,
+      "ffmpeg": "not used (--fixup never)"
+    },
+    "environment": {
+      "os": "win32 10.0.26200",
+      "cpu": "AMD Ryzen 7 5700X 8-Core Processor             ",
+      "logicalCpus": 16,
+      "ramBytes": 34301759488,
+      "storage": "temp folder on C: (NVMe/SATA SSD; exact device unrecorded)",
+      "network": "localhost fixtures; caps stand in for server limits"
+    },
+    "settings": {
+      "jobs": 3,
+      "fragments": 8,
+      "transport": "native",
+      "metadata": false,
+      "subtitles": false
+    },
+    "fixture": {
+      "route": "capped",
+      "perConnectionRateBytesPerSecond": 8388608,
+      "globalRateBytesPerSecond": null,
+      "segments": null
+    },
+    "payload": {
+      "advertisedBytes": 134217728,
+      "sha256": "5c51bd08a4a7309610c36de50217338947ab1a3243713e4fbf83bb10a862d356"
+    },
+    "integrityPassed": true,
+    "runs": [
+      {
+        "roundSeconds": 17.75371960000001,
+        "peakDiskBytes": 402653184,
+        "jobs": [
+          {
+            "extractSeconds": 1.4506438999999955,
+            "transferSeconds": 16.00381880000001,
+            "processSeconds": 0,
+            "publishSeconds": 0.29692839999998977,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.375,
+            "longTasks": null
+          },
+          {
+            "extractSeconds": 1.4466823000000004,
+            "transferSeconds": 16.002667199999998,
+            "processSeconds": 0,
+            "publishSeconds": 0.29494289999999457,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.359375,
+            "longTasks": null
+          },
+          {
+            "extractSeconds": 1.4434501000000017,
+            "transferSeconds": 16.00198109999999,
+            "processSeconds": 0,
+            "publishSeconds": 0.2982241000000067,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.3125,
+            "longTasks": null
+          }
+        ]
+      },
+      {
+        "roundSeconds": 17.555975800000013,
+        "peakDiskBytes": 402653184,
+        "jobs": [
+          {
+            "extractSeconds": 1.3554186999999802,
+            "transferSeconds": 16.001247300000017,
+            "processSeconds": 0,
+            "publishSeconds": 0.18790719999998692,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.28125,
+            "longTasks": null
+          },
+          {
+            "extractSeconds": 1.360467900000018,
+            "transferSeconds": 16.001256999999985,
+            "processSeconds": 0,
+            "publishSeconds": 0.18924710000000777,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.25,
+            "longTasks": null
+          },
+          {
+            "extractSeconds": 1.348175099999993,
+            "transferSeconds": 16.000626100000023,
+            "processSeconds": 0,
+            "publishSeconds": 0.19201410000000033,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.21875,
+            "longTasks": null
+          }
+        ]
+      },
+      {
+        "roundSeconds": 17.416262699999994,
+        "peakDiskBytes": 402653184,
+        "jobs": [
+          {
+            "extractSeconds": 1.1637899000000034,
+            "transferSeconds": 15.99977860000002,
+            "processSeconds": 0,
+            "publishSeconds": 0.20087099999998465,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.125,
+            "longTasks": null
+          },
+          {
+            "extractSeconds": 1.172145600000018,
+            "transferSeconds": 16.002752299999994,
+            "processSeconds": 0,
+            "publishSeconds": 0.20862669999999345,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.078125,
+            "longTasks": null
+          },
+          {
+            "extractSeconds": 1.2066379000000016,
+            "transferSeconds": 16.00161849999998,
+            "processSeconds": 0,
+            "publishSeconds": 0.2005969000000041,
+            "receivedBytes": 134217728,
+            "cpuSeconds": 1.140625,
+            "longTasks": null
+          }
+        ]
+      }
+    ],
+    "summary": {
+      "roundMedianSeconds": 17.555975800000013,
+      "roundSpreadSeconds": 0.33745690000001716,
+      "aggregateMiBPerSecond": 21.872894128733062,
+      "transferMedianSeconds": 16.00161849999998,
+      "cpuMedianSeconds": 1.25
+    }
+  }
+]
