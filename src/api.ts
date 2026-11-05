@@ -49,6 +49,8 @@ export interface DownloadOptions {
   subtitleLangs: string[];
   autoSubs: boolean;
   embedSubs: boolean;
+  /** No metadata pass, subtitles as separate files: nothing rewrites the file afterwards. */
+  fastSave: boolean;
 }
 
 export interface Job {

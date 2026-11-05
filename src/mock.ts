@@ -17,7 +17,7 @@ function art(hueA: number, hueB: number): string {
 }
 
 const now = Date.now();
-const defaults: DownloadOptions = { mode: "video", maxHeight: 1080, audioFormat: "mp3", subtitleLangs: [], autoSubs: false, embedSubs: false };
+const defaults: DownloadOptions = { mode: "video", maxHeight: 1080, audioFormat: "mp3", subtitleLangs: [], autoSubs: false, embedSubs: false, fastSave: false };
 
 const settings: Settings = {
   schemaVersion: 2,

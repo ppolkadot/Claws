@@ -58,6 +58,7 @@ export const mountDownload: MountView = (container, ctx) => {
   let audioFormat = "mp3";
   let subs = new Set<string>();
   let embedSubs = false;
+  let fastSave = false;
   let selected = new Set<number>();
   /** True while an enqueue is in flight or its confirmation is showing. */
   let enqueuing = false;
@@ -152,6 +153,7 @@ export const mountDownload: MountView = (container, ctx) => {
     audioFormat = "mp3";
     subs = new Set();
     embedSubs = false;
+    fastSave = false;
     selected = new Set(next.entries.map((_, i) => i));
     phase = "result";
   }
@@ -245,6 +247,7 @@ export const mountDownload: MountView = (container, ctx) => {
       subtitleLangs: mode === "video" ? chosenSubs : [],
       autoSubs: hasAuto,
       embedSubs,
+      fastSave,
     };
   }
 
@@ -453,7 +456,16 @@ export const mountDownload: MountView = (container, ctx) => {
             ),
           );
           if (subs.size > 0) {
-            rows.push(row("Embed in video", toggle("Embed subtitles in the video", embedSubs, (v) => (embedSubs = v)), "Off saves them as separate .srt files."));
+            rows.push(
+              row(
+                "Embed in video",
+                toggle("Embed subtitles in the video", embedSubs, (v) => {
+                  embedSubs = v;
+                  paint();
+                }),
+                "Off saves them as separate .srt files.",
+              ),
+            );
           }
         }
       } else {
@@ -467,7 +479,31 @@ export const mountDownload: MountView = (container, ctx) => {
           ),
         );
       }
+      rows.push(fastSaveRow());
       replace(body, group(...rows));
+    };
+
+    // Fast Save names exactly what it changes for these choices; it never changes the
+    // video or audio that is downloaded.
+    const fastSaveRow = () => {
+      const metadata = store.settings.embedMetadata;
+      const embeddedSubs = mode === "video" && subs.size > 0 && embedSubs;
+      const skipped = [metadata ? "writing title, uploader and date into the file" : null, embeddedSubs ? "embedding subtitles (they are saved as .srt files instead)" : null].filter(Boolean);
+      const hint = skipped.length === 0
+        ? "Nothing to skip with these choices: the file is not rewritten after it downloads."
+        : fastSave
+          ? `Skips ${skipped.join(" and ")}. The video and audio are the same.`
+          : metadata && embeddedSubs
+            ? "Embedding metadata and subtitles each rewrite the whole file after it downloads. Fast Save skips both."
+            : `Skips ${skipped.join(" and ")}, which rewrites the whole file after it downloads.`;
+      return row(
+        "Fast Save",
+        toggle("Fast Save", fastSave, (v) => {
+          fastSave = v;
+          paint();
+        }),
+        hint,
+      );
     };
     paint();
     return body;

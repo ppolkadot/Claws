@@ -59,6 +59,9 @@ pub struct DownloadOptions {
     pub subtitle_langs: Vec<String>,
     pub auto_subs: bool,
     pub embed_subs: bool,
+    /// Fast Save: no metadata pass and subtitles kept as separate files, so the file is not
+    /// rewritten after it downloads. The chosen video and audio streams are unchanged.
+    pub fast_save: bool,
 }
 
 impl Default for DownloadOptions {
@@ -70,11 +73,17 @@ impl Default for DownloadOptions {
             subtitle_langs: Vec::new(),
             auto_subs: false,
             embed_subs: false,
+            fast_save: false,
         }
     }
 }
 
 impl DownloadOptions {
+    /// Whether subtitles go into the video (a whole-file pass) rather than next to it.
+    pub fn embeds_subtitles(&self) -> bool {
+        self.embed_subs && !self.fast_save
+    }
+
     fn validate(&mut self) -> Result<()> {
         if self.mode != "video" && self.mode != "audio" {
             return Err(AppError::msg("Unknown download type."));
@@ -1135,7 +1144,7 @@ async fn prepare(
     let execution = job
         .execution
         .clone()
-        .unwrap_or_else(|| JobExecution::freeze(settings, false));
+        .unwrap_or_else(|| JobExecution::freeze(settings, job.options.fast_save));
     let output = execution.output_dir.clone();
     let id = job.id.clone();
     let (workspace, manifest) = tokio::task::spawn_blocking(move || download_files::open_workspace(&output, &id))
@@ -1177,7 +1186,7 @@ async fn publish(app: &AppHandle, id: &str, outcome: &mut Outcome) {
         return;
     };
     let reported = outcome.final_path.clone();
-    let wants_sidecars = !job.options.subtitle_langs.is_empty() && !job.options.embed_subs;
+    let wants_sidecars = !job.options.subtitle_langs.is_empty() && !job.options.embeds_subtitles();
     let app_for_reservations = app.clone();
     let id_owned = id.to_string();
     let result = tokio::task::spawn_blocking(move || -> std::result::Result<download_files::Published, String> {
