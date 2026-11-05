@@ -49,14 +49,23 @@ fn backup_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{stem}.corrupt-{stamp}.json"))
 }
 
-/// Temp file plus atomic rename, so a crash never leaves a half-written file. Callers
-/// must hold the write lock.
+/// Temp file, flushed to the disk, then an atomic rename: a crash leaves either the old
+/// file or the new one, never a half-written one. (A storage device that loses power can
+/// still lose what it acknowledged; no test here can prove otherwise.) Callers must hold
+/// the write lock.
 fn write_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    use std::io::Write;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let tmp = path.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4().simple()));
-    let result = fs::write(&tmp, serde_json::to_vec_pretty(value)?).and_then(|_| fs::rename(&tmp, path));
+    let bytes = serde_json::to_vec_pretty(value)?;
+    let result = fs::File::create(&tmp)
+        .and_then(|mut file| {
+            file.write_all(&bytes)?;
+            file.sync_all()
+        })
+        .and_then(|_| fs::rename(&tmp, path));
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }

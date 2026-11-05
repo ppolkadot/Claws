@@ -9,6 +9,7 @@ mod error;
 mod history;
 mod links;
 mod probe;
+mod queue_writer;
 mod settings;
 mod state;
 mod store;
@@ -63,13 +64,30 @@ pub fn run() {
             // An exit in the middle of a tool install can leave a half-swapped tool.
             tools::recover_bin(&data_dir.join("bin"));
             let history: Vec<HistoryItem> = store::load_or_recover(&data_dir.join("history.json"), "library", &mut notices);
-            let queue: Vec<Job> = store::load_or_recover(&data_dir.join("queue.json"), "download queue", &mut notices);
+            let queue: Vec<Job> = queue_writer::load(&data_dir.join("queue.json"), &mut notices);
             let pending_cleanup: Vec<PendingCleanup> = store::load_or_recover(&data_dir.join("cleanup.json"), "cleanup list", &mut notices);
 
             let http = reqwest::Client::builder()
                 .user_agent(concat!("Claws/", env!("CARGO_PKG_VERSION")))
                 .connect_timeout(Duration::from_secs(15))
                 .build()?;
+
+            let writer_app = app.handle().clone();
+            let report_app = app.handle().clone();
+            let queue_writer = queue_writer::QueueWriter::start(
+                Box::new(move || {
+                    let state = writer_app.state::<AppState>();
+                    let mut revision = 0;
+                    store::save_snapshot(&state.queue_path(), || {
+                        let snapshot = downloader::queue_snapshot(&state);
+                        revision = snapshot.revision;
+                        snapshot
+                    })
+                    .map(|()| revision)
+                    .map_err(|e| e.to_string())
+                }),
+                Box::new(move |e| error::notify(&report_app, format!("Claws could not save the queue: {e}"))),
+            );
 
             app.manage(AppState {
                 data_dir,
@@ -91,6 +109,8 @@ pub fn run() {
                 ),
                 pending_cleanup: Mutex::new(pending_cleanup),
                 destinations: Mutex::new(std::collections::HashSet::new()),
+                queue_revision: std::sync::atomic::AtomicU64::new(0),
+                queue_writer,
             });
             downloader::restore_queue(app.handle(), queue);
             let state = app.state::<AppState>();

@@ -12,6 +12,7 @@ use crate::download_files::{self, Publication, WorkspaceRef};
 use crate::download_policy::{self, FailureKind, JobExecution, Source};
 use crate::error::{notify, AppError, Result};
 use crate::history;
+use crate::queue_writer::{QueueSnapshot, QUEUE_SCHEMA};
 use crate::probe::{self, error_text, validate_url};
 use crate::settings::Settings;
 use crate::state::AppState;
@@ -178,21 +179,40 @@ fn emit_job(app: &AppHandle, job: &Job) {
     let _ = app.emit("job-update", job);
 }
 
+/// The queue file's contents: everything not finished. Called by the queue writer with
+/// the store lock held, so the revision read here is covered by the jobs it saves.
+pub fn queue_snapshot(state: &AppState) -> QueueSnapshot {
+    let revision = state.queue_revision.load(Ordering::SeqCst);
+    let jobs = state
+        .jobs
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|j| j.status != JobStatus::Completed && j.status != JobStatus::Cancelled)
+        .cloned()
+        .collect();
+    QueueSnapshot { schema_version: QUEUE_SCHEMA, revision, jobs }
+}
+
+/// Marks the queue changed; the writer saves it shortly, off this thread.
 fn persist_queue(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let result = store::save_snapshot(&state.queue_path(), || {
-        state
-            .jobs
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|j| j.status != JobStatus::Completed && j.status != JobStatus::Cancelled)
-            .cloned()
-            .collect::<Vec<Job>>()
-    });
-    if let Err(e) = result {
-        notify(app, format!("Claws could not save the queue: {e}"));
-    }
+    let revision = state.queue_revision.fetch_add(1, Ordering::SeqCst) + 1;
+    state.queue_writer.request(revision, false);
+}
+
+/// Saves the queue now and waits until it is on disk (bounded). For transitions that
+/// must survive a crash: a job's work folder being committed, a cancel before its files
+/// are deleted, a completion before the library mentions it, and shutdown. Blocking.
+pub fn flush_queue(app: &AppHandle) -> bool {
+    let state = app.state::<AppState>();
+    let revision = state.queue_revision.fetch_add(1, Ordering::SeqCst) + 1;
+    state.queue_writer.flush(revision, Duration::from_secs(5))
+}
+
+async fn flush_queue_async(app: &AppHandle) {
+    let app = app.clone();
+    let _ = tokio::task::spawn_blocking(move || flush_queue(&app)).await;
 }
 
 fn update_job(app: &AppHandle, id: &str, change: impl FnOnce(&mut Job)) -> Option<Job> {
@@ -554,13 +574,31 @@ impl PendingCleanup {
     }
 }
 
+/// Records a cleanup in cleanup.json before anything is deleted, so a crash midway is
+/// finished at the next start.
+fn register_cleanup(app: &AppHandle, item: &PendingCleanup) {
+    let state = app.state::<AppState>();
+    {
+        let mut pending = state.pending_cleanup.lock().unwrap();
+        pending.retain(|p| p.job_id != item.job_id);
+        pending.push(item.clone());
+    }
+    save_pending_cleanup(app);
+}
+
 fn spawn_cleanup(app: &AppHandle, item: PendingCleanup) {
     if item.is_empty() {
         return;
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = tokio::task::spawn_blocking(move || cleanup_now(&app, item)).await;
+        let _ = tokio::task::spawn_blocking(move || {
+            // The cancelled state is on disk before its files go.
+            flush_queue(&app);
+            register_cleanup(&app, &item);
+            cleanup_now(&app, item)
+        })
+        .await;
     });
 }
 
@@ -635,8 +673,7 @@ pub fn remove(app: &AppHandle, id: &str) {
     let clean = !handed_off && job.status != JobStatus::Completed && !leftovers.is_empty();
     if clean {
         // Recorded before the job disappears, so an interrupted cleanup is retried.
-        state.pending_cleanup.lock().unwrap().push(leftovers.clone());
-        save_pending_cleanup(app);
+        register_cleanup(app, &leftovers);
     }
     state.jobs.lock().unwrap().retain(|j| j.id != id);
     let _ = app.emit("job-removed", id);
@@ -718,14 +755,20 @@ pub fn shutdown(app: &AppHandle) {
     }
     // The cancellations are saved before anything is deleted, so no deleted file can
     // belong to a job that comes back paused.
-    persist_queue(app);
+    flush_queue(app);
+    let leftovers: Vec<PendingCleanup> = leftovers.into_iter().filter(|l| !l.is_empty()).collect();
+    for item in &leftovers {
+        register_cleanup(app, item);
+    }
     if !leftovers.is_empty() {
         // Give Windows a moment to release the killed processes' handles.
         std::thread::sleep(Duration::from_millis(300));
-        for item in leftovers.into_iter().filter(|l| !l.is_empty()) {
+        for item in leftovers {
             cleanup_now(app, item);
         }
     }
+    flush_queue(app);
+    state.queue_writer.stop();
 }
 
 fn build_args(
@@ -1105,8 +1148,7 @@ async fn prepare(
             j.execution = Some(execution.clone());
             j.workspace = Some(workspace.clone());
         });
-        let app = app.clone();
-        let _ = tokio::task::spawn_blocking(move || persist_queue(&app)).await;
+        flush_queue_async(app).await;
     }
     Ok((execution, workspace, manifest))
 }
@@ -1322,16 +1364,17 @@ async fn finish(app: &AppHandle, id: &str, outcome: Outcome) {
         }
     };
     // The final state is durable before any file is deleted or the library mentions it.
-    {
-        let app = app.clone();
-        let _ = tokio::task::spawn_blocking(move || persist_queue(&app)).await;
-    }
+    flush_queue_async(app).await;
     if let Some(item) = cancelled.filter(|i| !i.is_empty()) {
         // The process tree is gone, but Windows may release its handles a moment later;
         // `remove_workspace` retries, and a folder still in use is retried at next start.
         tokio::time::sleep(Duration::from_millis(300)).await;
         let app = app.clone();
-        let _ = tokio::task::spawn_blocking(move || cleanup_now(&app, item)).await;
+        let _ = tokio::task::spawn_blocking(move || {
+            register_cleanup(&app, &item);
+            cleanup_now(&app, item)
+        })
+        .await;
     }
     if let Some(job) = completed {
         history::record(app, &job);
