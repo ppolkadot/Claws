@@ -8,7 +8,7 @@
 //!   claws-fixture-tool -P <dir> [--scenario ok|fail|hang|tree] [--bytes N] [--name clip]
 //!
 //! When Claws itself runs it as yt-dlp, the scenario and name come from the job's link,
-//! `https://fixture.invalid/<scenario>[/<name>]`, and every start is appended to
+//! `https://fixture.invalid/<scenario>[/<name>[/<planned bytes>]]`, and every start is appended to
 //! `fixture-starts.log` two folders above `-P` (the output folder of a work folder).
 //!
 //! ok    two streams (video, audio) with progress, a merge, then CLAWSDONE; exit 0
@@ -38,6 +38,9 @@ fn main() {
                 }
                 if let Some(n) = parts.next() {
                     name = n.to_string();
+                }
+                if let Some(b) = parts.next().and_then(|b| b.parse().ok()) {
+                    bytes = b;
                 }
             }
             _ => {}
@@ -79,6 +82,8 @@ fn main() {
             let video = stream(&mut out, "137", "mp4", bytes, None).unwrap();
             let audio = stream(&mut out, "140", "m4a", bytes / 10, None).unwrap();
             eprintln!("CLAWSPP|started|Merger");
+            // A merge takes a while (ffmpeg reads and writes the whole file).
+            std::thread::sleep(Duration::from_millis(1500));
             let merged = dir.join(format!("{name}.mp4"));
             std::fs::write(&merged, b"merged").unwrap();
             let _ = std::fs::remove_file(video);

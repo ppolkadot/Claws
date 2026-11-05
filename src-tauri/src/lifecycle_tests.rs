@@ -6,7 +6,9 @@
 //! Faults are real file-system failures: a folder put where a JSON file has to be renamed
 //! makes that save fail exactly as a denied write or a full disk would.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::Manager;
@@ -21,6 +23,8 @@ pub(crate) struct TestApp {
     app: tauri::App<tauri::test::MockRuntime>,
     pub dir: PathBuf,
     pub out: PathBuf,
+    /// Free bytes the app reads, in order; the last value repeats. Plenty by default.
+    pub free: Arc<Mutex<VecDeque<u64>>>,
 }
 
 impl TestApp {
@@ -53,9 +57,25 @@ impl TestApp {
         let history = crate::store::load_or_recover(&dir.join("history.json"), "library", &mut notices);
         let cleanup = crate::store::load_or_recover(&dir.join("cleanup.json"), "cleanup list", &mut notices);
         let writer = downloader::start_queue_writer(app.handle());
-        app.manage(AppState::new(dir.clone(), settings, history, cleanup, writer, false));
+        let free: Arc<Mutex<VecDeque<u64>>> = Arc::new(Mutex::new(VecDeque::from([u64::MAX / 4])));
+        let mut state = AppState::new(dir.clone(), settings, history, cleanup, writer, false);
+        let readings = free.clone();
+        state.free_space = Box::new(move |_| {
+            let mut readings = readings.lock().unwrap();
+            let value = *readings.front().unwrap();
+            if readings.len() > 1 {
+                readings.pop_front();
+            }
+            Ok(value)
+        });
+        app.manage(state);
         downloader::restore_queue(app.handle(), queue);
-        Self { app, dir, out }
+        Self { app, dir, out, free }
+    }
+
+    /// Sets the free-space readings the app will see, in order.
+    pub fn set_free(&self, readings: &[u64]) {
+        *self.free.lock().unwrap() = readings.iter().copied().collect();
     }
 
     /// Closes this app the way Claws exits and starts a new one on the same data.
@@ -327,6 +347,57 @@ fn a_taken_name_never_overwrites_and_try_again_publishes_after_it_is_moved() {
     assert_eq!(std::fs::read(t.out.join("oscar.mp4")).unwrap(), b"merged");
     assert_eq!(std::fs::read(t.out.join("mine.mp4")).unwrap(), b"the user's own");
     assert_eq!(t.starts().len(), 1);
+}
+
+// --- B5: disk reservations ------------------------------------------------------------
+
+const MIB: u64 = 1 << 20;
+const GIB: u64 = 1 << 30;
+
+#[test]
+fn a_second_download_is_admitted_only_beside_what_the_first_still_needs() {
+    let Some(t) = TestApp::new("b5-admit") else { return };
+    t.set_free(&[2 * GIB + GIB / 2]);
+    // The first plans 1 GiB: with its margin it holds about 1.5 of the 2.5 GiB.
+    let first = t.enqueue(&format!("https://fixture.invalid/hang/alpha/{GIB}"));
+    let workspace = t.wait_job(&first, running, "the first download").workspace.unwrap().path;
+    let held = || t.state().disk_ledger.lock().unwrap().held(&first);
+    let admitted = held().expect("the first is reserved");
+    // 64 MiB of it reach the disk: they stop being reserved.
+    std::fs::write(workspace.join("alpha.f18.mp4.part-Frag1"), vec![0u8; 64 * MIB as usize]).unwrap();
+    // (At least: the tool's own few bytes may land after the first sample too.)
+    wait_until("the reservation to shrink as bytes land", || held().is_some_and(|h| h <= admitted - 64 * MIB));
+
+    // The second does not fit beside it and stops before transferring.
+    let second = t.enqueue(&format!("https://fixture.invalid/hang/bravo/{GIB}"));
+    let job = t.wait_job(&second, |j| j.status == JobStatus::Failed, "the second to be refused");
+    assert!(job.error.unwrap_or_default().contains("Not enough free space"));
+
+    // Once the first ends, its claim is released and the second fits.
+    downloader::cancel(t.handle(), &first);
+    t.wait_job(&first, |j| j.status == JobStatus::Cancelled, "the cancel");
+    wait_until("the first's claim to go", || held().is_none());
+    downloader::resume(t.handle(), &second);
+    t.wait_job(&second, running, "the second download");
+}
+
+#[test]
+fn a_merge_that_no_longer_fits_is_stopped_before_it_runs_and_keeps_the_streams() {
+    let Some(t) = TestApp::new("b5-merge") else { return };
+    // Room at admission; then something else fills the disk before the merge.
+    t.set_free(&[2 * GIB, 100 * MIB]);
+    let id = t.enqueue("https://fixture.invalid/ok/papa");
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Failed, "the merge to be stopped");
+    let error = job.error.unwrap_or_default();
+    assert!(error.contains("to finish processing") && error.contains("streams are kept"), "{error}");
+    assert!(!t.out.join("papa.mp4").exists());
+    let kept = crate::download_tests::names(&job.workspace.unwrap().path);
+    assert!(kept.iter().any(|n| n.ends_with(".f137.mp4")) && kept.iter().any(|n| n.ends_with(".f140.m4a")), "{kept:?}");
+    assert!(t.state().disk_ledger.lock().unwrap().held(&id).is_none(), "a stopped job keeps no claim");
+
+    t.set_free(&[2 * GIB]);
+    downloader::resume(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Completed, "the retry");
 }
 
 // --- B1: trying a cancelled job again --------------------------------------------------

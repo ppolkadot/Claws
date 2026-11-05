@@ -16,6 +16,9 @@ use crate::settings::Settings;
 /// `settings`, `history`, `probes`, `recent_probes`, `pending_cleanup` and `destinations`
 /// are leaf locks and are never held
 /// while another one is taken.
+/// Reads the free bytes on the volume holding a path.
+pub type FreeSpace = Box<dyn Fn(&std::path::Path) -> std::io::Result<u64> + Send + Sync>;
+
 pub struct AppState {
     pub data_dir: PathBuf,
     pub settings: Mutex<Settings>,
@@ -49,8 +52,12 @@ pub struct AppState {
     pub destinations: Mutex<HashSet<String>>,
     /// Bumped after every queue change; the writer saves snapshots in revision order.
     pub queue_revision: AtomicU64,
-    /// Disk space reserved by running jobs: job id -> (volume, bytes). Leaf lock.
-    pub disk_reservations: Mutex<HashMap<String, (String, u64)>>,
+    /// Disk space running jobs may still need (see `disk_budget::Ledger`). Leaf lock;
+    /// free space is read while it is held.
+    pub disk_ledger: Mutex<crate::disk_budget::Ledger>,
+    /// Free bytes on the volume holding a path. Replaced in tests, so budgets can be
+    /// checked against set numbers instead of the real disk.
+    pub free_space: FreeSpace,
     /// Source of `Job::revision`; only advanced with the jobs lock held.
     pub job_revision: AtomicU64,
     pub queue_writer: QueueWriter,
@@ -87,7 +94,8 @@ impl AppState {
             pending_cleanup: Mutex::new(pending_cleanup),
             destinations: Mutex::new(HashSet::new()),
             queue_revision: AtomicU64::new(0),
-            disk_reservations: Mutex::new(HashMap::new()),
+            disk_ledger: Mutex::new(crate::disk_budget::Ledger::default()),
+            free_space: Box::new(crate::disk_budget::free_bytes),
             job_revision: AtomicU64::new(0),
             queue_writer,
         }

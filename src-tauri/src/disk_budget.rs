@@ -8,9 +8,16 @@
 //! treated as unknown, never as zero: those jobs are watched instead (every few seconds at
 //! most), and stopped if the volume is about to run out.
 //!
+//! Reservations are of *remaining* demand: a job holds its estimated peak minus what it
+//! already has on disk, because the free space a later check reads already reflects those
+//! bytes. As a job's files grow, its reservation shrinks by the same amount (sampled every
+//! few seconds, not per progress line); what it still needs for a pending merge or rewrite
+//! stays reserved until the job ends.
+//!
 //! These are estimates. A merge or conversion can come out larger or smaller than the
 //! inputs; the margin is there for that.
 
+use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
@@ -77,6 +84,75 @@ pub fn check(additional: u64, free: u64, reserved_by_others: u64) -> Result<(), 
         Ok(())
     } else {
         Err(Shortfall { required, available })
+    }
+}
+
+/// One running job's claim on a volume.
+#[derive(Clone, Debug, PartialEq)]
+struct Reservation {
+    volume: String,
+    /// Estimated peak of the job's work folder.
+    peak: u64,
+    /// What the work folder held when last sampled.
+    on_disk: u64,
+}
+
+impl Reservation {
+    fn remaining(&self) -> u64 {
+        self.peak.saturating_sub(self.on_disk)
+    }
+
+    /// What it keeps from other jobs: its remaining demand and that demand's margin.
+    fn held(&self) -> u64 {
+        let remaining = self.remaining();
+        remaining + margin(remaining)
+    }
+}
+
+/// The reservations of running jobs. Admission and updates happen under one lock, and
+/// free space is read while it is held, so no admission can count space another job has
+/// claimed, and no job's written bytes can be subtracted twice.
+#[derive(Debug, Default)]
+pub struct Ledger {
+    jobs: HashMap<String, Reservation>,
+}
+
+impl Ledger {
+    pub fn reserved_by_others(&self, job: &str, volume: &str) -> u64 {
+        self.jobs.iter().filter(|(id, r)| id.as_str() != job && r.volume == volume).map(|(_, r)| r.held()).sum()
+    }
+
+    /// Admits a job that will grow its work folder to `peak` and already has `on_disk`
+    /// there, if `free` (read under this lock) holds the rest after everyone else's.
+    pub fn admit(&mut self, job: &str, volume: &str, peak: u64, on_disk: u64, free: u64) -> Result<(), Shortfall> {
+        check(peak.saturating_sub(on_disk), free, self.reserved_by_others(job, volume))?;
+        self.jobs.insert(job.to_string(), Reservation { volume: volume.to_string(), peak, on_disk });
+        Ok(())
+    }
+
+    /// Bytes that reached the disk stop being reserved: free space now shows them.
+    pub fn update(&mut self, job: &str, on_disk: u64) {
+        if let Some(r) = self.jobs.get_mut(job) {
+            r.on_disk = on_disk;
+        }
+    }
+
+    /// Before a whole-file processing step: whether what the job still needs fits. A job
+    /// without a reservation (unknown sizes) is watched instead and passes.
+    pub fn recheck(&self, job: &str, free: u64) -> Result<(), Shortfall> {
+        match self.jobs.get(job) {
+            Some(r) => check(r.remaining(), free, self.reserved_by_others(job, &r.volume)),
+            None => Ok(()),
+        }
+    }
+
+    pub fn release(&mut self, job: &str) {
+        self.jobs.remove(job);
+    }
+
+    #[cfg(test)]
+    pub fn held(&self, job: &str) -> Option<u64> {
+        self.jobs.get(job).map(Reservation::held)
     }
 }
 
@@ -179,6 +255,65 @@ mod tests {
         // On its own the second would fit; with the first's reservation it does not.
         assert!(check(6 * GIB, free, 0).is_ok());
         assert!(check(6 * GIB, free, first).is_err());
+    }
+
+    #[test]
+    fn written_bytes_are_not_reserved_twice() {
+        // The review's case: a job reserving about 22 GiB (a 20 GiB peak) has written
+        // 10 GiB, and the volume now shows 30 GiB free.
+        let mut ledger = Ledger::default();
+        assert!(ledger.admit("a", "d:\\", 20 * GIB, 0, 40 * GIB).is_ok());
+        assert_eq!(ledger.held("a"), Some(22 * GIB));
+        ledger.update("a", 10 * GIB);
+        assert_eq!(ledger.held("a"), Some(10 * GIB + margin(10 * GIB)));
+        // A second job needing 15 GiB fits in 30 - 11 GiB. Holding the original 22 GiB
+        // would have left it 8 GiB.
+        assert!(ledger.admit("b", "d:\\", 15 * GIB, 0, 30 * GIB).is_ok());
+    }
+
+    #[test]
+    fn simultaneous_jobs_cannot_claim_the_same_space() {
+        let mut ledger = Ledger::default();
+        assert!(ledger.admit("a", "d:\\", 6 * GIB, 0, 10 * GIB).is_ok());
+        // Nothing written yet: free space is unchanged and the first claim stands.
+        let refused = ledger.admit("b", "d:\\", 6 * GIB, 0, 10 * GIB).unwrap_err();
+        assert_eq!(refused.available, 10 * GIB - (6 * GIB + margin(6 * GIB)));
+        // Another volume is a separate budget.
+        assert!(ledger.admit("c", "e:\\", 6 * GIB, 0, 10 * GIB).is_ok());
+    }
+
+    #[test]
+    fn resumed_bytes_only_need_the_rest() {
+        let mut ledger = Ledger::default();
+        // 6 GiB of a 10 GiB download is already on disk from before a pause.
+        assert!(ledger.admit("a", "d:\\", 10 * GIB, 6 * GIB, 5 * GIB).is_ok());
+        assert_eq!(ledger.held("a"), Some(4 * GIB + margin(4 * GIB)));
+    }
+
+    #[test]
+    fn a_pending_merge_stays_reserved_until_the_job_ends() {
+        let mut ledger = Ledger::default();
+        let streams = 8 * GIB;
+        let peak = peak_bytes(&[Some(streams)], Steps { merge: true, ..Steps::default() }).unwrap();
+        assert!(ledger.admit("a", "d:\\", peak, 0, 30 * GIB).is_ok());
+        // Transfer done: the merged copy is still to come.
+        ledger.update("a", streams);
+        assert_eq!(ledger.held("a"), Some(streams + margin(streams)));
+        // Before merging, the merge must still fit; it does with 10 GiB free, not with 8.
+        assert!(ledger.recheck("a", 10 * GIB).is_ok());
+        assert!(ledger.recheck("a", 8 * GIB).is_err());
+        // Ending (finished, paused, cancelled or failed) releases everything.
+        ledger.release("a");
+        assert_eq!(ledger.reserved_by_others("b", "d:\\"), 0);
+        assert!(ledger.recheck("a", 0).is_ok(), "no reservation, nothing to recheck");
+    }
+
+    #[test]
+    fn a_folder_larger_than_its_estimate_reserves_nothing_more() {
+        let mut ledger = Ledger::default();
+        assert!(ledger.admit("a", "d:\\", GIB, 0, 10 * GIB).is_ok());
+        ledger.update("a", 2 * GIB);
+        assert_eq!(ledger.held("a"), Some(margin(0)));
     }
 
     #[test]
