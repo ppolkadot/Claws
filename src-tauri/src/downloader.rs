@@ -356,19 +356,16 @@ pub fn restore_queue(app: &AppHandle, saved: Vec<Job>) {
             job.partial_files.clear();
             continue;
         }
-        // Published before the app closed, but the completion was not saved yet.
+        // Published before the app closed, but its completion was not recorded yet:
+        // finished below, Library first.
         if job.status != JobStatus::Completed {
             let manifest = job.workspace.as_ref().and_then(|w| download_files::verify(w, &job.id).ok());
             if let Some(manifest) = manifest.filter(|m| m.state == Publication::Published) {
-                if let Some(media) = manifest.published.first().filter(|p| p.is_file()) {
-                    job.status = JobStatus::Completed;
-                    job.progress = 1.0;
+                if let Some(media) = manifest.media().filter(|p| p.is_file()) {
+                    job.file_path = Some(media.to_string_lossy().into_owned());
                     job.speed = None;
                     job.eta = None;
-                    job.error = None;
-                    job.file_path = Some(media.to_string_lossy().into_owned());
-                    recovered.push(job.clone());
-                    cleanup.push(PendingCleanup::of(job));
+                    recovered.push((job.id.clone(), manifest.withheld().is_empty()));
                     continue;
                 }
             }
@@ -388,10 +385,32 @@ pub fn restore_queue(app: &AppHandle, saved: Vec<Job>) {
     let highest = saved.iter().map(|j| j.revision).max().unwrap_or(0);
     state.job_revision.store(highest, Ordering::SeqCst);
     *state.jobs.lock().unwrap() = saved;
-    for job in &recovered {
-        let known = state.history.lock().unwrap().iter().any(|h| h.id == job.id);
-        if !known {
-            history::record(app, job);
+    for (id, disposable) in recovered {
+        let Some(job) = find_job(app, &id) else { continue };
+        // An entry loaded from disk is already durable; recording again would duplicate
+        // nothing but would move it to the top of the Library.
+        let known = state.history.lock().unwrap().iter().any(|h| h.id == id);
+        let recorded = if known { Ok(()) } else { history::record(app, &job) };
+        match recorded {
+            Ok(()) => {
+                if let Some(done) = update_job(app, &id, |j| {
+                    j.status = JobStatus::Completed;
+                    j.progress = 1.0;
+                    j.progress_known = true;
+                    j.error = None;
+                }) {
+                    if disposable {
+                        cleanup.push(PendingCleanup::of(&done));
+                    }
+                }
+            }
+            Err(e) => {
+                let path = job.file_path.clone().unwrap_or_default();
+                update_job(app, &id, |j| {
+                    j.status = JobStatus::Failed;
+                    j.error = Some(format!("The download was saved as “{path}”, but Claws could not add it to your Library ({e}). Press Try Again to finish; nothing is downloaded again."));
+                });
+            }
         }
     }
     // Off the startup path: deleting a large work folder can take a moment.
@@ -962,6 +981,11 @@ struct Outcome {
     /// removed before its folder was recorded anywhere else.
     workspace: Option<WorkspaceRef>,
     success: bool,
+    /// The files are in the output folder; nothing (not even a cancel) undoes that.
+    published: bool,
+    /// The work folder still holds something of value (a withheld side file, or a
+    /// completion not yet recorded), so it is not cleaned up.
+    keep_workspace: bool,
     error: Option<String>,
     final_path: Option<String>,
     used_cache: bool,
@@ -974,6 +998,8 @@ impl Outcome {
         Self {
             workspace: None,
             success: false,
+            published: false,
+            keep_workspace: false,
             error: Some(message.into()),
             final_path: None,
             used_cache: false,
@@ -1018,9 +1044,10 @@ async fn run_prepared(
 ) -> Outcome {
     let state = app.state::<AppState>();
     let id = job.id.as_str();
-    // Downloaded and verified before; only the publication is left to do. Registered as
-    // running (without a process) so a cancel meanwhile is settled by `finish`.
-    if matches!(manifest.state, Publication::Ready | Publication::Publishing) {
+    // Downloaded and verified before; only the publication (or recording its completion)
+    // is left to do. Registered as running (without a process) so a cancel meanwhile is
+    // settled by `finish`.
+    if matches!(manifest.state, Publication::Ready | Publication::Publishing | Publication::Published) {
         let mut running = state.running.lock().unwrap();
         if state.shutting_down.load(Ordering::SeqCst) {
             return Outcome::failed("");
@@ -1042,6 +1069,8 @@ async fn run_prepared(
         return Outcome {
             workspace: None,
             success: true,
+            published: false,
+            keep_workspace: false,
             error: None,
             final_path: None,
             used_cache: false,
@@ -1141,6 +1170,8 @@ async fn run_prepared(
     let mut outcome = Outcome {
         workspace: None,
         success: false,
+        published: false,
+        keep_workspace: false,
         error: None,
         final_path: None,
         used_cache: info_json.is_some(),
@@ -1484,12 +1515,12 @@ async fn publish(app: &AppHandle, id: &str, outcome: &mut Outcome) {
 
     match result {
         Ok(published) => {
+            outcome.published = true;
             outcome.final_path = Some(published.media.to_string_lossy().into_owned());
-            if published.skipped.is_empty() {
-                // Only the marker (and nothing of value) is left in the work folder.
-                let leftover = PendingCleanup { job_id: id.to_string(), workspace: job.workspace.clone(), legacy: Vec::new() };
-                spawn_cleanup(app, leftover);
-            } else {
+            // The work folder (and its manifest, the recovery record) stays until `finish`
+            // has recorded the completion.
+            if !published.skipped.is_empty() {
+                outcome.keep_workspace = true;
                 let names: Vec<String> = published.skipped.iter().filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
                 notify(app, format!("Saved “{}”, but {} already existed, so the new copy was kept in the download's work folder.", job.title, names.join(", ")));
             }
@@ -1605,15 +1636,44 @@ fn settle(app: &AppHandle, id: &str, intent: Intent, outcome: &Outcome) -> Optio
     None
 }
 
-async fn finish(app: &AppHandle, id: &str, outcome: Outcome) {
+/// Records a published download in the Library. Until this succeeds, the job's queue
+/// entry and its work folder's manifest are what recover it.
+async fn record_in_library(app: &AppHandle, id: &str, outcome: &Outcome) -> std::result::Result<(), String> {
+    // Removed while finishing: the file is in the output folder; there is no entry to show.
+    let Some(mut job) = find_job(app, id) else { return Ok(()) };
+    job.file_path = outcome.final_path.clone();
+    let path = job.file_path.clone().unwrap_or_default();
+    let app = app.clone();
+    tokio::task::spawn_blocking(move || history::record(&app, &job))
+        .await
+        .map_err(|e| AppError::msg(e.to_string()))
+        .and_then(|saved| saved)
+        .map_err(|e| format!("The download was saved as “{path}”, but Claws could not add it to your Library ({e}). Press Try Again to finish; nothing is downloaded again."))
+}
+
+async fn finish(app: &AppHandle, id: &str, mut outcome: Outcome) {
     let state = app.state::<AppState>();
+    // Library first, then the queue, then the work folder: a crash between any two leaves
+    // a record that completes the job at the next start.
+    if outcome.success {
+        if let Err(message) = record_in_library(app, id, &outcome).await {
+            outcome.success = false;
+            outcome.keep_workspace = true;
+            outcome.error = Some(message);
+        }
+    }
     let mut completed = None;
     // Remove the entry and settle the job in one critical section. A cancel is sticky
-    // (nothing downgrades it), so the files it leaves are collected right there.
+    // (nothing downgrades it), so the files it leaves are collected right there. Once the
+    // files are published, a cancel has nothing left to undo.
     let cancelled = {
         let mut running = state.running.lock().unwrap();
         let entry = running.remove(id);
-        let intent = entry.as_ref().map(|r| r.intent).unwrap_or(Intent::None);
+        let intent = match entry.as_ref().map(|r| r.intent) {
+            Some(_) if outcome.published => Intent::None,
+            Some(intent) => intent,
+            None => Intent::None,
+        };
         if intent == Intent::Cancel && !outcome.success {
             let job = find_job(app, id);
             let mut item = match &job {
@@ -1640,11 +1700,18 @@ async fn finish(app: &AppHandle, id: &str, outcome: Outcome) {
         tokio::time::sleep(Duration::from_millis(300)).await;
         let app = app.clone();
         let _ = tokio::task::spawn_blocking(move || cleanup_when_recorded(&app, item)).await;
-    } else if let Err(e) = flush_queue_async(app).await {
-        notify(app, e.to_string());
-    }
-    if let Some(job) = completed {
-        history::record(app, &job);
+    } else {
+        match flush_queue_async(app).await {
+            // In the Library, and retired from the queue: only the marker and disposable
+            // leftovers remain in the work folder.
+            Ok(()) if outcome.success && !outcome.keep_workspace => {
+                let workspace = completed.as_ref().and_then(|j| j.workspace.clone()).or(outcome.workspace);
+                spawn_cleanup(app, PendingCleanup { job_id: id.to_string(), workspace, legacy: Vec::new() });
+            }
+            Ok(()) => {}
+            // The queue still has the job; its work folder stays for the next start.
+            Err(e) => notify(app, e.to_string()),
+        }
     }
 }
 

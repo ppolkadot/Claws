@@ -220,6 +220,115 @@ fn nothing_is_deleted_or_forgotten_without_a_saved_cleanup_record() {
     assert!(t.job(&id).is_none());
 }
 
+// --- B2/B3: publication and completion -------------------------------------------------
+
+fn library_entries(t: &TestApp, id: &str) -> usize {
+    let text = std::fs::read_to_string(t.dir.join("history.json")).unwrap_or_default();
+    let items: Vec<crate::history::HistoryItem> = serde_json::from_str(&text).unwrap_or_default();
+    items.iter().filter(|h| h.id == id).count()
+}
+
+/// A finished download whose Library entry could not be saved: published, failed, and
+/// still in the queue with its work folder.
+fn published_but_not_recorded(t: &TestApp, name: &str) -> (String, PathBuf) {
+    t.block("history.json");
+    let id = t.enqueue(&format!("https://fixture.invalid/ok/{name}"));
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Failed, "the Library save to fail");
+    let error = job.error.clone().unwrap_or_default();
+    assert!(error.contains("could not add it to your Library") && error.contains("Try Again"), "{error}");
+    let media = t.out.join(format!("{name}.mp4"));
+    assert_eq!(std::fs::read(&media).unwrap(), b"merged");
+    let workspace = job.workspace.unwrap().path;
+    let manifest = crate::download_files::read_manifest(&workspace).expect("the manifest is kept");
+    assert_eq!(manifest.state, crate::download_files::Publication::Published);
+    assert!(t.saved_queue().iter().any(|j| j.id == id), "the queue must keep the job");
+    (id, workspace)
+}
+
+#[test]
+fn a_library_save_failure_keeps_the_completion_and_try_again_finishes_it() {
+    let Some(t) = TestApp::new("b2-retry") else { return };
+    let (id, workspace) = published_but_not_recorded(&t, "kilo");
+    t.unblock("history.json");
+    downloader::resume(t.handle(), &id);
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Completed, "the completion");
+    assert_eq!(job.file_path.as_deref(), Some(t.out.join("kilo.mp4").to_string_lossy().as_ref()));
+    assert_eq!(library_entries(&t, &id), 1);
+    assert_eq!(t.starts().len(), 1, "Try Again downloaded again");
+    wait_until("the work folder to go", || !workspace.exists());
+    wait_until("the queue to retire the job", || t.saved_queue().iter().all(|j| j.id != id));
+}
+
+#[test]
+fn an_unrecorded_completion_is_finished_at_the_next_start_exactly_once() {
+    let Some(t) = TestApp::new("b2-restart") else { return };
+    let (id, workspace) = published_but_not_recorded(&t, "lima");
+    t.unblock("history.json");
+    let t = t.restart();
+    let job = t.job(&id).expect("recovered");
+    assert_eq!(job.status, JobStatus::Completed);
+    assert_eq!(library_entries(&t, &id), 1);
+    wait_until("the work folder to go", || !workspace.exists());
+    wait_until("the queue to retire the job", || t.saved_queue().iter().all(|j| j.id != id));
+    // Starting again finds nothing more to do and adds nothing.
+    let t = t.restart();
+    assert!(t.job(&id).is_none());
+    assert_eq!(library_entries(&t, &id), 1);
+    assert_eq!(t.starts().len(), 1);
+}
+
+#[test]
+fn a_restart_while_the_library_still_cannot_be_saved_keeps_everything() {
+    let Some(t) = TestApp::new("b2-still") else { return };
+    let (id, workspace) = published_but_not_recorded(&t, "mike");
+    let t = t.restart(); // history.json is still blocked
+    let job = t.job(&id).expect("still in the queue");
+    assert_eq!(job.status, JobStatus::Failed);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(workspace.exists(), "the recovery record went before the Library had the download");
+    t.unblock("history.json");
+    downloader::resume(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Completed, "the completion");
+    assert_eq!(library_entries(&t, &id), 1);
+}
+
+#[test]
+fn a_move_whose_record_was_lost_is_finished_without_downloading_again() {
+    use crate::download_files::{read_manifest, write_manifest, MoveState, Publication};
+    let Some(t) = TestApp::new("b3-app") else { return };
+    let (id, workspace) = published_but_not_recorded(&t, "november");
+    t.unblock("history.json");
+    // Rewind the journal to the instant between the move and its record.
+    let mut manifest = read_manifest(&workspace).unwrap();
+    manifest.state = Publication::Publishing;
+    manifest.moves.iter_mut().for_each(|m| m.state = MoveState::Moving);
+    write_manifest(&manifest).unwrap();
+    let t = t.restart();
+    assert_eq!(t.job(&id).map(|j| j.status), Some(JobStatus::Failed));
+    downloader::resume(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Completed, "the completion");
+    assert_eq!(std::fs::read(t.out.join("november.mp4")).unwrap(), b"merged");
+    assert_eq!(library_entries(&t, &id), 1);
+    assert_eq!(t.starts().len(), 1, "the download ran again");
+}
+
+#[test]
+fn a_taken_name_never_overwrites_and_try_again_publishes_after_it_is_moved() {
+    let Some(t) = TestApp::new("b3-conflict") else { return };
+    std::fs::create_dir_all(&t.out).unwrap();
+    std::fs::write(t.out.join("oscar.mp4"), b"the user's own").unwrap();
+    let id = t.enqueue("https://fixture.invalid/ok/oscar");
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Failed, "the conflict");
+    assert!(job.error.unwrap_or_default().contains("already exists"));
+    assert_eq!(std::fs::read(t.out.join("oscar.mp4")).unwrap(), b"the user's own");
+    std::fs::rename(t.out.join("oscar.mp4"), t.out.join("mine.mp4")).unwrap();
+    downloader::resume(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Completed, "the publication");
+    assert_eq!(std::fs::read(t.out.join("oscar.mp4")).unwrap(), b"merged");
+    assert_eq!(std::fs::read(t.out.join("mine.mp4")).unwrap(), b"the user's own");
+    assert_eq!(t.starts().len(), 1);
+}
+
 // --- B1: trying a cancelled job again --------------------------------------------------
 
 #[test]

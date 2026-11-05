@@ -45,7 +45,9 @@ pub fn save_reporting(app: &AppHandle) {
     }
 }
 
-pub fn record(app: &AppHandle, job: &Job) {
+/// Adds (or replaces, by job id) the job's Library entry and saves the Library. Callers
+/// treat the error as "not recorded": the job keeps its recovery record and is retried.
+pub fn record(app: &AppHandle, job: &Job) -> crate::error::Result<()> {
     let state = app.state::<AppState>();
     let file_size = job
         .file_path
@@ -79,7 +81,7 @@ pub fn record(app: &AppHandle, job: &Job) {
         history.retain(|h| h.id != item.id);
         history.insert(0, item);
     }
-    save_reporting(app);
+    save(app)?;
 
     if let Some(url) = job.thumbnail.clone() {
         let app = app.clone();
@@ -88,6 +90,7 @@ pub fn record(app: &AppHandle, job: &Job) {
             cache_thumbnail(&app, &id, &url).await;
         });
     }
+    Ok(())
 }
 
 const THUMB_MAX_BYTES: usize = 5 * 1024 * 1024;

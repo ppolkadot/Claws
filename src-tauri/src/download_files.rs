@@ -21,7 +21,11 @@ use serde::{Deserialize, Serialize};
 
 pub const WORK_DIR: &str = ".claws-work";
 pub const MARKER: &str = ".claws-job.json";
-pub const MANIFEST_SCHEMA: u16 = 1;
+/// 2: per-output move journal (`moves`) with file identities.
+pub const MANIFEST_SCHEMA: u16 = 2;
+/// The saved reference to a work folder; unchanged by the manifest's schema 2 (an absent
+/// attempt reads as 0).
+pub const WORKSPACE_REF_SCHEMA: u16 = 1;
 
 /// Side files published next to the media when they share its name.
 const SIDECAR_EXTENSIONS: &[&str] = &["srt", "vtt", "ass", "ssa", "lrc", "ttml", "sbv", "dfxp", "srv1", "srv2", "srv3", "json3"];
@@ -44,9 +48,44 @@ pub enum Publication {
     Active,
     /// Finished and verified; `outputs` are waiting to be published.
     Ready,
-    /// Some of `outputs` may already be in the output folder (see `published`).
+    /// Some of `outputs` may already be in the output folder (see `moves`).
     Publishing,
     Published,
+}
+
+/// What proves that the file at a destination is the very file a job moved there, so a
+/// move interrupted before its record was saved can be recognised, and nothing else can.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum FileIdentity {
+    /// NTFS and ReFS keep a file's 128-bit id through a rename on the same volume.
+    #[serde(rename_all = "camelCase")]
+    FileId { volume: u64, id: String },
+    /// Other file systems (FAT, exFAT) can renumber a moved file, so size and content are
+    /// compared instead. This reads the whole file once before it is moved.
+    #[serde(rename_all = "camelCase")]
+    Content { size: u64, sha256: String },
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum MoveState {
+    /// Saved before the move: if the source is gone, the move happened and the
+    /// destination must match `identity`.
+    Moving,
+    Done,
+    /// A side file whose name was taken; it stays in the work folder.
+    Withheld,
+}
+
+/// One output's publication, journalled around its move.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Move {
+    pub relative: String,
+    pub destination: PathBuf,
+    pub identity: FileIdentity,
+    pub state: MoveState,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -64,9 +103,91 @@ pub struct Manifest {
     /// Files to publish, relative to the work folder; the media file first.
     #[serde(default)]
     pub outputs: Vec<String>,
-    /// Destinations this job has already published, in the order of `outputs`.
+    /// Destinations published, as schema 1 recorded them (after the move). Still read;
+    /// schema 2 records `moves` instead.
     #[serde(default)]
     pub published: Vec<PathBuf>,
+    #[serde(default)]
+    pub moves: Vec<Move>,
+}
+
+impl Manifest {
+    fn is_done(&self, relative: &str, target: &Path) -> bool {
+        self.published.iter().any(|p| p == target) || self.moves.iter().any(|m| m.relative == relative && m.state == MoveState::Done)
+    }
+
+    /// The published media file, once its move is recorded as done.
+    pub fn media(&self) -> Option<PathBuf> {
+        let first = self.outputs.first()?;
+        let target = destination(&self.destination_root, Path::new(first)).ok()?;
+        self.is_done(first, &target).then_some(target)
+    }
+
+    /// Side files kept back because their names were taken.
+    pub fn withheld(&self) -> Vec<PathBuf> {
+        self.moves.iter().filter(|m| m.state == MoveState::Withheld).map(|m| m.destination.clone()).collect()
+    }
+
+    fn record(&mut self, entry: Move) {
+        self.moves.retain(|m| m.relative != entry.relative);
+        self.moves.push(entry);
+    }
+
+    fn set_state(&mut self, relative: &str, state: MoveState) {
+        if let Some(entry) = self.moves.iter_mut().find(|m| m.relative == relative) {
+            entry.state = state;
+        }
+    }
+}
+
+/// The identity a moved file keeps (see `FileIdentity`).
+pub fn identify(path: &Path) -> io::Result<FileIdentity> {
+    #[cfg(windows)]
+    if let Some(identity) = file_id(path)? {
+        return Ok(identity);
+    }
+    content_identity(path)
+}
+
+#[cfg(windows)]
+fn file_id(path: &Path) -> io::Result<Option<FileIdentity>> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{FileIdInfo, GetFileInformationByHandleEx, GetVolumeInformationByHandleW, FILE_ID_INFO};
+    let file = fs::File::open(path)?;
+    let handle = HANDLE(file.as_raw_handle());
+    let mut name = [0u16; 32];
+    unsafe { GetVolumeInformationByHandleW(handle, None, None, None, None, Some(&mut name)) }.map_err(|e| io::Error::other(e.message()))?;
+    let end = name.iter().position(|c| *c == 0).unwrap_or(name.len());
+    if !matches!(String::from_utf16_lossy(&name[..end]).as_str(), "NTFS" | "ReFS") {
+        return Ok(None);
+    }
+    let mut info = FILE_ID_INFO::default();
+    unsafe {
+        GetFileInformationByHandleEx(handle, FileIdInfo, &mut info as *mut FILE_ID_INFO as *mut std::ffi::c_void, std::mem::size_of::<FILE_ID_INFO>() as u32)
+    }
+    .map_err(|e| io::Error::other(e.message()))?;
+    let id = info.FileId.Identifier.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(Some(FileIdentity::FileId { volume: info.VolumeSerialNumber, id }))
+}
+
+pub fn content_identity(path: &Path) -> io::Result<FileIdentity> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0u8; 1 << 20];
+    let mut size = 0u64;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        size += read as u64;
+        digest.update(&buffer[..read]);
+    }
+    let sha256 = digest.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    Ok(FileIdentity::Content { size, sha256 })
 }
 
 /// The work folder's name: the first 12 hex digits of the job id, then `-<attempt>` from
@@ -164,7 +285,7 @@ pub fn open_workspace(output_dir: &Path, job_id: &str, attempt: u32) -> io::Resu
     plain_dir(&root)?;
     let workspace = workspace_path(output_dir, job_id, attempt);
     let reference = WorkspaceRef {
-        schema_version: MANIFEST_SCHEMA,
+        schema_version: WORKSPACE_REF_SCHEMA,
         path: workspace.clone(),
         attempt,
     };
@@ -182,6 +303,7 @@ pub fn open_workspace(output_dir: &Path, job_id: &str, attempt: u32) -> io::Resu
         state: Publication::Active,
         outputs: Vec::new(),
         published: Vec::new(),
+        moves: Vec::new(),
     };
     write_manifest(&manifest)?;
     Ok((reference, manifest))
@@ -284,45 +406,77 @@ pub struct Published {
     pub skipped: Vec<PathBuf>,
 }
 
-/// Publishes the manifest's outputs, recording each move so an interrupted publication
-/// can continue where it stopped. The media file must publish; a side file whose name is
-/// taken is kept back and reported. `reserve` claims a destination against other jobs
-/// for the duration of the move and returns false when another job holds it.
+/// Publishes the manifest's outputs. Each move is journalled: its intent and the file's
+/// identity are saved before the move and its result after, so a publication interrupted
+/// at any point continues where it stopped, and a move whose record was lost is recognised
+/// by identity rather than by name. The media file must publish; a side file whose name
+/// is taken is kept back (`Withheld`) and reported. `reserve` claims a destination against
+/// other jobs for the duration of the move and returns false when another job holds it.
 pub fn publish(manifest: &mut Manifest, reserve: &mut dyn FnMut(&Path) -> bool) -> io::Result<Published> {
-    let mut skipped = Vec::new();
-    let mut media = None;
     if manifest.state == Publication::Ready {
         manifest.state = Publication::Publishing;
         write_manifest(manifest)?;
     }
+    let mut skipped = Vec::new();
     for (index, relative) in manifest.outputs.clone().iter().enumerate() {
-        let relative = Path::new(relative);
-        let target = destination(&manifest.destination_root, relative)?;
-        if manifest.published.contains(&target) {
-            if index == 0 {
-                media = Some(target);
-            }
+        let media = index == 0;
+        let target = destination(&manifest.destination_root, Path::new(relative))?;
+        let source = manifest.workspace.join(relative);
+        if manifest.is_done(relative, &target) {
             continue;
         }
-        let source = manifest.workspace.join(relative);
+        let interrupted = manifest.moves.iter().find(|m| m.relative == *relative && m.state == MoveState::Moving).cloned();
+        if let Some(entry) = interrupted.filter(|_| !source.exists()) {
+            // The move happened but its result was not saved: the destination must be
+            // the very file that was moved, never just a file with the same name.
+            let ours = target.is_file() && identify(&target).ok().as_ref() == Some(&entry.identity);
+            if ours {
+                manifest.set_state(relative, MoveState::Done);
+                write_manifest(manifest)?;
+                continue;
+            }
+            let problem = if target.exists() {
+                io::Error::new(io::ErrorKind::AlreadyExists, format!("{} is not the file this download saved there", target.display()))
+            } else {
+                io::Error::new(io::ErrorKind::NotFound, format!("{} was saved but is no longer there", target.display()))
+            };
+            if media {
+                return Err(problem);
+            }
+            skipped.push(target);
+            continue;
+        }
+        if !source.is_file() {
+            let missing = io::Error::new(io::ErrorKind::NotFound, format!("the finished file {} is missing from the download's work folder", source.display()));
+            if media {
+                return Err(missing);
+            }
+            skipped.push(target);
+            continue;
+        }
         let result = if reserve(&target) {
+            let identity = identify(&source)?;
+            manifest.record(Move { relative: relative.clone(), destination: target.clone(), identity, state: MoveState::Moving });
+            write_manifest(manifest)?;
             move_no_replace(&source, &target)
         } else {
             Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("another download is saving {}", target.display())))
         };
         match result {
             Ok(()) => {
-                manifest.published.push(target.clone());
+                manifest.set_state(relative, MoveState::Done);
                 write_manifest(manifest)?;
-                if index == 0 {
-                    media = Some(target);
-                }
             }
-            Err(e) if index == 0 => return Err(e),
-            Err(_) => skipped.push(target),
+            // The source is still in the work folder; the journal entry is retried.
+            Err(e) if media => return Err(e),
+            Err(_) => {
+                manifest.set_state(relative, MoveState::Withheld);
+                write_manifest(manifest)?;
+                skipped.push(target);
+            }
         }
     }
-    let media = media.ok_or_else(|| io::Error::other("nothing to publish"))?;
+    let media = manifest.media().ok_or_else(|| io::Error::other("nothing to publish"))?;
     manifest.state = Publication::Published;
     write_manifest(manifest)?;
     Ok(Published { media, skipped })
@@ -563,6 +717,150 @@ mod tests {
         assert_eq!(verify(&reference, &job).unwrap().attempt, 0);
         assert_eq!(open_workspace(&out, &job, 0).unwrap().0, reference);
         let _ = fs::remove_dir_all(out);
+    }
+
+    /// A workspace whose media (and optionally a side file) is ready to publish.
+    fn ready(tag: &str, sidecar: bool) -> (PathBuf, Manifest) {
+        let out = temp_dir(tag);
+        let (reference, mut manifest) = open_workspace(&out, &id(), 0).unwrap();
+        fs::write(reference.path.join("clip.mp4"), b"media").unwrap();
+        manifest.outputs = vec!["clip.mp4".into()];
+        if sidecar {
+            fs::write(reference.path.join("clip.en.srt"), b"subs").unwrap();
+            manifest.outputs.push("clip.en.srt".into());
+        }
+        manifest.state = Publication::Ready;
+        write_manifest(&manifest).unwrap();
+        (out, manifest)
+    }
+
+    /// The state on disk after a crash between moving `relative` and saving that.
+    fn crash_after_move(manifest: &mut Manifest, relative: &str) {
+        let source = manifest.workspace.join(relative);
+        let target = destination(&manifest.destination_root, Path::new(relative)).unwrap();
+        manifest.state = Publication::Publishing;
+        manifest.record(Move { relative: relative.into(), destination: target.clone(), identity: identify(&source).unwrap(), state: MoveState::Moving });
+        write_manifest(manifest).unwrap();
+        move_no_replace(&source, &target).unwrap();
+    }
+
+    fn reopen(manifest: &Manifest) -> Manifest {
+        read_manifest(&manifest.workspace).unwrap()
+    }
+
+    #[test]
+    fn a_move_whose_record_was_lost_is_recognised_by_identity() {
+        let (out, mut manifest) = ready("journal-moved", false);
+        crash_after_move(&mut manifest, "clip.mp4");
+        let mut recovered = reopen(&manifest);
+        let done = publish(&mut recovered, &mut |_| true).unwrap();
+        assert_eq!(done.media, out.join("clip.mp4"));
+        assert_eq!(fs::read(out.join("clip.mp4")).unwrap(), b"media");
+        assert_eq!(reopen(&manifest).state, Publication::Published);
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn a_crash_before_the_move_simply_moves() {
+        let (out, mut manifest) = ready("journal-before", false);
+        let source = manifest.workspace.join("clip.mp4");
+        manifest.state = Publication::Publishing;
+        manifest.record(Move { relative: "clip.mp4".into(), destination: out.join("clip.mp4"), identity: identify(&source).unwrap(), state: MoveState::Moving });
+        write_manifest(&manifest).unwrap();
+        let mut recovered = reopen(&manifest);
+        assert_eq!(publish(&mut recovered, &mut |_| true).unwrap().media, out.join("clip.mp4"));
+        assert!(!source.exists());
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn a_replaced_or_missing_destination_is_never_taken_as_published() {
+        // Replaced by another file with the same name (and even the same size).
+        let (out, mut manifest) = ready("journal-replaced", false);
+        crash_after_move(&mut manifest, "clip.mp4");
+        fs::remove_file(out.join("clip.mp4")).unwrap();
+        fs::write(out.join("clip.mp4"), b"other").unwrap();
+        let err = publish(&mut reopen(&manifest), &mut |_| true).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists, "{err}");
+        assert_eq!(fs::read(out.join("clip.mp4")).unwrap(), b"other");
+        assert_ne!(reopen(&manifest).state, Publication::Published);
+        let _ = fs::remove_dir_all(out);
+
+        // Gone altogether.
+        let (out, mut manifest) = ready("journal-missing", false);
+        crash_after_move(&mut manifest, "clip.mp4");
+        fs::remove_file(out.join("clip.mp4")).unwrap();
+        let err = publish(&mut reopen(&manifest), &mut |_| true).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound, "{err}");
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn a_partly_published_set_finishes_without_moving_twice() {
+        let (out, mut manifest) = ready("journal-partial", true);
+        // The media went through completely; the side file was moved but not recorded.
+        let mut first = manifest.clone();
+        first.outputs.truncate(1);
+        publish(&mut first, &mut |_| true).unwrap();
+        manifest.moves = first.moves.clone();
+        crash_after_move(&mut manifest, "clip.en.srt");
+        let mut recovered = reopen(&manifest);
+        let mut claimed = Vec::new();
+        let done = publish(&mut recovered, &mut |t| {
+            claimed.push(t.to_path_buf());
+            true
+        })
+        .unwrap();
+        assert!(claimed.is_empty(), "nothing needed moving again: {claimed:?}");
+        assert!(done.skipped.is_empty());
+        assert_eq!(fs::read(out.join("clip.en.srt")).unwrap(), b"subs");
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn a_withheld_side_file_is_kept_and_published_once_its_name_is_free() {
+        let (out, mut manifest) = ready("journal-withheld", true);
+        fs::write(out.join("clip.en.srt"), b"user's own").unwrap();
+        let done = publish(&mut manifest, &mut |_| true).unwrap();
+        assert_eq!(done.skipped, vec![out.join("clip.en.srt")]);
+        let saved = reopen(&manifest);
+        assert_eq!(saved.withheld(), vec![out.join("clip.en.srt")]);
+        assert_eq!(saved.media(), Some(out.join("clip.mp4")));
+        assert_eq!(fs::read(saved.workspace.join("clip.en.srt")).unwrap(), b"subs");
+        // Moved away by the user: publishing again delivers it.
+        fs::rename(out.join("clip.en.srt"), out.join("mine.srt")).unwrap();
+        let again = publish(&mut reopen(&manifest), &mut |_| true).unwrap();
+        assert!(again.skipped.is_empty());
+        assert_eq!(fs::read(out.join("clip.en.srt")).unwrap(), b"subs");
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn schema_1_records_still_count_as_published() {
+        let (out, mut manifest) = ready("journal-v1", false);
+        move_no_replace(&manifest.workspace.join("clip.mp4"), &out.join("clip.mp4")).unwrap();
+        manifest.state = Publication::Publishing;
+        manifest.published = vec![out.join("clip.mp4")];
+        write_manifest(&manifest).unwrap();
+        let mut recovered = reopen(&manifest);
+        assert_eq!(publish(&mut recovered, &mut |_| true).unwrap().media, out.join("clip.mp4"));
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn identities_tell_moved_files_from_lookalikes() {
+        let dir = temp_dir("identity");
+        fs::write(dir.join("a"), b"same").unwrap();
+        fs::write(dir.join("b"), b"same").unwrap();
+        let a = identify(&dir.join("a")).unwrap();
+        assert_ne!(a, identify(&dir.join("b")).unwrap(), "an equal copy is a different file");
+        move_no_replace(&dir.join("a"), &dir.join("c")).unwrap();
+        assert_eq!(identify(&dir.join("c")).unwrap(), a, "a moved file keeps its identity");
+        // The content fallback: equal for equal bytes, different otherwise.
+        assert_eq!(content_identity(&dir.join("b")).unwrap(), content_identity(&dir.join("c")).unwrap());
+        fs::write(dir.join("b"), b"diff").unwrap();
+        assert_ne!(content_identity(&dir.join("b")).unwrap(), content_identity(&dir.join("c")).unwrap());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
