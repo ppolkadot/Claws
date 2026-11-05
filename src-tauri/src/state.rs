@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Mutex;
 
 use crate::downloader::{Job, PendingCleanup, Running};
 use crate::history::HistoryItem;
 use crate::probe::ProbeResult;
+use crate::queue_writer::QueueWriter;
 use crate::settings::Settings;
 
 /// Everything the commands share. Locks are only ever held for short, synchronous
@@ -46,6 +47,9 @@ pub struct AppState {
     /// Destinations being published right now (lower-cased), so two jobs never move
     /// files to the same name at once. Leaf lock.
     pub destinations: Mutex<HashSet<String>>,
+    /// Bumped after every queue change; the writer saves snapshots in revision order.
+    pub queue_revision: AtomicU64,
+    pub queue_writer: QueueWriter,
 }
 
 impl AppState {
