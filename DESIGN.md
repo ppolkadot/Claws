@@ -326,6 +326,13 @@ The large title belongs to the page; the toolbar title belongs to the window. As
 ### Progress and activity
 4px rounded bar on fill-2; the blue fill scales by `--p` on `--spring-smooth`, turning green, orange or red with job status. Indeterminate fill is a 34% segment sliding at 1.4s. The activity indicator is Apple's eight-spoke spinner, fading each spoke over 0.8s.
 
+Download rows only show a number they can stand behind:
+- **Known size.** A percentage weighted by bytes across the video and audio streams.
+- **Estimated size.** "About 42%", with "about 3:10 left".
+- **Unknown size.** The indeterminate fill with "1.2 GB downloaded" and the speed.
+- **Processing.** The indeterminate fill, with no time estimate.
+- **Saved.** The bar reaches 100% only once the file is in the output folder.
+
 ### Toasts and alert sheet
 - **Toast:** bottom-centre chrome capsule (22px radius, float shadow, chrome blur) that springs up from 26px below at 0.9 scale on `--spring-bouncy`; leaves in 0.22s. Green or red status icon, 500-weight text, an optional 26px capsule action in accent text.
 - **Sheet:** a 300px chrome alert, 20px radius, centred title and message, full-width stacked 30px buttons, springing in from 0.88 scale over a 20% dim scrim with a 6px blur.

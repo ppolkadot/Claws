@@ -29,6 +29,108 @@ The supplied CFF outline programs inherit oversized default advances that disagr
 
 The issue was reproduced in the browser Settings screen: the 28 px heading measured 341.828 px before the repair and 103.453 px afterward. Regression checks cover every bundled glyph's outline advance, sampled outline geometry and preserved font metadata. Run `python -m unittest discover -s scripts -p test_font_metrics.py`. This is subsequent work after the published 1.0.4 release. A local installer was rebuilt successfully with the corrected fonts: Claws_1.0.4_x64-setup.exe, 2769214 bytes, SHA-256 9aadc5fedde599b89fc53e199366caac465a4c3ddcf4032b0c7454f07efce955. The repaired installer and its SHA-256 file are stored in `installers/` and committed with the font-spacing fix, as requested by the owner. The published release asset has not been replaced.
 
+## Download reliability work (branch `download-reliability`, unreleased)
+
+This implements the first release candidate of `docs/superpowers/plans/2026-11-04-download-reliability-and-performance.md`: Tasks 1–10 and 15, one commit per task.
+
+Not done:
+- Tasks 11–14 (managed transfer/processing pipeline, separate processing slots, benchmarks for default changes, optional aria2c). The plan gates them on benchmarks and broader compatibility tests.
+- Task 16's version bump and release. Nothing has been pushed or released.
+
+### What changed
+
+- **Frozen execution.** At first start a job saves `execution`:
+  - output folder;
+  - filename template;
+  - metadata;
+  - audio preference;
+  - fragment concurrency;
+  - transport.
+
+  It is saved durably before yt-dlp starts, and resumes and retries reuse it. Sign-in and tool locations stay current.
+- **Work folders.** yt-dlp writes only into `<output>\.claws-work\<first 12 hex of the job id>\`, which is hidden.
+  - The folder holds `.claws-job.json`: the manifest, with the schema version, full job id, destination root, state, outputs and published paths.
+  - The short name keeps paths under 260 characters.
+  - Ownership requires all of: a correct name, a direct parent named `.claws-work`, no link or junction, and a marker with the same job id.
+- **Publication.** The manifest is set to Ready with the media plus subtitle sidecars sharing its stem. Then `MoveFileExW` runs without `MOVEFILE_REPLACE_EXISTING`.
+  - Each move is recorded, so an interrupted publication resumes.
+  - A taken name fails the job with the files kept, and Try Again only publishes.
+  - Destinations are reserved across jobs (`AppState::destinations`).
+  - At startup, a job whose manifest says Published but whose completion was not saved is completed.
+- **Cancel and remove.**
+  - `cancelRequested` is set, the queue is flushed, and the cleanup is recorded in `cleanup.json`. Only then is the verified work folder deleted (8 tries, 250 ms apart).
+  - A folder still in use stays in `cleanup.json` and is retried at startup.
+  - Legacy 1.0.4 jobs delete only exact `<name>.part`, `.ytdl` and `.part-Frag<n>` files.
+- **Queue file.** `{ schemaVersion: 2, revision, jobs }`.
+  - The 1.0.4 bare list is read and copied once to `queue.pre-1.0.5.json`.
+  - A file from a newer version is set aside with a notice.
+  - Saves go through `queue_writer`, a single thread that coalesces routine changes for 250 ms. Flush barriers apply when a work folder is committed, before deleting cancelled files, after completion, and at shutdown.
+- **Settings.** `schemaVersion: 2`. Files without it are migrated, and `audioSelection` becomes `best` (old behaviour). New installs get `preferMatching`.
+- **yt-dlp policy** (`download_policy.rs`):
+  - `--retries 10 --fragment-retries 10`, with exponential retry sleeps (http and fragment, 1–30 s);
+  - `--socket-timeout 30`;
+  - `--abort-on-unavailable-fragments`;
+  - `--progress-delta 0.2`.
+  - Failures are classified, and a cached probe is refreshed only for expired media.
+- **Events.** Every job change bumps `revision` under the jobs lock.
+  - `job-update` carries `{schemaVersion: 1, jobId, revision, job}`.
+  - An enqueue is one `jobs-added` batch, and the enqueue reply is the same batch.
+  - `job-removed` carries a revision.
+  - `src/queue-events.ts` drops stale or duplicate events and keeps tombstones.
+- **Progress.** Streams are identified by `%(info.format_id)s`, and `CLAWSFMT` carries the selected streams' exact and approximate sizes.
+  - Progress is sum(downloaded)/sum(expected).
+  - `progressKnown` is false while any size is unknown.
+  - `progressEstimated` marks estimates.
+  - The ETA covers transfer bytes only.
+  - 100% is reached only after publication.
+- **Disk budget.** Checked when the selection is known:
+  - the peak is the streams ×2 if merged or rewritten, or the stream plus the converted output for audio;
+  - minus bytes already in the work folder;
+  - plus a margin of max(512 MiB, 10%);
+  - against free space minus other jobs' reservations on the same volume.
+
+  Unknown sizes are watched every 5 s or more, with a stop below 256 MiB.
+- **Bounded output.** Lookup JSON is capped at 32 MiB, and the process tree is killed on overflow. Error output keeps its last 256 KiB, and lines are capped at 256 KiB.
+- **Fast Save** (`options.fastSave`) turns off the metadata pass and embedded subtitles for one job.
+
+Lock order is unchanged: store write lock, `running`, `jobs`, `live_jobs`. `pending_cleanup`, `destinations` and `disk_reservations` are leaf locks.
+
+### Verified
+
+- `cargo test`: 94 tests. They include real yt-dlp 2026.10.26 against `scripts/dev/download-fixtures.py`:
+  - a missing HLS segment now fails (it exited 0 before);
+  - 503s recover with backoff and intact bytes;
+  - a dropped connection resumes to an identical file;
+  - a kill ends a backoff;
+  - the progress cap holds;
+  - real output parses into exact byte totals;
+  - audio selection was checked offline with `--simulate`.
+- `npm run test:queue`: 10 reducer tests.
+- `cargo clippy --all-targets -D warnings` and `npm run build` are clean.
+- A real dev-build run driven over DevTools against the fixtures passed 23/23 checks:
+  - a 1.0.4 queue loads and is backed up;
+  - publish and work-folder removal;
+  - pause, a settings change, then resume into the frozen folder;
+  - cancel removes only the work folder;
+  - a name conflict without overwriting, then Try Again;
+  - a missing fragment;
+  - duplicate refusal;
+  - the queue view rows.
+
+  The app data folder was backed up first and restored byte-identical afterwards.
+- Queue view (`docs/performance/queue-ui.md`), with 500 jobs and 8 active:
+  - adding them took 4.4 s of layout and style before, 73 ms after;
+  - progress cost 729 ms before, 63 ms after;
+  - long tasks during progress went from 39 to 0.
+
+### Not verified
+
+- No ffmpeg on this PC, so:
+  - no merge, metadata or embedded-subtitle runs;
+  - no ffprobe check that Prefer Matching copies without encoding.
+- The disk-shortfall stop inside a running download. The decision logic is unit-tested.
+- Live sites, an installed NSIS build, and the upgrade from an installed 1.0.4.
+
 ## Historical handoff (superseded where noted above)
 
 ## 1. What this is
