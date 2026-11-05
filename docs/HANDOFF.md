@@ -31,11 +31,23 @@ The issue was reproduced in the browser Settings screen: the 28 px heading measu
 
 ## Download reliability work (branch `download-reliability`, unreleased)
 
-This implements the first release candidate of `docs/superpowers/plans/2026-11-04-download-reliability-and-performance.md`: Tasks 1–10 and 15, one commit per task.
+The first pass implemented the original plan's first release candidate (its Tasks 1–10 and 15). A review of that pass (`docs/CURRENT_PROBLEMS_AND_SPEED_REVIEW.md`) found five lifecycle defects, B1–B5, and the plan was rewritten as remaining work only. The second pass (2026-11-05) closed B1–B5, measured the speed question under controlled conditions and batched large queue additions. Its details are under "Remaining-work pass" below; where they differ, they supersede "What changed".
 
 Not done:
-- Tasks 11–14 (managed transfer/processing pipeline, separate processing slots, benchmarks for default changes, optional aria2c). The plan gates them on benchmarks and broader compatibility tests.
-- Task 16's version bump and release. Nothing has been pushed or released.
+- The real slow-source diagnosis: no affected URL was available. See `docs/performance/speed-diagnosis.md`.
+- The plan's Tasks 6–8 (a measured speed fix, managed processing, optional aria2c) depend on that diagnosis.
+- The version bump, installer and release. Nothing has been pushed or released.
+
+### Remaining-work pass (2026-11-05)
+
+- **Required saves (B4).** `flush_queue` returns a `Result`; the queue writer fails a barrier as soon as a save attempt that began after it fails. Every start saves before yt-dlp is spawned. Cleanup deletes nothing unless the queue state and the `cleanup.json` record are both saved; `remove_job` returns an error and keeps the job when the record cannot be saved. Shutdown keeps cancelled files when it cannot save. `store::write_atomic` retries a rename refused for a moment (an antivirus opening the fresh file).
+- **Attempts (B1).** Try Again on a cancelled job calls `start_new_attempt`: cancel, error and progress cleared, `execution` kept, `attempt` + 1, `workspace` cleared. Work folders are `<12 hex>` for attempt 0 and `<12 hex>-<n>` after; `WorkspaceRef::attempt` and the marker's `attempt` must match (both default to 0 for older data). Pending cleanups are kept per work folder. `remove_workspace` deletes the marker last, so a file still in use never leaves an unprovable folder.
+- **Publication journal (B3).** Manifest schema 2 adds `moves`: per output, `Moving` (with a `FileIdentity`) is saved before the move and `Done` after; a side file whose name is taken is `Withheld`. The identity is the NTFS/ReFS volume serial and 128-bit file id (`GetFileInformationByHandleEx(FileIdInfo)`), else size and SHA-256. Recovery accepts a destination only if its identity matches. Schema 1 `published` entries still count. `WorkspaceRef` keeps its own schema (1).
+- **Completion transaction (B2).** `finish` records the Library entry (`history::record` now returns a `Result`) before settling; only after the queue save succeeds is the work folder cleaned, never while a side file is withheld. A failed Library save leaves the job Failed with its manifest; Try Again goes through the `Published` shortcut and only records it. `restore_queue` records an unrecorded completion once (an existing entry is left alone) or leaves the job Failed.
+- **Disk ledger (B5).** `AppState::disk_ledger` (`disk_budget::Ledger`) holds each running job's remaining demand: peak minus the work folder's bytes (sampled every 2 s), plus margin. Admission reads free space under its lock. Each `CLAWSPP|started` rechecks what is still needed and stops the step before it runs if it no longer fits. The claim is released when the process exits. `AppState::free_space` is replaceable for tests.
+- **Queue view.** Structural syncs build at most 40 new rows per frame (`ROWS_PER_FRAME`), including when the view opens.
+- **Lifecycle tests** (`src-tauri/src/lifecycle_tests.rs`). The real downloader, writer and stores run through Tauri's mock runtime (`crate::Runtime` is `MockRuntime` under `cfg(test)`), with a disposable data folder and the fixture tool as yt-dlp. The job link selects its behaviour: `https://fixture.invalid/<ok|hang|fail>/<name>[/<planned bytes>]`. Saves are made to fail with a folder where the JSON file must go. The mock runtime needs the Common Controls v6 manifest, so `build.rs` links tauri-build's own manifest (`windows-app-manifest.xml`) into every target. Build the tool first: `cargo build --features test-tools --bin claws-fixture-tool`; without it these tests skip.
+- **Benchmarks.** `download-fixtures.py` adds per-connection (`/capped`, `/capped-hls`) and server-wide (`--global-rate-kib`) caps and `--segments`. `download-bench.mjs` adds `--jobs`, `--downloader native|aria2c|ranges:N` (`ranges:N` is a reference strategy run by the script itself, not a Claws code path) and process-tree CPU. `processing-bench.mjs` times merge, metadata, combined and audio steps with ffmpeg.
 
 ### What changed
 
@@ -93,7 +105,7 @@ Not done:
 - **Bounded output.** Lookup JSON is capped at 32 MiB, and the process tree is killed on overflow. Error output keeps its last 256 KiB, and lines are capped at 256 KiB.
 - **Fast Save** (`options.fastSave`) turns off the metadata pass and embedded subtitles for one job.
 
-Lock order is unchanged: store write lock, `running`, `jobs`, `live_jobs`. `pending_cleanup`, `destinations` and `disk_reservations` are leaf locks.
+Lock order is unchanged: store write lock, `running`, `jobs`, `live_jobs`. `pending_cleanup`, `destinations` and `disk_ledger` are leaf locks (free space is read while `disk_ledger` is held).
 
 ### Verified
 
