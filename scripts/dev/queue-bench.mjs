@@ -90,9 +90,13 @@ const pageHelpers = (protocol) => `
         downloadedBytes: null, totalBytes: null, progressEstimated: false, revision: ++this.revision };
     },
     async add(n) {
+      const rows = () => document.querySelectorAll('.jobs .job').length;
+      const expected = rows() + n;
       const jobs = Array.from({ length: n }, (_, i) => this.job('b' + i, i, 'queued', 0));
       if ('${protocol}' === 'legacy') { for (const j of jobs) await this.emit('job-update', j); }
       else await this.emit('jobs-added', { schemaVersion: 1, jobs: jobs.map((j) => ({ schemaVersion: 1, jobId: j.id, revision: j.revision, job: j })) });
+      // Until every row exists (rows may be built over several frames), then one more.
+      for (let i = 0; i < 300 && rows() < expected; i++) await this.frame();
       await this.frame(); await this.frame();
     },
     async progress(active, rounds) {
@@ -144,11 +148,12 @@ try {
       await evaluate(`window.__bench.add(${size})`);
       const m1 = await metrics();
       const s1 = await stats();
-      const lt1 = await evaluate("window.__lt.splice(0).length");
+      const takeLongTasks = () => evaluate("(() => { const d = window.__lt.splice(0); return { count: d.length, longestMs: d.length ? Math.round(Math.max(...d)) : 0 }; })()");
+      const lt1 = await takeLongTasks();
       await evaluate(`window.__bench.progress(${active}, ${rounds})`);
       const m2 = await metrics();
       const s2 = await stats();
-      const lt2 = await evaluate("window.__lt.splice(0).length");
+      const lt2 = await takeLongTasks();
       const rows = await evaluate("document.querySelectorAll('.jobs .job').length");
       const delta = (a, b) => (a && b ? Object.fromEntries(Object.keys(b).map((k) => [k, b[k] - (a[k] ?? 0)])) : null);
       const progressEvents = active * rounds;
@@ -157,11 +162,11 @@ try {
         addedJobs: size,
         activeTransfers: active,
         renderedRows: rows,
-        add: { ...diff(m0, m1), longTasks: lt1, counters: delta(s0, s1) },
-        progress: { events: progressEvents, ...diff(m1, m2), longTasks: lt2, counters: delta(s1, s2), scriptMsPerEvent: +((m2.script - m1.script) / progressEvents).toFixed(3) },
+        add: { ...diff(m0, m1), longTasks: lt1.count, longestTaskMs: lt1.longestMs, counters: delta(s0, s1) },
+        progress: { events: progressEvents, ...diff(m1, m2), longTasks: lt2.count, longestTaskMs: lt2.longestMs, counters: delta(s1, s2), scriptMsPerEvent: +((m2.script - m1.script) / progressEvents).toFixed(3) },
       };
       results.push(result);
-      console.log(`${protocol} jobs=${size} active=${active}: add ${result.add.scriptMs} ms script, ${result.add.longTasks} long; progress ${result.progress.scriptMsPerEvent} ms/event, ${result.progress.longTasks} long`);
+      console.log(`${protocol} jobs=${size} active=${active}: add ${result.add.scriptMs} ms script, ${result.add.longTasks} long (longest ${result.add.longestTaskMs} ms); progress ${result.progress.scriptMsPerEvent} ms/event, ${result.progress.longTasks} long; rows ${rows}`);
     }
   }
 } finally {
