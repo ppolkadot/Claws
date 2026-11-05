@@ -343,3 +343,56 @@ fn real_progress_output_is_weighted_by_bytes() {
     assert_eq!(last.fraction, Some(0.99), "full only after publication");
     let _ = std::fs::remove_dir_all(work);
 }
+
+/// The format yt-dlp selects from `formats` with `selector`, without downloading.
+fn selected_format(ytdlp: &Path, formats: serde_json::Value, selector: &str) -> String {
+    let dir = temp_dir("select");
+    let info = dir.join("info.json");
+    let value = serde_json::json!({
+        "id": "x", "title": "x", "ext": "mp4", "extractor": "generic", "extractor_key": "Generic",
+        "webpage_url": "https://example.com/v", "formats": formats
+    });
+    std::fs::write(&info, value.to_string()).unwrap();
+    let output = Command::new(ytdlp)
+        .args(["--ignore-config", "--no-warnings", "--simulate", "--load-info-json"])
+        .arg(&info)
+        .args(["-f", selector, "--print", "%(format_id)s"])
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(dir);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[test]
+fn yt_dlp_picks_the_matching_audio_stream() {
+    use crate::download_policy::{audio_selector, AudioSelection::*};
+    let ytdlp = require!(ytdlp());
+    let audio = |id: &str, ext: &str, acodec: &str, abr: f64| {
+        serde_json::json!({"format_id": id, "ext": ext, "acodec": acodec, "vcodec": "none", "abr": abr, "url": format!("https://example.com/{id}"), "protocol": "https"})
+    };
+    let combined = serde_json::json!({"format_id": "18", "ext": "mp4", "acodec": "mp4a.40.2", "vcodec": "avc1.42001E", "abr": 96, "height": 360, "url": "https://example.com/18", "protocol": "https"});
+    let youtube_like = serde_json::json!([audio("140", "m4a", "mp4a.40.2", 128.0), audio("251", "webm", "opus", 160.0), combined.clone()]);
+    let pick = |formats: &serde_json::Value, format: &str, selection| selected_format(&ytdlp, formats.clone(), audio_selector(format, selection));
+
+    // Best keeps yt-dlp's own choice, whatever the output format.
+    assert_eq!(pick(&youtube_like, "m4a", Best), "251");
+    // Prefer matching: AAC in M4A for M4A, Opus for Opus.
+    assert_eq!(pick(&youtube_like, "m4a", PreferMatching), "140");
+    assert_eq!(pick(&youtube_like, "opus", PreferMatching), "251");
+    // No matching stream (no MP3 or FLAC here): the same as Best, still audio only.
+    assert_eq!(pick(&youtube_like, "mp3", PreferMatching), "251");
+    assert_eq!(pick(&youtube_like, "flac", PreferMatching), "251");
+    // AAC in another container is still preferred for M4A.
+    let aac_in_ts = serde_json::json!([audio("hls-aac", "mp4", "aac", 96.0), audio("251", "webm", "opus", 160.0)]);
+    assert_eq!(pick(&aac_in_ts, "m4a", PreferMatching), "hls-aac");
+    // Native MP3 is picked for MP3.
+    let with_mp3 = serde_json::json!([audio("mp3-128", "mp3", "mp3", 128.0), audio("251", "webm", "opus", 160.0)]);
+    assert_eq!(pick(&with_mp3, "mp3", PreferMatching), "mp3-128");
+    // A stream with no codec information is never taken for a codec match.
+    let unknown_codec = serde_json::json!([{"format_id": "a1", "ext": "m4a", "vcodec": "none", "url": "https://example.com/a1", "protocol": "https"}, audio("251", "webm", "opus", 160.0)]);
+    assert_eq!(pick(&unknown_codec, "opus", PreferMatching), "251");
+    // Only a combined format: both choices fall back to it the same way.
+    let only_combined = serde_json::json!([combined]);
+    assert_eq!(pick(&only_combined, "m4a", PreferMatching), pick(&only_combined, "m4a", Best));
+}

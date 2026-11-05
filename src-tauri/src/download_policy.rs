@@ -107,9 +107,24 @@ pub const FORMATS_PRINT: &str = "before_dl:CLAWSFMT|%(requested_formats.0.format
 pub const DONE_PRINT: &str = "after_move:CLAWSDONE|%(filepath)s";
 
 /// The format selection for an audio-only download.
+///
+/// `Best` is yt-dlp's own pick of the best audio, converted to the chosen format. With
+/// `PreferMatching`, an audio stream already in the chosen codec comes first, so yt-dlp's
+/// audio extraction can copy (or just remux) it instead of encoding; that stream can have
+/// a different bitrate than the best one. The codec is matched on the stream's codec
+/// field, not guessed from its extension (except M4A, whose container implies AAC). Every
+/// selector ends in `ba/b`, so a site without a matching stream behaves like `Best`.
+/// "Original" (`best`) never forces a codec.
 pub fn audio_selector(audio_format: &str, selection: AudioSelection) -> &'static str {
-    let _ = (audio_format, selection);
-    "ba/b"
+    match (selection, audio_format) {
+        (AudioSelection::Best, _) | (_, "best") => "ba/b",
+        (_, "m4a") => "ba[ext=m4a]/ba[acodec^=aac]/ba[acodec^=mp4a.40.]/ba/b",
+        (_, "opus") => "ba[acodec=opus]/ba/b",
+        (_, "mp3") => "ba[acodec=mp3]/ba/b",
+        (_, "flac") => "ba[acodec=flac]/ba/b",
+        (_, "wav") => "ba[acodec^=pcm]/ba/b",
+        _ => "ba/b",
+    }
 }
 
 pub fn download_args(
@@ -296,6 +311,27 @@ mod tests {
         let args = download_args(vec![], &options("video"), &execution, Path::new("W"), Source::Url("https://e.com/v"));
         assert!(!args.contains(&"--embed-metadata".to_string()));
         assert_eq!(value_after(&args, "-o"), ["%(uploader)s/%(title)s.%(ext)s"]);
+    }
+
+    #[test]
+    fn audio_selection_prefers_a_copyable_stream_only_when_asked() {
+        for format in ["mp3", "m4a", "opus", "flac", "wav", "best"] {
+            assert_eq!(audio_selector(format, AudioSelection::Best), "ba/b", "{format}");
+        }
+        assert_eq!(audio_selector("best", AudioSelection::PreferMatching), "ba/b");
+        assert_eq!(audio_selector("m4a", AudioSelection::PreferMatching), "ba[ext=m4a]/ba[acodec^=aac]/ba[acodec^=mp4a.40.]/ba/b");
+        assert_eq!(audio_selector("opus", AudioSelection::PreferMatching), "ba[acodec=opus]/ba/b");
+        for format in ["mp3", "m4a", "opus", "flac", "wav"] {
+            assert!(audio_selector(format, AudioSelection::PreferMatching).ends_with("/ba/b"), "{format} must fall back");
+        }
+        // The frozen choice is what reaches the command line, with conversion kept.
+        let mut execution = execution();
+        execution.audio_selection = AudioSelection::PreferMatching;
+        let options = DownloadOptions { mode: "audio".into(), audio_format: "opus".into(), ..DownloadOptions::default() };
+        let args = download_args(vec![], &options, &execution, Path::new("W"), Source::Url("https://e.com/a"));
+        assert_eq!(value_after(&args, "-f"), ["ba[acodec=opus]/ba/b"]);
+        assert_eq!(value_after(&args, "--audio-format"), ["opus"]);
+        assert!(args.contains(&"-x".to_string()));
     }
 
     #[test]
