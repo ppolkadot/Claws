@@ -1,5 +1,7 @@
 mod commands;
 mod desktop;
+#[cfg(test)]
+mod download_tests;
 mod downloader;
 mod error;
 mod history;

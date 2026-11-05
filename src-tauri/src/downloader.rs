@@ -1063,7 +1063,7 @@ async fn finish(app: &AppHandle, id: &str, outcome: Outcome) {
 }
 
 /// Removes `<name>.part`, `<name>.part-FragN` and `<name>.ytdl`; never the finished file.
-fn remove_partials_now(files: &[String]) {
+pub(crate) fn remove_partials_now(files: &[String]) {
     for file in files {
         let path = Path::new(file);
         let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
