@@ -10,7 +10,7 @@ __pycache__/
 
 # ---- Fonts ------------------------------------------------------------------------
 # Keep optional local font checkouts out of version control. Polaris sources and
-# bundled web fonts in assets/fonts/polaris/ and public/fonts/ are project assets.
+# the bundled web fonts in src/assets/fonts/ (plus public/fonts/LICENSE.txt) are project assets.
 assets/fonts/*
 !assets/fonts/polaris/
 Salted-Flutters-Polaris/

@@ -15,7 +15,7 @@ class FontMetricsTest(unittest.TestCase):
     def test_outline_advances_match_layout_advances(self):
         for weight in (400, 500, 600, 700):
             with self.subTest(weight=weight):
-                font = TTFont(ROOT / "public" / "fonts" / f"salted-flutters-polaris-{weight}.woff2")
+                font = TTFont(ROOT / "src" / "assets" / "fonts" / f"salted-flutters-polaris-{weight}.woff2")
                 charstrings = font["CFF "].cff.topDictIndex[0].CharStrings
                 mismatches = []
                 for name in font.getGlyphOrder():
@@ -31,7 +31,7 @@ class FontMetricsTest(unittest.TestCase):
         for weight, style in ((400, "Regular"), (500, "Medium"), (600, "Semibold"), (700, "Bold")):
             with self.subTest(weight=weight):
                 source = TTFont(ROOT / "assets" / "fonts" / "polaris" / f"SaltedFluttersPolaris-{style}.otf")
-                bundled = TTFont(ROOT / "public" / "fonts" / f"salted-flutters-polaris-{weight}.woff2")
+                bundled = TTFont(ROOT / "src" / "assets" / "fonts" / f"salted-flutters-polaris-{weight}.woff2")
                 self.assertEqual([n.toUnicode() for n in source["name"].names if n.nameID < 256],
                                  [n.toUnicode() for n in bundled["name"].names if n.nameID < 256])
                 for character in set("Settings Downloads Quick Access AV fi 0123456789+-"):

@@ -144,7 +144,7 @@ async function start() {
 
   // Show the window only after the font and first frame, so it never flashes blank or
   // in the fallback face.
-  const fontsIn = Promise.all([400, 500, 600, 700].map((w) => document.fonts.load(`${w} 13px "Salted Flutters Polaris"`)));
+  const fontsIn = Promise.all([400, 500, 600, 700].map((w) => document.fonts.load(`${w} 13px "Claws Polaris"`)));
   await Promise.race([fontsIn, new Promise((resolve) => setTimeout(resolve, 800))]).catch(() => undefined);
   requestAnimationFrame(() => requestAnimationFrame(() => void api.appReady()));
 }

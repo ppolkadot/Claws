@@ -26,19 +26,6 @@ const SHORTCUTS: { value: QuickOpenShortcut; label: string }[] = [
 
 const onError = (message: string) => toast(message, { tone: "error" });
 
-/** True when the named font is installed: text set in it measures differently from the fallback. */
-function fontInstalled(family: string): boolean {
-  const ctx = document.createElement("canvas").getContext("2d");
-  if (!ctx) return false;
-  const sample = "Claws mmmmmmmmmwwwwwww 0123456789";
-  return ["monospace", "serif"].some((fallback) => {
-    ctx.font = `40px ${fallback}`;
-    const base = ctx.measureText(sample).width;
-    ctx.font = `40px "${family}", ${fallback}`;
-    return ctx.measureText(sample).width !== base;
-  });
-}
-
 export const mountSettings: MountView = (container, ctx) => {
   ctx.setActions([]);
   let cleanup = buildSettings(container);
@@ -141,20 +128,26 @@ function buildSettings(container: HTMLElement): () => void {
 
   const intensityValue = h("span", { class: "value", text: `${s().glassIntensity}%` });
   const loaded = (family: string) => [...document.fonts].some((f) => f.family.replace(/"/g, "") === family && f.status === "loaded");
-  const family = ["Salted Flutters Polaris"].find((f) => loaded(f) || fontInstalled(f));
-  const bundled = family !== undefined && loaded(family);
-  const polaris = family !== undefined;
-  const fontRow = row(
-    "Font",
-    polaris
-      ? h("span", { class: "font-status" }, h("span", { class: "tool-dot", attrs: { "data-state": "ok" } }), family)
-      : button({ label: "Get Polaris…", variant: "secondary", size: "small", onClick: () => void api.openFontPage().catch((e) => onError(errorMessage(e))) }),
-    bundled
-      ? "In use throughout Claws."
-      : polaris
-        ? "Installed on this PC and used throughout Claws."
-        : "Salted Flutters Polaris is unavailable. Reinstall Claws to restore the bundled font, or download Polaris and restart Claws.",
-  );
+  const polaris = loaded("Claws Polaris");
+  function fontStatusRow(inUse: boolean): HTMLElement {
+    return row(
+      "Font",
+      inUse
+        ? h("span", { class: "font-status" }, h("span", { class: "tool-dot", attrs: { "data-state": "ok" } }), "Salted Flutters Polaris")
+        : button({ label: "Font details…", variant: "secondary", size: "small", onClick: () => void api.openFontPage().catch((e) => onError(errorMessage(e))) }),
+      inUse
+        ? "In use throughout Claws."
+        : "Salted Flutters Polaris is unavailable. Reinstall Claws to restore the bundled font.",
+    );
+  }
+  const fontRow = fontStatusRow(polaris);
+  // Startup waits at most 800 ms for the font; rebuild this row once it finishes loading.
+  if (!polaris) {
+    void document.fonts.ready.then(() => {
+      if (!loaded("Claws Polaris") || !fontRow.isConnected) return;
+      fontRow.replaceWith(fontStatusRow(true));
+    });
+  }
   const appearance = group(
     row(
       "Theme",
