@@ -186,14 +186,16 @@ What makes the difference:
 
 ## Fonts
 
-**Salted Flutters Polaris** is the interface font and is bundled with Claws, so users do not need to install it separately. The four web fonts and their `LICENSE.txt` are included in `public/fonts/`, so a fresh checkout bundles them automatically with `npm run build`. Python is only needed to regenerate them from the four source files and license committed in `assets/fonts/polaris/`:
+**Salted Flutters Polaris** is the interface font and is bundled with Claws, so users do not need to install it separately. The four web fonts are committed in `src/assets/fonts/`; the unmodified license is in `public/fonts/LICENSE.txt`. Vite gives each font a content fingerprint and bundles it into `dist/assets/`. The private CSS alias `Claws Polaris` prevents substitution by an older installed font. Normal builds verify approved font hashes before building and verify the actual packaged fonts afterward, without requiring Python.
+
+Python is only needed to regenerate them from the four source files and license committed in `assets/fonts/polaris/`:
 
 ```powershell
 pip install "fonttools[woff]"
 python scripts/build-fonts.py
 ```
 
-The build script creates the four Polaris weights used by the interface (Regular, Medium, Semibold and Bold), subset to Latin, Greek, Cyrillic and common punctuation while preserving tabular figures, kerning and ligatures. It also synchronizes outline advance widths with the layout metrics so Chromium and WebView2 render proportional spacing correctly.
+The build script creates the four Polaris weights used by the interface (Regular, Medium, Semibold and Bold), subset to Latin, Greek, Cyrillic and common punctuation while preserving tabular figures, kerning and ligatures. It synchronizes outline advance widths with the layout metrics, verifies every serialized glyph, then updates `scripts/font-integrity.json`. Run `npm run test:fonts` for packaging regressions and `python scripts/test_font_metrics.py` for glyph metrics and preserved outlines.
 
 ## Building from source
 
@@ -211,7 +213,8 @@ npm run tauri build     # produce the installer in src-tauri/target/release/bund
 | Command | What it does |
 | --- | --- |
 | `npm run dev` | Runs the interface in a browser with synthetic sample data. Useful for styling work without the backend. |
-| `npm run build` | Type-checks and builds the frontend. |
+| `npm run build` | Verifies font integrity, type-checks and builds the frontend, then checks the packaged font files. |
+| `npm run test:fonts` | Checks bundled-only font selection and rejection of corrupt or stale font assets. |
 | `cargo clippy` (in `src-tauri/`) | Lints the backend. |
 | `cargo test` (in `src-tauri/`) | Runs the backend's tests. Tests that drive the real yt-dlp against local fixtures need Python and yt-dlp (`CLAWS_TEST_YTDLP`, or the copy Claws installed), and skip without them. |
 | `npm run test:queue` | Runs the queue event tests with Node's test runner. |

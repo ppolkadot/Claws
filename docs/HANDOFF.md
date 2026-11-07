@@ -8,9 +8,9 @@ This section supersedes the historical font, packaging and publication instructi
 
 - Source version is **1.0.5** in package.json, package-lock.json, Cargo.toml, Cargo.lock and tauri.conf.json. The installer was rebuilt from the reviewed source with `npm run tauri build` and copied to `installers/Claws_1.0.5_x64-setup.exe`: 2,839,767 bytes, SHA-256 `5380cffc46dd7ef85a52e5d44d5a6eb18b76e176164f9546296d9d19421bcfae`. Its archive passes integrity checks and its executable matches the optimized build exactly after Tauri's expected NSIS bundle marker patch; its executable version is 1.0.5. A fresh Windows installation and upgrade from an installed 1.0.4 remain untested.
 - Release publication is authorized after review. Target: https://github.com/ppolkadot/Claws/releases/tag/v1.0.5. Notes: `docs/releases/1.0.5.md`. Publish from the exact reviewed commit, verify uploaded asset digests and Latest, and retain the speed limitations documented there.
-- **Salted Flutters Polaris** is the interface font. Four WOFF2 weights (400, 500, 600, 700) and an unmodified `LICENSE.txt` ship in `public/fonts/`. Vite copies these to `dist/fonts/`, which Tauri embeds in the application. A fresh checkout needs no separately installed font or Python to build.
+- **Salted Flutters Polaris** is the interface font. Current source keeps four WOFF2 weights (400, 500, 600, 700) in `src/assets/fonts/` and the unmodified license in `public/fonts/LICENSE.txt`. Vite fingerprints fonts into `dist/assets/` and copies the license to `dist/fonts/`; Tauri embeds both. Normal builds verify source and packaged hashes. A fresh checkout needs no separately installed font or Python to build.
 - The four matching OTF sources and their license are project assets in `assets/fonts/polaris/`. To regenerate the WOFF2 files: install `fonttools[woff]`, then run `python scripts/build-fonts.py`. Missing sources fail explicitly. The separate local `Salted-Flutters-Polaris/` clone is optional and ignored.
-- The stylesheet and Settings use Polaris; the Settings download button opens https://github.com/ppolkadot/Salted-Flutters-Polaris. There is no optional proprietary font build path.
+- The stylesheet and Settings use Polaris. Settings shows the face as in use once it has loaded; only if the bundled face fails to load does it show a "Font details…" button, which opens https://github.com/ppolkadot/Salted-Flutters-Polaris. There is no optional proprietary font build path.
 - Published release: https://github.com/ppolkadot/Claws/releases/tag/v1.0.3, targeting `e4f66695c3e618bceaac23e4bdbf6ddc3eb20807`. Installer: `Claws_1.0.3_x64-setup.exe`, 2,803,813 bytes, SHA-256 `5e6a59650246d8837a66f058101c82acbd6af5914b0f3a966d4445e0f4c14183`. GitHub's uploaded asset digest matched the local installer.
 - The owner authorized publishing that release with existing access. No collaborator or permission changes were made. The cleanup described here is subsequent source work. A local installer was rebuilt successfully with it using npm run tauri build: 2804600 bytes, SHA-256 2f5caa5843506f362484a4ec1aff0db9088b830a8e709755d618a9bda739fe8d. The published GitHub release still contains the earlier installer.
 
@@ -24,11 +24,17 @@ Validation: all 35 backend tests passed; cargo clippy --locked -- -D warnings pa
 
 At the owner's request, main and all four release tags were rewritten to remove obsolete interface font references from historical files. Commit IDs changed; historical references in current documentation now use the rewritten IDs. Existing clones should be replaced with a fresh checkout to avoid restoring the old history. A recovery bundle is stored outside the project. Release installer files and their checksums are unchanged.
 
-### Unreleased font spacing repair
+### Font spacing repair (included in the repository 1.0.4 installer and release 1.0.5)
 
-The supplied CFF outline programs inherit oversized default advances that disagree with the proportional widths in hmtx. Chromium/WebView2 uses those outline advances, spreading interface letters apart despite normal CSS tracking. The font builder now expands subroutines and writes each glyph's intended hmtx advance into its outline program while preserving the drawing instructions and name metadata. Regenerated WOFF2 files include this repair; source OTF files remain untouched. Font URLs include a cache version so older cached files are not reused.
+The supplied CFF outline programs inherit oversized default advances that disagree with the proportional widths in hmtx. Chromium/WebView2 uses those outline advances, spreading interface letters apart despite normal CSS tracking. The font builder now expands subroutines and writes each glyph's intended hmtx advance into its outline program while preserving the drawing instructions and name metadata. Regenerated WOFF2 files include this repair; source OTF files remain untouched. At the time, font URLs carried a `?v=metrics-1` cache version; the current source instead relies on Vite content fingerprints (see the next section), so changed bytes always get a new URL.
 
 The issue was reproduced in the browser Settings screen: the 28 px heading measured 341.828 px before the repair and 103.453 px afterward. Regression checks cover every bundled glyph's outline advance, sampled outline geometry and preserved font metadata. Run `python -m unittest discover -s scripts -p test_font_metrics.py`. This is subsequent work after the published 1.0.4 release. A local installer was rebuilt successfully with the corrected fonts: Claws_1.0.4_x64-setup.exe, 2769214 bytes, SHA-256 9aadc5fedde599b89fc53e199366caac465a4c3ddcf4032b0c7454f07efce955. The repaired installer and its SHA-256 file are stored in `installers/` and committed with the font-spacing fix, as requested by the owner. The published release asset has not been replaced.
+
+### Recurring font report and prevention (working changes after 1.0.5)
+
+The reported recurrence was reproduced in the installed app and traced to the original published 1.0.4 executable, SHA-256 `af86afed1a002fecf7224b80e6a97e4ebda9c62d8bdaa2365fbe517298c0248b`. It matched the executable extracted from the original GitHub 1.0.4 asset, rather than the repaired repository installer. The installed app was updated to the already-published 1.0.5 using the installer's `/S /UPDATE` mode after confirming no active downloads. The existing queue was backed up; its job IDs survived migration. The real installed Settings screen was visually checked and has correct proportional spacing. No font was installed globally and no user cache was deleted.
+
+Preventive source changes use a private CSS alias (`Claws Polaris`) without `local()` substitution and import the committed WOFF2 files through Vite for automatic content fingerprints. `scripts/check-fonts.mjs` rejects unapproved font bytes both before a normal frontend build and in its final `dist` assets. The Python generator approves hashes only after checking every serialized CFF advance. Seven Node regressions cover font selection, build enforcement, corrupt source files, installed-font fallback, replaced packaged bytes, orphaned or legacy packaged font files, and running the check through a junction; two Python regressions retain metric/outline checks. DESIGN.md declares the alias as the same Polaris face; no design-hook suppression is needed. These preventive source changes are not part of the published 1.0.5 installer.
 
 ## Download reliability work included in 1.0.5 (branch `download-reliability`)
 
@@ -244,10 +250,10 @@ The owner also asked for a "testing release" (the installer is built, see sectio
 
 ## 5. Fonts
 
-- Current font: **Salted Flutters Polaris**. Four OTF sources and `LICENSE.txt` are committed under `assets/fonts/polaris/`; four WOFF2 files and the same license are committed under `public/fonts/`.
+- Current font: **Salted Flutters Polaris**. Four OTF sources and `LICENSE.txt` are committed under `assets/fonts/polaris/`; four WOFF2 files are committed under `src/assets/fonts/` and the license under `public/fonts/`.
 - Normal builds use the committed web fonts. Optional regeneration uses `pip install "fonttools[woff]"` and `python scripts/build-fonts.py`.
 - The script preserves name records and OpenType features, subsets the supported character ranges, and fails if required sources or the license are missing.
-- Vite copies the web fonts and license to `dist/fonts/`; Tauri embeds them in the application. No separate font installation is required.
+- Vite fingerprints the web fonts into `dist/assets/` and copies the license to `dist/fonts/`; Tauri embeds them in the application. No separate font installation is required.
 
 ## 6. Speed work and measurements (this PC)
 
@@ -337,10 +343,10 @@ npm run tauri build                # NSIS installer
 - The installer goes to `src-tauri/target/release/bundle/nsis/Claws_0.1.0_x64-setup.exe`.
 - It is unsigned, so SmartScreen warns on first run.
 - Current installers include the bundled Polaris web fonts and license.
-- `npm run build` runs `tsc` and Vite.
+- `npm run build` runs `scripts/check-fonts.mjs`, `tsc`, Vite, then `scripts/check-fonts.mjs --dist` on the bundle.
 - `cargo clippy` was clean at the end of the session.
 
-**Release:** current releases bundle Polaris from `public/fonts/`. Keep that directory in release builds. The owner authorized publishing 1.0.4; its checks and artifact details are recorded at the top of this file.
+**Release:** current source imports Polaris from `src/assets/fonts/`, with the license in `public/fonts/`. Keep both in release builds. Earlier 1.0.4 publication is recorded at the top of this file.
 
 ## 11. Testing workflow (`scripts/dev/`)
 
@@ -368,7 +374,7 @@ The real WebView2 app can be driven over the local DevTools port. Never leave it
 
 ## 12. Suggested next steps
 
-- The work from sections 14–16 shipped in earlier releases. Current packaging and release status are recorded at the top of this file; retain `public/fonts/` in builds.
+- The work from sections 14–16 shipped in earlier releases. Current packaging and release status are recorded at the top of this file; retain `src/assets/fonts/` and `public/fonts/LICENSE.txt` in builds.
 - Test a non-YouTube site (Vimeo, an HLS site), a playlist download, and Firefox cookie import.
 - Install and run the NSIS build once.
 - Consider:

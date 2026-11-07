@@ -38,40 +38,40 @@ colors:
   light-zoom: "#28c840"
 typography:
   large-title:
-    fontFamily: "'Salted Flutters Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
+    fontFamily: "'Claws Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
     fontSize: "28px"
     fontWeight: 700
     lineHeight: 1.12
     letterSpacing: "-0.016em"
   headline:
-    fontFamily: "'Salted Flutters Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
+    fontFamily: "'Claws Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
     fontSize: "20px"
     fontWeight: 700
     lineHeight: 1.24
     letterSpacing: "-0.014em"
   title:
-    fontFamily: "'Salted Flutters Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
+    fontFamily: "'Claws Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
     fontSize: "14px"
     fontWeight: 650
     lineHeight: 1.3
     letterSpacing: "-0.01em"
   section-title:
-    fontFamily: "'Salted Flutters Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
+    fontFamily: "'Claws Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
     fontSize: "13px"
     fontWeight: 650
     letterSpacing: "-0.005em"
   body:
-    fontFamily: "'Salted Flutters Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
+    fontFamily: "'Claws Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
     fontSize: "13px"
     fontWeight: 400
     lineHeight: 1.42
     letterSpacing: "-0.003em"
   label:
-    fontFamily: "'Salted Flutters Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
+    fontFamily: "'Claws Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
     fontSize: "12.5px"
     fontWeight: 500
   caption:
-    fontFamily: "'Salted Flutters Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
+    fontFamily: "'Claws Polaris', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
     fontSize: "11.5px"
     fontWeight: 400
     lineHeight: 1.38
@@ -236,7 +236,7 @@ Neutral grey-white and graphite tints over whatever the desktop shows, with one 
 
 ## Typography
 
-**Display and Body Font:** Bundled Salted Flutters Polaris (with Segoe UI Variable Display/Text, Segoe UI, system-ui for missing glyphs)
+**Display and Body Font:** Bundled Salted Flutters Polaris, referenced internally as `Claws Polaris` to avoid installed-font substitution (with Segoe UI Variable Display/Text, Segoe UI, system-ui for missing glyphs)
 **Mono Font:** SF Mono (with ui-monospace, Cascadia Mono, Consolas)
 
 **Character:** One platform face throughout, set the way Apple sets it: heavy, tightly tracked titles over a small, slightly negative-tracked 13px body. Rank comes from size and weight, never from case.

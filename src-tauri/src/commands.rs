@@ -262,8 +262,8 @@ pub async fn install_ffmpeg(app: AppHandle) -> Result<ToolsStatus> {
     Ok(tools::status(&app).await)
 }
 
-/// The URL is fixed here rather than taken from the UI, so this can only open Apple's
-/// fonts page.
+/// The URL is fixed here rather than taken from the UI, so this can only open the Salted
+/// Flutters Polaris project page.
 #[tauri::command]
 pub fn open_font_page(app: AppHandle) -> Result<()> {
     app.opener()

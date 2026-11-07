@@ -1,18 +1,21 @@
 """Rebuild the bundled Salted Flutters Polaris web fonts from committed sources.
 
 The four source weights and LICENSE.txt live in assets/fonts/polaris/. Outputs
-are committed in public/fonts/ so normal app builds do not require Python.
+are committed in src/assets/fonts/ so normal app builds do not require Python.
 Usage: pip install "fonttools[woff]" && python scripts/build-fonts.py
 """
 
 import shutil
+import hashlib
+import json
 from pathlib import Path
 
 from fontTools import subset
 from fontTools.ttLib import TTFont
+from fontTools.pens.recordingPen import RecordingPen
 
 ROOT = Path(__file__).resolve().parent.parent
-OUTPUT = ROOT / "public" / "fonts"
+OUTPUT = ROOT / "src" / "assets" / "fonts"
 
 WEIGHTS = {400: "Regular", 500: "Medium", 600: "Semibold", 700: "Bold"}
 
@@ -85,10 +88,18 @@ def build(source: Path, target: Path) -> None:
     repair_outline_advances(font)
     font.flavor = "woff2"
     font.save(target)
+    # Approve the serialized bytes only after every outline has the intended advance.
+    with TTFont(target) as saved:
+        charstrings = saved["CFF "].cff.topDictIndex[0].CharStrings
+        for name in saved.getGlyphOrder():
+            charstrings[name].draw(RecordingPen())
+            if charstrings[name].width != saved["hmtx"][name][0]:
+                raise ValueError(f"Incorrect serialized advance in {target.name}: {name}")
 
 
 def main() -> None:
     built = 0
+    approved = {}
     for family, folder, source_pattern, target_pattern in FAMILIES:
         sources = {w: folder / source_pattern.format(style=s) for w, s in WEIGHTS.items()}
         missing = [p.name for p in sources.values() if not p.is_file()]
@@ -100,13 +111,17 @@ def main() -> None:
         for weight, source in sources.items():
             target = OUTPUT / target_pattern.format(weight=weight)
             build(source, target)
+            approved[str(weight)] = hashlib.sha256(target.read_bytes()).hexdigest()
             print(f"{source.name:36} {source.stat().st_size // 1024:5} KB -> {target.stat().st_size // 1024:4} KB  {target.relative_to(ROOT)}")
         licence = folder / "LICENSE.txt"
         if licence.is_file():
-            shutil.copyfile(licence, OUTPUT / "LICENSE.txt")
+            license_output = ROOT / "public" / "fonts" / "LICENSE.txt"
+            license_output.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(licence, license_output)
         built += 1
     if not built:
         raise SystemExit("No Polaris font sources found.")
+    (ROOT / "scripts" / "font-integrity.json").write_text(json.dumps(approved, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
 if __name__ == "__main__":

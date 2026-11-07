@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "predev": "node scripts/check-fonts.mjs",
+    "build": "node scripts/check-fonts.mjs && tsc --noEmit && vite build && node scripts/check-fonts.mjs --dist",
+    "test:fonts": "node --test scripts/tests/font-bundle.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "test:queue": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .test-build src/queue-events.ts && node --test scripts/tests/queue-events.test.mjs"

@@ -1,29 +1,29 @@
-/* Salted Flutters Polaris is bundled in public/fonts/ and committed with the app.
-   The URL version invalidates cached fonts that predate the outline-width repair. */
+/* Private CSS alias prevents substitution by an installed, unrepaired Polaris.
+   Vite fingerprints these imports whenever the bundled bytes change. */
 @font-face {
-  font-family: "Salted Flutters Polaris";
-  src: url("/fonts/salted-flutters-polaris-400.woff2?v=metrics-1") format("woff2"), local("Salted Flutters Polaris Regular"), local("SaltedFluttersPolaris-Regular");
+  font-family: "Claws Polaris";
+  src: url("../assets/fonts/salted-flutters-polaris-400.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: block;
 }
 @font-face {
-  font-family: "Salted Flutters Polaris";
-  src: url("/fonts/salted-flutters-polaris-500.woff2?v=metrics-1") format("woff2"), local("Salted Flutters Polaris Medium"), local("SaltedFluttersPolaris-Medium");
+  font-family: "Claws Polaris";
+  src: url("../assets/fonts/salted-flutters-polaris-500.woff2") format("woff2");
   font-weight: 500;
   font-style: normal;
   font-display: block;
 }
 @font-face {
-  font-family: "Salted Flutters Polaris";
-  src: url("/fonts/salted-flutters-polaris-600.woff2?v=metrics-1") format("woff2"), local("Salted Flutters Polaris Semibold"), local("SaltedFluttersPolaris-Semibold");
+  font-family: "Claws Polaris";
+  src: url("../assets/fonts/salted-flutters-polaris-600.woff2") format("woff2");
   font-weight: 600;
   font-style: normal;
   font-display: block;
 }
 @font-face {
-  font-family: "Salted Flutters Polaris";
-  src: url("/fonts/salted-flutters-polaris-700.woff2?v=metrics-1") format("woff2"), local("Salted Flutters Polaris Bold"), local("SaltedFluttersPolaris-Bold");
+  font-family: "Claws Polaris";
+  src: url("../assets/fonts/salted-flutters-polaris-700.woff2") format("woff2");
   font-weight: 700;
   font-style: normal;
   font-display: block;
