@@ -1,5 +1,6 @@
 import { h } from "./dom";
 import { icon, type IconName } from "./icons";
+import { canAnimate } from "./motion";
 
 interface ButtonOptions {
   label?: string;
@@ -326,6 +327,8 @@ export function confirmSheet(title: string, message: string, actions: SheetActio
     });
     const close = dialog.close.bind(dialog);
     dialog.close = () => {
+      // No departure with reduced motion or in a hidden window: the sheet just closes.
+      if (!canAnimate()) return close();
       const out = dialog.animate([{ opacity: 1, transform: "none" }, { opacity: 0, transform: "scale(0.96)" }], {
         duration: 160,
         easing: "cubic-bezier(0.4, 0, 1, 1)",

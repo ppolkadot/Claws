@@ -2,7 +2,10 @@
 // Measures what the Queue view costs the main thread, in the real frontend running in a
 // headless Edge/Chrome against the dev mock (npm run dev). No backend, no live sites.
 //
-//   node scripts/dev/queue-bench.mjs [--protocol legacy|v1] [--browser <exe>] [--out file.json]
+//   node scripts/dev/queue-bench.mjs [--protocol legacy|v1] [--progress unknown|known] [--browser <exe>] [--out file.json]
+//
+// --progress known sends progressKnown: true, so the rows draw the determinate fill (and its
+// transition) instead of the indeterminate sheen; the default keeps the recorded baseline's setup.
 //
 // For each queue size (1, 100, 500 added jobs) and active-transfer count (1, 3, 8):
 //   1. adds the jobs (legacy: one job-update event per job; v1: one jobs-added batch),
@@ -20,6 +23,7 @@ const args = Object.fromEntries(
   process.argv.slice(2).reduce((pairs, value, i, all) => (value.startsWith("--") ? [...pairs, [value.slice(2), all[i + 1]]] : pairs), []),
 );
 const protocol = args.protocol ?? "v1";
+const progressKind = args.progress ?? "unknown";
 const browser = args.browser ?? "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe";
 const repo = resolve(import.meta.dirname, "..", "..");
 const port = 1431;
@@ -84,7 +88,7 @@ const pageHelpers = (protocol) => `
     frame: () => new Promise((r) => requestAnimationFrame(() => r())),
     revision: 1000,
     job(id, i, status, progress) {
-      return { id, url: 'https://example.com/b/' + id, title: 'Bench job ' + i, thumbnail: null, uploader: 'Bench', duration: 60,
+      return { progressKnown: ${progressKind === "known"} && status === 'downloading', id, url: 'https://example.com/b/' + id, title: 'Bench job ' + i, thumbnail: null, uploader: 'Bench', duration: 60,
         options: { mode: 'video', maxHeight: null, audioFormat: 'mp3', subtitleLangs: [], autoSubs: false, embedSubs: false, fastSave: false },
         status, progress, speed: 5000000, eta: 30, filePath: null, error: null, createdAt: 1e13 + i,
         downloadedBytes: null, totalBytes: null, progressEstimated: false, revision: ++this.revision };
@@ -159,6 +163,7 @@ try {
       const progressEvents = active * rounds;
       const result = {
         protocol,
+        progressKind,
         addedJobs: size,
         activeTransfers: active,
         renderedRows: rows,
@@ -166,7 +171,7 @@ try {
         progress: { events: progressEvents, ...diff(m1, m2), longTasks: lt2.count, longestTaskMs: lt2.longestMs, counters: delta(s1, s2), scriptMsPerEvent: +((m2.script - m1.script) / progressEvents).toFixed(3) },
       };
       results.push(result);
-      console.log(`${protocol} jobs=${size} active=${active}: add ${result.add.scriptMs} ms script, ${result.add.longTasks} long (longest ${result.add.longestTaskMs} ms); progress ${result.progress.scriptMsPerEvent} ms/event, ${result.progress.longTasks} long; rows ${rows}`);
+      console.log(`${protocol}/${progressKind} jobs=${size} active=${active}: add ${result.add.scriptMs} ms script, ${result.add.longTasks} long (longest ${result.add.longestTaskMs} ms); progress ${result.progress.scriptMsPerEvent} ms/event, ${result.progress.longTasks} long; rows ${rows}`);
     }
   }
 } finally {

@@ -294,6 +294,11 @@ html[data-backdrop="none"][data-theme="dark"] .glass {
   transform: scaleX(var(--p, 0));
   transition: transform var(--spring-smooth-d) var(--spring-smooth), background-color 0.3s;
 }
+/* Set for the frame that draws a jump (first paint, status change, retry, a lower value):
+   the fill shows the real value at once instead of gliding there or sliding back. */
+.bar-snap .bar-fill {
+  transition: background-color 0.3s;
+}
 
 .file-drag {
   cursor: grab;
@@ -303,6 +308,10 @@ html[data-backdrop="none"][data-theme="dark"] .glass {
   outline: 2px solid var(--blue);
   outline-offset: 2px;
 }
+/* Unknown size: a sheen that crosses the track, saying "working" without a fake amount.
+   It moves by transform (the fill is 34% of the track, so -100% to 100/34 of its own
+   width is the same path as before), which needs no layout per frame. At rest (reduced
+   motion clamps the animation away) it is a static segment at the start of the track. */
 .bar.indeterminate .bar-fill {
   width: 34%;
   transform: none;
@@ -310,10 +319,10 @@ html[data-backdrop="none"][data-theme="dark"] .glass {
 }
 @keyframes slide {
   from {
-    margin-left: -34%;
+    transform: translateX(-100%);
   }
   to {
-    margin-left: 100%;
+    transform: translateX(294.12%);
   }
 }
 
