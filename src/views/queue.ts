@@ -5,7 +5,7 @@ import { button, toast } from "../ui/components";
 import { h, replace } from "../ui/dom";
 import { icon } from "../ui/icons";
 import { fileDragButton } from "../ui/file-drag";
-import { completionFeedback } from "../ui/motion";
+import { paintJobStatus } from "../ui/job-status";
 import { progressBar, setProgress } from "../ui/layout";
 import { collapseOut, expandIn } from "../ui/motion";
 import { videoOptionsText } from "../resolution";
@@ -138,9 +138,8 @@ function paintActions(refs: RowRefs, job: Job) {
 
 function paintRow(refs: RowRefs, job: Job, previous: Job | undefined) {
   refs.el.dataset.status = job.status;
-  refs.status.textContent = statusText(job);
-  if (job.status === "completed") refs.status.prepend(icon("check", 12), " ");
-  if (previous && previous.status !== job.status) completionFeedback(refs.status, job.status === "completed");
+  const changed = !!previous && previous.status !== job.status;
+  paintJobStatus(refs.status, statusText(job), job.status === "completed", changed, () => icon("check", 12));
   refs.status.title = job.status === "failed" ? job.error ?? "" : "";
   const unknown = job.status === "processing" || (job.status === "downloading" && !job.progressKnown);
   setProgress(refs.bar, unknown ? null : job.status === "completed" ? 1 : job.progress);

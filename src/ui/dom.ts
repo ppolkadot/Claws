@@ -22,8 +22,8 @@ export function h<K extends keyof HTMLElementTagNameMap>(
   if (props.text !== undefined) el.textContent = props.text;
   if (props.attrs) {
     for (const [key, value] of Object.entries(props.attrs)) {
-      if (value === undefined || value === false) continue;
-      el.setAttribute(key, value === true ? "" : String(value));
+      const text = attributeText(key, value);
+      if (text !== null) el.setAttribute(key, text);
     }
   }
   if (props.style) {
@@ -36,6 +36,18 @@ export function h<K extends keyof HTMLElementTagNameMap>(
   }
   append(el, children);
   return el;
+}
+
+/**
+ * The text h() writes for an attribute, or null to leave it out. `draggable` is an
+ * enumerated attribute, not a boolean one: leaving it out keeps the browser's default
+ * (images and links drag), so `draggable: false` must be written as "false".
+ */
+export function attributeText(key: string, value: string | number | boolean | undefined): string | null {
+  if (value === undefined) return null;
+  if (key === "draggable" && typeof value === "boolean") return String(value);
+  if (value === false) return null;
+  return value === true ? "" : String(value);
 }
 
 export function append(parent: Node, children: Child[]) {
