@@ -179,7 +179,7 @@ export function itemsFor(result: LookupResult | null): BatchItem[] {
 }
 
 /** The queue's identity for an item (downloader.rs enqueue: link and playlist position). */
-export function itemKey(item: BatchItem): string {
+export function itemKey(item: Pick<BatchItem, "url" | "playlistIndex">): string {
   const index = item.playlistIndex && item.playlistIndex > 0 ? item.playlistIndex : "";
   return `${index}
 ${item.url}`;

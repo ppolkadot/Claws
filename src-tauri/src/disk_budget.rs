@@ -57,6 +57,45 @@ pub fn audio_output(format: &str, source: Option<u64>, duration: Option<f64>) ->
     }
 }
 
+/// What one download does with the streams it selects, as far as disk space goes. Both the
+/// admission check (downloader.rs `Budget`) and the size preview (estimate.rs) size a run
+/// through this, so the preview shows exactly the peak admission would reserve.
+///
+/// Extension point: a later processing stage (a clipped range, an editing transcode) adds
+/// its own term here, so admission and the preview keep agreeing.
+#[derive(Clone, Copy, Debug)]
+pub struct RunPlan<'a> {
+    /// "video" or "audio".
+    pub mode: &'a str,
+    pub audio_format: &'a str,
+    /// Metadata or subtitles are written into the finished file (one more whole copy).
+    pub rewrite: bool,
+    pub duration: Option<f64>,
+}
+
+impl RunPlan<'_> {
+    fn converts_audio(&self) -> bool {
+        self.mode == "audio" && self.audio_format != "best"
+    }
+
+    /// Size of the file that is kept, or `None` when any input is unknown.
+    pub fn output(&self, streams: &[Option<u64>]) -> Option<u64> {
+        let total: u64 = streams.iter().copied().sum::<Option<u64>>()?;
+        if self.converts_audio() {
+            audio_output(self.audio_format, Some(total), self.duration)
+        } else {
+            Some(total)
+        }
+    }
+
+    /// Peak bytes in the work folder, or `None` when it cannot be sized. A conversion whose
+    /// output cannot be sized is unknown, even when the source size is known.
+    pub fn peak(&self, streams: &[Option<u64>]) -> Option<u64> {
+        let audio_output = if self.converts_audio() { Some(self.output(streams)?) } else { None };
+        peak_bytes(streams, Steps { merge: streams.len() > 1, rewrite: self.rewrite, audio_output })
+    }
+}
+
 pub fn margin(additional: u64) -> u64 {
     MIN_MARGIN.max(additional / 10)
 }
@@ -69,9 +108,16 @@ pub struct Shortfall {
     pub available: u64,
 }
 
+/// Free bytes a download needs for `additional` bytes of demand: the demand and its safety
+/// margin. Admission (`check`) and the size preview (estimate.rs) both use this, so the
+/// free space the preview names is the free space admission asks for.
+pub fn required(additional: u64) -> u64 {
+    additional.saturating_add(margin(additional))
+}
+
 /// Whether `additional` bytes (plus margin) fit in `free` after `reserved_by_others`.
 pub fn check(additional: u64, free: u64, reserved_by_others: u64) -> Result<(), Shortfall> {
-    let required = additional + margin(additional);
+    let required = required(additional);
     let available = free.saturating_sub(reserved_by_others);
     if required <= available {
         Ok(())
@@ -225,6 +271,45 @@ mod tests {
         assert_eq!(audio_output("wav", Some(100), Some(60.0)), Some(60 * 192_000));
         let steps = Steps { audio_output: audio_output("wav", Some(50 * MIB), Some(3600.0)), ..Steps::default() };
         assert_eq!(peak_bytes(&[Some(50 * MIB)], steps), Some(50 * MIB + 3600 * 192_000));
+    }
+
+    fn plan<'a>(mode: &'a str, audio_format: &'a str, rewrite: bool, duration: Option<f64>) -> RunPlan<'a> {
+        RunPlan { mode, audio_format, rewrite, duration }
+    }
+
+    #[test]
+    fn a_run_plan_gives_the_peak_admission_reserves() {
+        // Merged video: one extra copy, whether or not something rewrites it afterwards.
+        let streams = [Some(4 * GIB), Some(GIB / 4)];
+        assert_eq!(plan("video", "mp3", false, None).peak(&streams), Some(2 * (4 * GIB + GIB / 4)));
+        assert_eq!(plan("video", "mp3", true, None).peak(&streams), Some(2 * (4 * GIB + GIB / 4)));
+        // A single combined format is copied only when metadata or subtitles go into it.
+        assert_eq!(plan("video", "mp3", false, None).peak(&[Some(GIB)]), Some(GIB));
+        assert_eq!(plan("video", "mp3", true, None).peak(&[Some(GIB)]), Some(2 * GIB));
+        // Audio conversion keeps the source until the output is complete.
+        assert_eq!(plan("audio", "mp3", true, Some(60.0)).peak(&[Some(100)]), Some(200));
+        assert_eq!(plan("audio", "wav", false, Some(60.0)).peak(&[Some(100)]), Some(100 + 60 * 192_000));
+        // "Original" is not converted.
+        assert_eq!(plan("audio", "best", false, Some(60.0)).peak(&[Some(100)]), Some(100));
+    }
+
+    #[test]
+    fn a_run_plan_never_turns_an_unknown_into_zero() {
+        assert_eq!(plan("video", "mp3", false, None).peak(&[Some(GIB), None]), None);
+        assert_eq!(plan("video", "mp3", false, None).output(&[Some(GIB), None]), None);
+        // WAV and FLAC are sized from the duration; without one the peak is unknown, even
+        // though the source size is known.
+        assert_eq!(plan("audio", "wav", false, None).peak(&[Some(GIB)]), None);
+        assert_eq!(plan("audio", "flac", false, None).output(&[Some(GIB)]), None);
+        assert_eq!(plan("audio", "mp3", false, None).peak(&[]), Some(0), "no streams is a plan of nothing, not an unknown");
+    }
+
+    #[test]
+    fn a_run_plan_names_the_size_of_what_is_kept() {
+        assert_eq!(plan("video", "mp3", true, None).output(&[Some(300), Some(10)]), Some(310));
+        assert_eq!(plan("audio", "mp3", false, Some(60.0)).output(&[Some(100)]), Some(100));
+        assert_eq!(plan("audio", "wav", false, Some(60.0)).output(&[Some(100)]), Some(60 * 192_000));
+        assert_eq!(plan("audio", "best", false, Some(60.0)).output(&[Some(100)]), Some(100));
     }
 
     #[test]

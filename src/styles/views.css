@@ -287,6 +287,31 @@
   color: var(--label);
   font-size: 12px;
 }
+/* Size preview: the download size, then the free space needed, as separate lines. */
+.estimate {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 14px;
+  color: var(--label);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.estimate[hidden] {
+  display: none;
+}
+/* An empty free-space line keeps its height, so the button below does not jump while an
+   estimate starts and settles. */
+.estimate-detail[data-empty="true"] {
+  visibility: hidden;
+}
+.estimate-size {
+  color: var(--text);
+  font-size: 13px;
+}
+.estimate[data-busy="true"] .estimate-size {
+  color: var(--label);
+}
 .actions .btn-primary {
   height: 34px;
   padding: 0 20px;

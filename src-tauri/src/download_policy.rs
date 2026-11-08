@@ -118,6 +118,25 @@ pub fn audio_selector(audio_format: &str, selection: AudioSelection) -> &'static
     }
 }
 
+/// The arguments that decide which streams are downloaded and what they become: format
+/// selection, sort, merge container and audio conversion. The download and the size
+/// preview (estimate.rs) both take them from here, so a preview sizes the streams the
+/// download will actually fetch.
+pub fn selection_args(options: &DownloadOptions, audio_selection: AudioSelection) -> Vec<String> {
+    if options.mode == "audio" {
+        let format = options.audio_format.as_str();
+        ["-f", audio_selector(format, audio_selection), "-x", "--audio-format", format, "--audio-quality", "0"]
+            .map(String::from)
+            .to_vec()
+    } else {
+        let sort = match options.max_height {
+            Some(h) => format!("res:{h},vcodec:h264,acodec:aac"),
+            None => "res,vcodec:h264,acodec:aac".to_string(),
+        };
+        vec!["-f".into(), "bv*+ba/b".into(), "-S".into(), sort, "--merge-output-format".into(), "mp4".into()]
+    }
+}
+
 pub fn download_args(
     common: Vec<String>,
     options: &DownloadOptions,
@@ -148,36 +167,23 @@ pub fn download_args(
         DONE_PRINT,
     ]);
 
+    // Which streams, and what they become: shared with the size preview.
+    let selection = selection_args(options, execution.audio_selection);
+    push(&selection.iter().map(String::as_str).collect::<Vec<_>>());
     if options.mode == "audio" {
-        push(&[
-            "-f",
-            audio_selector(&options.audio_format, execution.audio_selection),
-            "-x",
-            "--audio-format",
-            &options.audio_format,
-            "--audio-quality",
-            "0",
-        ]);
         if matches!(options.audio_format.as_str(), "mp3" | "m4a") {
             push(&["--embed-thumbnail"]);
         }
-    } else {
-        let sort = match options.max_height {
-            Some(h) => format!("res:{h},vcodec:h264,acodec:aac"),
-            None => "res,vcodec:h264,acodec:aac".to_string(),
-        };
-        push(&["-f", "bv*+ba/b", "-S", &sort, "--merge-output-format", "mp4"]);
-        if !options.subtitle_langs.is_empty() {
-            let langs = options.subtitle_langs.join(",");
-            push(&["--write-subs", "--sub-langs", &langs]);
-            if options.auto_subs {
-                push(&["--write-auto-subs"]);
-            }
-            if options.embeds_subtitles() {
-                push(&["--embed-subs"]);
-            } else {
-                push(&["--convert-subs", "srt"]);
-            }
+    } else if !options.subtitle_langs.is_empty() {
+        let langs = options.subtitle_langs.join(",");
+        push(&["--write-subs", "--sub-langs", &langs]);
+        if options.auto_subs {
+            push(&["--write-auto-subs"]);
+        }
+        if options.embeds_subtitles() {
+            push(&["--embed-subs"]);
+        } else {
+            push(&["--convert-subs", "srt"]);
         }
     }
     if execution.embed_metadata {
@@ -356,6 +362,38 @@ mod tests {
         assert_eq!(value_after(&args, "-f"), ["ba[acodec=opus]/ba/b"]);
         assert_eq!(value_after(&args, "--audio-format"), ["opus"]);
         assert!(args.contains(&"-x".to_string()));
+    }
+
+    #[test]
+    fn the_download_uses_exactly_the_shared_selection() {
+        // The size preview re-runs this selection, so the download must not add its own.
+        let cases = [
+            DownloadOptions { max_height: Some(1080), ..options("video") },
+            options("video"),
+            DownloadOptions { subtitle_langs: vec!["en".into()], embed_subs: true, ..options("video") },
+            DownloadOptions { audio_format: "m4a".into(), ..options("audio") },
+            DownloadOptions { audio_format: "best".into(), ..options("audio") },
+        ];
+        for selection in [AudioSelection::Best, AudioSelection::PreferMatching] {
+            let mut execution = execution();
+            execution.audio_selection = selection;
+            for options in &cases {
+                let shared = selection_args(options, selection);
+                let args = download_args(vec![], options, &execution, Path::new("W"), Source::Url("https://e.com/v"));
+                assert!(args.windows(shared.len()).any(|w| w == shared.as_slice()), "{options:?} {selection:?}: {args:?}");
+                for flag in ["-f", "-S", "--merge-output-format", "--audio-format"] {
+                    assert_eq!(value_after(&args, flag), value_after(&shared, flag), "{flag} only from the shared selection");
+                }
+            }
+        }
+        assert_eq!(
+            selection_args(&DownloadOptions { max_height: Some(720), ..options("video") }, AudioSelection::Best),
+            ["-f", "bv*+ba/b", "-S", "res:720,vcodec:h264,acodec:aac", "--merge-output-format", "mp4"]
+        );
+        assert_eq!(
+            selection_args(&DownloadOptions { audio_format: "opus".into(), ..options("audio") }, AudioSelection::PreferMatching),
+            ["-f", "ba[acodec=opus]/ba/b", "-x", "--audio-format", "opus", "--audio-quality", "0"]
+        );
     }
 
     #[test]

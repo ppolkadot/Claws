@@ -1,9 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+import type { DownloadEstimate } from "./download-estimates";
 import type { JobEvent, JobRemoved, JobsAdded } from "./queue-events";
 
-export type { JobEvent, JobRemoved, JobsAdded };
+export type { DownloadEstimate, JobEvent, JobRemoved, JobsAdded };
 
 export type Theme = "system" | "light" | "dark";
 export type Backdrop = "glass" | "acrylic" | "mica" | "tabbed" | "none";
@@ -196,6 +197,12 @@ export const api = {
   quit: () => invoke<void>("quit_app"),
   probe: (url: string) => invoke<ProbeResult>("probe_url", { url }),
   cachedLink: (url: string) => invoke<CachedLink | null>("cached_link", { url }),
+  /**
+   * Download size and free space needed for one item with these options (estimate.rs).
+   * Display only: the download still checks the actual free space when it starts.
+   */
+  estimate: (url: string, playlistIndex: number | null, options: DownloadOptions) =>
+    invoke<DownloadEstimate>("estimate_download", { url, playlistIndex, options }),
   /** `source` is the link that was looked up, saved so its next lookup is instant. */
   enqueue: (items: EnqueueItem[], options: DownloadOptions, source: string | null) =>
     invoke<JobsAdded<Job>>("enqueue", { items, options, source }),

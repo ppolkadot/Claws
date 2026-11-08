@@ -1,11 +1,14 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { api, errorMessage, type DownloadOptions, type ProbeResult } from "../api";
+import { CallLimit, EstimateRun, PreviewEstimator, aggregate, describeRun, describeSingle } from "../download-estimates";
 import {
   MAX_LINKS,
   describeEnqueue,
   isBatchInput,
+  itemKey,
   parseLinks,
+  remainingItems,
   selectable,
   type BatchRow,
   type ParsedInput,
@@ -77,6 +80,107 @@ function batchOptions(choices: BatchChoices): DownloadOptions {
   };
 }
 
+/** One item to estimate, with the choices it was asked for. */
+interface EstimateItem {
+  url: string;
+  playlistIndex: number | null;
+  options: DownloadOptions;
+}
+
+type EstimateLine = {
+  root: HTMLElement;
+  text: HTMLElement;
+  size: HTMLElement;
+  detail: HTMLElement;
+  /** Visually hidden; written only when an estimate starts or settles, never per step. */
+  status: HTMLElement;
+  busy: boolean;
+};
+
+/** The size and free-space lines of an estimate, separate so neither hides the other. */
+function estimateLine(): EstimateLine {
+  const size = h("span", { class: "estimate-size" });
+  const detail = h("span", { class: "estimate-detail" });
+  // Not a live region itself: it is rewritten for every step of a run and every frame of
+  // the batch counts, which a screen reader would read out again and again.
+  const text = h(
+    "p",
+    {
+      class: "estimate",
+      attrs: { title: "Estimated from what the site reports. Claws checks the actual free space again when each download starts." },
+    },
+    size,
+    detail,
+  );
+  text.hidden = true;
+  const status = h("span", { class: "visually-hidden", attrs: { role: "status", "aria-live": "polite" } });
+  return { root: h("div", { class: "estimate-wrap" }, text, status), text, size, detail, status, busy: false };
+}
+
+function setText(el: HTMLElement, text: string) {
+  if (el.textContent !== text) el.textContent = text;
+}
+
+/**
+ * Paints an estimate. The free-space line keeps its height while it is empty, so the
+ * Download button below does not move each time an estimate starts and settles. A screen
+ * reader hears the outcome once it settles (and, with `announceStart`, that it started).
+ */
+function paintLine(line: EstimateLine, size: string, detail: string, busy = false, announceStart = false) {
+  setText(line.size, size);
+  setText(line.detail, detail || "\u00a0");
+  line.detail.dataset.empty = String(!detail);
+  line.text.hidden = !size;
+  line.text.dataset.busy = String(busy);
+  if (busy && !line.busy && announceStart && size) setText(line.status, size);
+  else if (!busy && line.busy && size) setText(line.status, detail ? `${size}. ${detail}` : size);
+  line.busy = busy;
+}
+
+/** Ignores clicks for this long after a run starts (the second click of a double click). */
+const STOP_GUARD_MS = 600;
+
+/**
+ * The Estimate Sizes button of a list. It becomes Stop Estimating while a run goes; the
+ * second click of a double click, or Enter held down, does not stop the run it started.
+ */
+function estimateButton(run: EstimateRun<EstimateItem>, start: () => void): HTMLButtonElement {
+  let startedAt = -Infinity;
+  const btn: HTMLButtonElement = button({
+    label: "Estimate Sizes",
+    variant: "plain",
+    size: "small",
+    onClick: () => {
+      if (run.state.running) {
+        if (performance.now() - startedAt >= STOP_GUARD_MS) run.cancel();
+        return;
+      }
+      if (btn.getAttribute("aria-disabled") === "true") return;
+      startedAt = performance.now();
+      start();
+    },
+  });
+  // Enter held down repeats clicks; only the first press counts.
+  btn.addEventListener("keydown", (event) => {
+    if (event.repeat && (event.key === "Enter" || event.key === " ")) event.preventDefault();
+  });
+  return btn;
+}
+
+/**
+ * A run's key: the choices it was asked with. The items it covers are followed apart
+ * (EstimateRun.follow), by the queue's identity for each item, not by position or row id.
+ */
+function runKey(options: DownloadOptions, settings: unknown[]): string {
+  return JSON.stringify([options, settings]);
+}
+
+/**
+ * Estimate calls running at once, across the single preview, a playlist's run and the
+ * batch's run, and across views: a reset run's calls keep their slots until they answer.
+ */
+const estimateCalls = new CallLimit();
+
 interface BatchRowRefs {
   pick: HTMLButtonElement;
   thumb: HTMLElement;
@@ -124,6 +228,26 @@ export const mountDownload: MountView = (container, ctx) => {
   let freshness: "fresh" | "checking" | "stale" = "fresh";
   let staleReason = "";
   let freshnessEl: HTMLElement | null = null;
+
+  // ---- Size previews (display only; the download checks free space when it starts) ----
+  /** One link: follows the choices, debounced, latest answer only. */
+  let previewLine: EstimateLine | null = null;
+  const preview = new PreviewEstimator(
+    (key) => {
+      const [url, options] = JSON.parse(key) as [string, DownloadOptions];
+      return api.estimate(url, null, options);
+    },
+    { calls: estimateCalls, onChange: () => paintPreviewEstimate() },
+  );
+  const estimateItem = (item: EstimateItem) => api.estimate(item.url, item.playlistIndex, item.options);
+  // Repeats are dropped by the queue's identity (enqueue adds each item once).
+  const runOptions = { calls: estimateCalls, id: (item: EstimateItem) => itemKey(item) };
+  /** A playlist's selected entries, only when asked ("Estimate Sizes"). */
+  let paintListEstimate: (() => void) | null = null;
+  const listRun = new EstimateRun<EstimateItem>(estimateItem, { ...runOptions, onChange: () => paintListEstimate?.() });
+  /** The batch's selected links, only when asked. */
+  let paintBatchEstimate: (() => void) | null = null;
+  const batchRun = new EstimateRun<EstimateItem>(estimateItem, { ...runOptions, onChange: () => paintBatchEstimate?.() });
 
   // A text area that looks like a one-line field until it holds several lines: one link
   // per line makes a batch.
@@ -241,6 +365,8 @@ export const mountDownload: MountView = (container, ctx) => {
     fastSave = false;
     selected = new Set(next.entries.map((_, i) => i));
     phase = "result";
+    preview.cancel();
+    listRun.reset();
   }
 
   /** When this is unchanged, a refresh redraws nothing. */
@@ -253,6 +379,9 @@ export const mountDownload: MountView = (container, ctx) => {
     result = next;
     subs = new Set([...subs].filter((code) => next.subtitles.some((s) => s.code === code)));
     if (!before || before.entries.length !== next.entries.length) selected = new Set(next.entries.map((_, i) => i));
+    // Sizes estimated for other videos do not describe these.
+    const urls = (r: ProbeResult) => JSON.stringify(r.entries.map((e) => [e.url, e.playlistIndex]));
+    if (!before || urls(before) !== urls(next)) listRun.reset();
   }
 
   function showError(title: string, text: string, retry = true) {
@@ -321,6 +450,7 @@ export const mountDownload: MountView = (container, ctx) => {
         } else {
           result = probed;
           paintFreshness();
+          scheduleEstimate(); // the lookup is cached now, so the preview needs no network
         }
         return;
       }
@@ -332,6 +462,8 @@ export const mountDownload: MountView = (container, ctx) => {
         freshness = "stale";
         staleReason = errorMessage(error);
         paintFreshness();
+        // The cached details may still answer offline; if not, the line says Size unknown.
+        scheduleEstimate();
         return;
       }
       phase = "error";
@@ -386,6 +518,42 @@ export const mountDownload: MountView = (container, ctx) => {
       fastSave,
     };
   }
+
+  /**
+   * Asks for the preview that matches the current choices once the lookup has settled:
+   * current details let the backend estimate without reading the site again. When the
+   * check failed (stale) it still asks: the backend uses the cached details if they are
+   * still kept, and otherwise answers with an unknown size and its reason.
+   */
+  function scheduleEstimate() {
+    paintListEstimate?.();
+    if (!result || result.kind !== "video" || freshness === "checking") return;
+    // The settings the backend reads are part of the key, so a change of them asks again.
+    preview.request(JSON.stringify([result.url, currentOptions(), ...estimateSettings()]));
+  }
+
+  function paintPreviewEstimate() {
+    if (!previewLine) return;
+    const { size, detail } = describeSingle(preview.state);
+    paintLine(previewLine, size, detail, preview.state.status === "loading");
+  }
+
+  /** The line under a list, and its button, for a run of estimates. */
+  function paintRun(run: EstimateRun<EstimateItem>, line: EstimateLine, btn: HTMLButtonElement, count: number) {
+    const s = run.state;
+    const finished = run.key !== null && !s.running && s.done > 0;
+    paintLine(line, describeRun(run), finished ? (aggregate(s.results).tempText ?? "") : "", s.running, true);
+    // Named apart from the batch's own Stop (which stops reading links).
+    setText(btn.querySelector("span")!, s.running ? "Stop Estimating" : "Estimate Sizes");
+    const title = s.running
+      ? "Stops estimating. Sizes already read stay; estimates already running finish in the background and are ignored."
+      : `Reads the size of each selected video, up to ${run.maxItems}, three at a time. Nothing is read until you ask.`;
+    if (btn.title !== title) btn.title = title;
+    btn.setAttribute("aria-disabled", String(!s.running && count === 0));
+  }
+
+  /** The settings the backend reads for an estimate; a change of them asks again. */
+  const estimateSettings = () => [store.settings.audioSelection, store.settings.embedMetadata];
 
   async function startDownload(trigger?: HTMLButtonElement) {
     // A double click, or a click during the confirmation, would queue it twice.
@@ -494,7 +662,25 @@ export const mountDownload: MountView = (container, ctx) => {
     const list = h("div", { class: "entries", attrs: { role: "group", "aria-label": "Videos in this playlist" } });
     // Created with a label: an icon-only button is a fixed 28 px wide.
     const downloadBtn: HTMLButtonElement = button({ label: "Download", icon: "download", variant: "primary", onClick: () => void startDownload(downloadBtn) });
+    const listLine = estimateLine();
+    const listItems = (): EstimateItem[] => {
+      const options = currentOptions();
+      return r.entries.filter((_, i) => selected.has(i)).map((e) => ({ url: e.url, playlistIndex: e.playlistIndex, options }));
+    };
+    // Only the choices: the entries are followed by link and position (EstimateRun.follow),
+    // so a refreshed list with other videos at the same positions does not keep the old
+    // videos' sizes.
+    const listKey = () => runKey(currentOptions(), estimateSettings());
+    const estimateBtn = estimateButton(listRun, () => listRun.start(listItems(), listKey()));
+    paintListEstimate = () => {
+      // Other choices, or an estimated entry unticked: the estimate no longer applies (and
+      // follow resets it, which repaints). An entry ticked since is named as not included.
+      if (!listRun.follow(listKey(), listItems())) return;
+      paintRun(listRun, listLine, estimateBtn, selected.size);
+    };
+
     const paintCount = () => {
+      paintListEstimate?.();
       countLabel.textContent = `${selected.size} of ${r.entries.length} selected`;
       const label = selected.size === 1 ? "Download 1 Video" : `Download ${selected.size} Videos`;
       replace(downloadBtn, icon("download", 16), h("span", { text: selected.size === 0 ? "Download" : label }));
@@ -540,8 +726,9 @@ export const mountDownload: MountView = (container, ctx) => {
     return h(
       "div",
       { class: "entries-block" },
-      h("div", { class: "entries-head" }, sectionTitle("Videos"), countLabel, toggleAll),
+      h("div", { class: "entries-head" }, sectionTitle("Videos"), countLabel, estimateBtn, toggleAll),
       h("div", { class: "glass group" }, list),
+      listLine.root,
       h("div", { class: "actions" }, h("span", { class: "save-to", text: `Saves to ${folderName(store.settings.outputDir)}` }), downloadBtn),
     );
   }
@@ -575,7 +762,10 @@ export const mountDownload: MountView = (container, ctx) => {
               "Quality",
               [{ value: 0, label: "Best" }, ...qualities.map((q) => ({ value: q.value, label: q.label, hint: `Up to ${q.value}p` }))],
               height ?? 0,
-              (value) => (height = value === 0 ? null : value),
+              (value) => {
+                height = value === 0 ? null : value;
+                scheduleEstimate();
+              },
             ),
             qualities.length === 0
               ? "Quality options appear once the site reports them."
@@ -613,13 +803,17 @@ export const mountDownload: MountView = (container, ctx) => {
         rows.push(
           row(
             "Format",
-            chipRadio<string>("Audio format", AUDIO_FORMATS, audioFormat, (value) => (audioFormat = value)),
+            chipRadio<string>("Audio format", AUDIO_FORMATS, audioFormat, (value) => {
+              audioFormat = value;
+              scheduleEstimate();
+            }),
             audioHint(),
           ),
         );
       }
       rows.push(fastSaveRow());
       replace(body, group(...rows));
+      scheduleEstimate();
     };
 
     // Fast Save names exactly what it changes for these choices; it never changes the
@@ -658,7 +852,10 @@ export const mountDownload: MountView = (container, ctx) => {
     if (r.kind === "playlist") {
       wrap.append(renderEntries(r));
     } else {
+      previewLine = estimateLine();
+      paintPreviewEstimate();
       wrap.append(
+        previewLine.root,
         h(
           "div",
           { class: "actions" },
@@ -800,6 +997,25 @@ export const mountDownload: MountView = (container, ctx) => {
       },
     });
     const selectedNote = h("span", { class: "save-to" });
+    const batchLine = estimateLine();
+    // The items a download would send now: a row partly queued already counts only the rest.
+    const batchItems = (): EstimateItem[] => {
+      const options = batchOptions(session.choices);
+      return rows
+        .filter((r) => r.selected && selectable(r))
+        .flatMap((r) => remainingItems(r))
+        .map((item) => ({ url: item.url, playlistIndex: item.playlistIndex ?? null, options }));
+    };
+    const batchKey = () => runKey(batchOptions(session.choices), estimateSettings());
+    const estimateBtn = estimateButton(batchRun, () => batchRun.start(batchItems(), batchKey()));
+    paintBatchEstimate = () => {
+      // Other choices, or an estimated link unselected or sent to the queue: the estimate
+      // no longer applies (follow resets it, which repaints). A link that finishes reading
+      // while a run goes is selected on its own; it does not end the run, it is named as
+      // not included.
+      if (!batchRun.follow(batchKey(), batchItems())) return;
+      paintRun(batchRun, batchLine, estimateBtn, links.counts().selectedItems);
+    };
     const addBtn = button({
       label: "Download",
       icon: "download",
@@ -847,6 +1063,7 @@ export const mountDownload: MountView = (container, ctx) => {
       addLabel.textContent = n === 0 ? "Download" : n === 1 ? "Download 1 Video" : `Download ${n} Videos`;
       addBtn.setAttribute("aria-disabled", String(n === 0 || links.submitting));
       selectedNote.textContent = `${c.selectedRows} of ${rows.length} links selected  ·  Saves to ${folderName(store.settings.outputDir)}`;
+      paintBatchEstimate?.();
     };
     const scheduleCounts = () => {
       if (!countFrame) countFrame = requestAnimationFrame(paintCounts);
@@ -935,13 +1152,19 @@ export const mountDownload: MountView = (container, ctx) => {
         "Quality",
         [{ value: 0, label: "Best" }, ...qualities.map((q) => ({ value: q.value, label: q.label, hint: `Up to ${q.value}p` }))],
         choices.maxHeight ?? 0,
-        (value) => (choices.maxHeight = value === 0 ? null : value),
+        (value) => {
+          choices.maxHeight = value === 0 ? null : value;
+          scheduleCounts(); // an estimate for other choices no longer applies
+        },
       ),
       "Each video is saved at the best quality it has, up to this limit. MP4 when possible.",
     );
     const formatRow = row(
       "Format",
-      chipRadio<string>("Audio format", AUDIO_FORMATS, choices.audioFormat, (value) => (choices.audioFormat = value)),
+      chipRadio<string>("Audio format", AUDIO_FORMATS, choices.audioFormat, (value) => {
+        choices.audioFormat = value;
+        scheduleCounts();
+      }),
       audioHint(),
     );
     const showMode = () => {
@@ -958,6 +1181,7 @@ export const mountDownload: MountView = (container, ctx) => {
       (next) => {
         choices.mode = next;
         showMode();
+        scheduleCounts();
       },
     );
     showMode();
@@ -982,8 +1206,9 @@ export const mountDownload: MountView = (container, ctx) => {
         qualityRow,
         formatRow,
       ),
-      h("div", { class: "entries-head" }, sectionTitle("Links"), counts, announcer, stopBtn, retryBtn, toggleAll, clearBtn),
+      h("div", { class: "entries-head" }, sectionTitle("Links"), counts, announcer, stopBtn, retryBtn, estimateBtn, toggleAll, clearBtn),
       h("div", { class: "glass group" }, list),
+      batchLine.root,
       h("div", { class: "actions" }, selectedNote, addBtn),
     );
   }
@@ -1059,6 +1284,15 @@ export const mountDownload: MountView = (container, ctx) => {
     stageAnimation = null;
     batchView?.dispose();
     batchView = null;
+    // The lines are rebuilt below; what they showed is kept only where it still applies.
+    previewLine = null;
+    paintListEstimate = null;
+    paintBatchEstimate = null;
+    if (phase !== "result") {
+      preview.cancel();
+      listRun.reset();
+    }
+    if (phase !== "batch") batchRun.reset();
     const hadFocus = stage.contains(document.activeElement);
     const key = stageKey();
     const changed = key !== shownKey;
@@ -1154,6 +1388,13 @@ export const mountDownload: MountView = (container, ctx) => {
     batchView?.dispose();
     batchView = null;
     stageAnimation?.cancel();
+    // Estimates still running answer into nothing.
+    previewLine = null;
+    paintListEstimate = null;
+    paintBatchEstimate = null;
+    preview.cancel();
+    listRun.reset();
+    batchRun.reset();
     ticket += 1; // replies to lookups still running are ignored
     lastUrl = "";
   };

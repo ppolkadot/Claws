@@ -88,7 +88,7 @@ impl DownloadOptions {
         self.embed_subs && !self.fast_save
     }
 
-    fn validate(&mut self) -> Result<()> {
+    pub(crate) fn validate(&mut self) -> Result<()> {
         if self.mode != "video" && self.mode != "audio" {
             return Err(AppError::msg("Unknown download type."));
         }
@@ -1348,16 +1348,14 @@ impl Budget {
                 self.watching = true;
                 return None;
             };
-            let total: Option<u64> = sizes.iter().copied().sum();
-            let steps = disk_budget::Steps {
-                merge: sizes.len() > 1,
+            // The same formula the size preview shows (estimate.rs).
+            let plan = disk_budget::RunPlan {
+                mode: &self.mode,
+                audio_format: &self.audio_format,
                 rewrite: self.rewrite,
-                audio_output: (self.mode == "audio" && self.audio_format != "best")
-                    .then(|| disk_budget::audio_output(&self.audio_format, total, self.duration))
-                    .flatten(),
+                duration: self.duration,
             };
-            let unconvertible_audio = self.mode == "audio" && self.audio_format != "best" && steps.audio_output.is_none();
-            let Some(peak) = disk_budget::peak_bytes(&sizes, steps).filter(|_| !unconvertible_audio) else {
+            let Some(peak) = plan.peak(&sizes) else {
                 self.watching = true;
                 return None;
             };
