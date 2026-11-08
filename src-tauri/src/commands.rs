@@ -196,6 +196,42 @@ pub fn reveal_download(app: AppHandle, state: State<'_, AppState>, id: String) -
         .map_err(|e| AppError::msg(e.to_string()))
 }
 
+/// Starts Windows' real copy-only file drag on the UI/OLE thread.
+#[tauri::command]
+pub async fn drag_download(app: AppHandle, window: WebviewWindow, id: String) -> Result<bool> {
+    let path = {
+        let state = app.state::<AppState>();
+        let history = state.history.lock().unwrap();
+        crate::file_drag::recorded_file(&history, &id)?
+    };
+    #[cfg(all(windows, not(test)))]
+    {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        static DRAGGING: AtomicBool = AtomicBool::new(false);
+        if DRAGGING.swap(true, Ordering::SeqCst) {
+            return Err(AppError::msg("A file drag is already in progress."));
+        }
+        struct DragGuard;
+        impl Drop for DragGuard { fn drop(&mut self) { DRAGGING.store(false, Ordering::SeqCst); } }
+        let guard = DragGuard;
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        app.run_on_main_thread(move || {
+            let _guard = guard;
+            let dropped = Arc::new(AtomicBool::new(false));
+            let outcome = dropped.clone();
+            let result = drag::start_drag(&window, drag::DragItem::Files(vec![path]),
+                drag::Image::Raw(include_bytes!("../icons/32x32.png").to_vec()),
+                move |result, _| { outcome.store(matches!(result, drag::DragResult::Dropped), Ordering::SeqCst); },
+                drag::Options { mode: drag::DragMode::Copy, ..Default::default() })
+                .map(|()| dropped.load(Ordering::SeqCst)).map_err(|e| AppError::msg(e.to_string()));
+            let _ = sender.send(result);
+        })?;
+        receiver.await.map_err(|_| AppError::msg("The drag operation was interrupted."))?
+    }
+    #[cfg(any(not(windows), test))]
+    { let _ = (app, window, path); Err(AppError::msg("Native file dragging requires the Windows app.")) }
+}
+
 #[tauri::command]
 pub fn open_output_dir(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
     let dir = state.settings.lock().unwrap().output_dir.clone();

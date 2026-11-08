@@ -11,7 +11,8 @@ mod download_files;
 mod download_policy;
 mod downloader;
 mod error;
-mod estimate;
+mod estimate;
+mod file_drag;
 mod history;
 #[cfg(test)]
 mod lifecycle_tests;
@@ -132,7 +133,8 @@ pub fn run() {
             commands::save_settings,
             commands::list_history,
             commands::open_download,
-            commands::reveal_download,
+            commands::reveal_download,
+            commands::drag_download,
             commands::open_output_dir,
             commands::delete_history,
             commands::clear_history,
