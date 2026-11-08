@@ -3,7 +3,7 @@
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 
-import type { DownloadEstimate, DownloadOptions, EnqueueItem, HistoryItem, Job, JobEvent, JobRemoved, JobsAdded, ProbeResult, Settings } from "./api";
+import type { DownloadEstimate, DownloadOptions, EnqueueItem, HistoryItem, Job, JobEvent, JobRemoved, JobsAdded, ProbeResult, Resolution, Settings } from "./api";
 import { ALREADY_QUEUED } from "./download-input";
 
 function art(hueA: number, hueB: number): string {
@@ -19,7 +19,7 @@ function art(hueA: number, hueB: number): string {
 }
 
 const now = Date.now();
-const defaults: DownloadOptions = { mode: "video", maxHeight: 1080, audioFormat: "mp3", subtitleLangs: [], autoSubs: false, embedSubs: false, fastSave: false };
+const defaults: DownloadOptions = { mode: "video", maxHeight: 1080, videoPreset: "compatible", audioFormat: "mp3", subtitleLangs: [], autoSubs: false, embedSubs: false, fastSave: false };
 
 const settings: Settings = {
   schemaVersion: 2,
@@ -61,13 +61,14 @@ const jobs: Job[] = [
   job("a2", "Sample: Studio session, full set", [280, 330], { status: "processing", progress: 0.99, createdAt: now - 4000, options: { ...defaults, mode: "audio", audioFormat: "mp3" } }),
   job("a3", "Sample: Interview, part two", [20, 350], { status: "paused", progress: 0.34, createdAt: now - 3000 }),
   job("a4", "Sample: A very long title that should be truncated gracefully when the window is narrow", [140, 190], { status: "failed", error: "This video is private. Sign in with cookies to download it.", createdAt: now - 2000 }),
-  job("a5", "Sample: Mountain road, dawn", [330, 20], { status: "queued", createdAt: now - 1000 }),
+  job("a5", "Sample: Mountain road, dawn", [330, 20], { status: "queued", createdAt: now - 1000, options: { ...defaults, maxHeight: 4320, videoPreset: "original" } }),
   job("a6", "Sample: Cooking, ten minute pasta", [40, 10], { status: "completed", progress: 1, filePath: "C:\\Users\\Sample\\Downloads\\Claws\\pasta.mp4", createdAt: now }),
 ];
 
 const history: HistoryItem[] = [
   ["Sample: Cooking, ten minute pasta", [40, 10], "1080p", 184_000_000, 596],
   ["Sample: City lights, night walk", [250, 300], "4K", 912_000_000, 1310],
+  ["Sample: Glacier flyover", [180, 210], "4320p · Original", 2_480_000_000, 380],
   ["Sample: Piano improvisation no. 4", [300, 220], "MP3", 9_400_000, 402],
   ["Sample: Understanding tides", [190, 230], "720p", 96_000_000, 845],
   ["Sample: Garden tour in spring", [110, 160], "1080p", 241_000_000, 1033],
@@ -106,6 +107,36 @@ const sampleTitles = [
   "Sample: Lecture on tidal energy",
 ];
 
+/**
+ * Picture sizes for a sample link, as probe.rs reports them: "portrait" links are vertical
+ * video, "hd" links stop at 1080p, and the rest reach 8K, with a 5120×2880 step and a 4K stream
+ * that also comes in HDR.
+ */
+function sampleResolutions(url: string): Resolution[] {
+  const size = (width: number, height: number, vcodec: string, extra: Partial<Resolution> = {}): Resolution => ({
+    shortSide: Math.min(width, height),
+    width,
+    height,
+    vcodec,
+    dynamicRange: "SDR",
+    fps: 30,
+    ...extra,
+  });
+  if (url.includes("portrait")) return [size(1080, 1920, "avc1.640028"), size(720, 1280, "avc1.4d401f"), size(360, 640, "avc1.4d401e")];
+  const ladder = [
+    size(7680, 4320, "av01.0.17M.08"),
+    size(5120, 2880, "vp09.00.61.08"),
+    size(3840, 2160, "vp09.02.51.10", { dynamicRange: "HDR10", fps: 60 }),
+    size(2560, 1440, "vp09.00.50.08"),
+    size(1920, 1080, "avc1.640028"),
+    size(1280, 720, "avc1.4d401f"),
+    size(854, 480, "avc1.4d401e"),
+    size(640, 360, "avc1.4d401e"),
+    size(256, 144, "avc1.4d400c"),
+  ];
+  return url.includes("hd") ? ladder.filter((r) => r.shortSide <= 1080) : ladder;
+}
+
 const probe = (url: string): ProbeResult =>
   url.includes("list")
     ? {
@@ -135,7 +166,8 @@ const probe = (url: string): ProbeResult =>
         thumbnail: art(hash(url) % 360, (hash(url) + 60) % 360),
         duration: 120 + (hash(url) % 1800),
         site: "Sample Site",
-        heights: [2160, 1440, 1080, 720, 480, 360, 144],
+        heights: sampleResolutions(url).map((r) => r.shortSide),
+        resolutions: sampleResolutions(url),
         subtitles: [
           { code: "en", name: "English", auto: false },
           { code: "es", name: "Spanish", auto: false },
@@ -204,19 +236,28 @@ async function estimateLink(url: string, playlistIndex: number | null, options: 
       unknownReason: null,
     };
   }
-  const ladder: [number, number, number][] = [[2160, 3840, 16000], [1440, 2560, 8000], [1080, 1920, 4000], [720, 1280, 2000], [480, 854, 900], [360, 640, 500], [240, 426, 250], [144, 256, 100]];
-  const [height, width, kbps] = ladder.find(([h]) => h <= (options.maxHeight ?? 2160)) ?? ladder[ladder.length - 1];
+  // The largest size within the cap (by shorter side), else the smallest above it, as
+  // yt-dlp's `res` sort picks; a playlist item uses the default ladder.
+  const sizes = sampleResolutions(url);
+  const cap = options.maxHeight ?? Infinity;
+  const chosen = sizes.find((r) => r.shortSide <= cap) ?? sizes[sizes.length - 1];
+  const kbps = Math.max(100, Math.round((chosen.width! * chosen.height!) / 500));
   const video = bytesAt(kbps);
-  const audio = bytesAt(128);
+  // Compatible prefers H.264 and AAC (only up to 1080p here) and saves MP4. Original takes
+  // the site's own best streams, Opus audio included, so the file is MKV.
+  const original = options.videoPreset === "original";
+  const vcodec = original || chosen.shortSide > 1080 ? chosen.vcodec! : "avc1.640028";
+  const sound = original ? { formatId: "a251", acodec: "opus", ext: "webm", kbps: 160 } : { formatId: "a140", acodec: "mp4a.40.2", ext: "m4a", kbps: 128 };
+  const audio = bytesAt(sound.kbps);
   const exact = key % 3 === 0;
   return {
     downloadBytes: video + audio,
     confidence: "approximate",
     parts: [
-      { formatId: `v${height}`, vcodec: height > 1080 ? "vp09.00.50.08" : "avc1.640028", acodec: null, ext: height > 1080 ? "webm" : "mp4", width, height, bytes: video, exact },
-      { formatId: "a140", vcodec: null, acodec: "mp4a.40.2", ext: "m4a", width: null, height: null, bytes: audio, exact: false },
+      { formatId: `v${chosen.shortSide}`, vcodec, acodec: null, ext: vcodec.startsWith("avc1") ? "mp4" : "webm", width: chosen.width, height: chosen.height, bytes: video, exact },
+      { formatId: sound.formatId, vcodec: null, acodec: sound.acodec, ext: sound.ext, width: null, height: null, bytes: audio, exact: false },
     ],
-    container: "mp4",
+    container: original && !(vcodec.startsWith("avc1") && sound.acodec.startsWith("mp4a")) ? "mkv" : "mp4",
     // Merged: one extra copy of both streams (disk_budget.rs).
     peakTempBytes: 2 * (video + audio),
     requiredFreeBytes: required(2 * (video + audio)),
@@ -238,9 +279,16 @@ const queueKey = (url: string, playlistIndex: number | null | undefined, options
   JSON.stringify([url, playlistIndex && playlistIndex > 0 ? playlistIndex : null, options]);
 
 /** Validates, de-duplicates and announces the batch the way the backend does. */
-function enqueue(items: EnqueueItem[], options: DownloadOptions): JobsAdded<Job> {
+function enqueue(items: EnqueueItem[], requested: DownloadOptions): JobsAdded<Job> {
   if (items.length === 0) throw "Nothing to download.";
   if (items.length > 500) throw "Too many items at once (limit 500).";
+  // DownloadOptions::validate: no editing preset yet, no video preset for audio.
+  if (requested.videoPreset === "editingProRes") throw "The editing preset is not available yet.";
+  const options: DownloadOptions = {
+    ...requested,
+    videoPreset: requested.mode === "audio" ? "compatible" : (requested.videoPreset ?? "compatible"),
+    maxHeight: requested.maxHeight == null ? null : Math.min(8640, Math.max(144, requested.maxHeight)),
+  };
   // Built fresh for each call from jobs not finished, cancelled or failed, as the backend
   // does; a refused call changes nothing.
   const pending = new Set(
@@ -318,6 +366,7 @@ export function installMock() {
         case "cached_link":
           return null;
         case "estimate_download":
+          if ((payload.options as DownloadOptions).videoPreset === "editingProRes") throw "The editing preset is not available yet.";
           return estimateLink(String(payload.url), (payload.playlistIndex as number | null) ?? null, payload.options as DownloadOptions);
         case "enqueue":
           return enqueue(payload.items as EnqueueItem[], payload.options as DownloadOptions);

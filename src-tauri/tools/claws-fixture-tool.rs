@@ -8,8 +8,9 @@
 //!   claws-fixture-tool -P <dir> [--scenario ok|fail|hang|tree] [--bytes N] [--name clip]
 //!
 //! When Claws itself runs it as yt-dlp, the scenario and name come from the job's link,
-//! `https://fixture.invalid/<scenario>[/<name>[/<planned bytes>]]`, and every start is appended to
-//! `fixture-starts.log` two folders above `-P` (the output folder of a work folder).
+//! `https://fixture.invalid/<scenario>[/<name>[/<planned bytes>[/<merged extension>]]]`, and
+//! every start is appended to `fixture-starts.log` two folders above `-P` (the output folder
+//! of a work folder), with the selection it was given (`-S` and `--merge-output-format`).
 //!
 //! ok    two streams (video, audio) with progress, a merge, then CLAWSDONE; exit 0
 //! ok-fast  like ok, but the merge does not pause (for races with a late notification)
@@ -26,9 +27,13 @@ fn main() {
     let mut scenario = "ok".to_string();
     let mut bytes: u64 = 1 << 20;
     let mut name = "clip".to_string();
+    let mut merged_ext = "mp4".to_string();
+    let (mut sort, mut merge) = (String::from("-"), String::from("-"));
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-P" => dir = PathBuf::from(args.next().expect("-P needs a directory")),
+            "-S" => sort = args.next().expect("-S needs a value"),
+            "--merge-output-format" => merge = args.next().expect("--merge-output-format needs a value"),
             "--scenario" => scenario = args.next().expect("--scenario needs a value"),
             "--bytes" => bytes = args.next().and_then(|b| b.parse().ok()).expect("--bytes needs a number"),
             "--name" => name = args.next().expect("--name needs a value"),
@@ -43,6 +48,9 @@ fn main() {
                 if let Some(b) = parts.next().and_then(|b| b.parse().ok()) {
                     bytes = b;
                 }
+                if let Some(ext) = parts.next() {
+                    merged_ext = ext.to_string();
+                }
             }
             _ => {}
         }
@@ -51,7 +59,7 @@ fn main() {
     if let Some(output) = dir.parent().and_then(|p| p.parent()) {
         use std::io::Write as _;
         if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(output.join("fixture-starts.log")) {
-            let _ = writeln!(log, "{scenario} {name} {}", dir.display());
+            let _ = writeln!(log, "{scenario} {name} {} sort={sort} merge={merge}", dir.display());
         }
     }
     let out = std::io::stdout();
@@ -87,7 +95,7 @@ fn main() {
             if scenario != "ok-fast" {
                 std::thread::sleep(Duration::from_millis(1500));
             }
-            let merged = dir.join(format!("{name}.mp4"));
+            let merged = dir.join(format!("{name}.{merged_ext}"));
             std::fs::write(&merged, b"merged").unwrap();
             let _ = std::fs::remove_file(video);
             let _ = std::fs::remove_file(audio);

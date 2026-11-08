@@ -1,6 +1,6 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 
-import { api, errorMessage, type DownloadOptions, type ProbeResult } from "../api";
+import { api, errorMessage, type DownloadOptions, type ProbeResult, type VideoPreset } from "../api";
 import { CallLimit, EstimateRun, PreviewEstimator, aggregate, describeRun, describeSingle } from "../download-estimates";
 import {
   MAX_LINKS,
@@ -14,6 +14,7 @@ import {
   type ParsedInput,
 } from "../download-input";
 import { formatDate, formatDuration, folderName } from "../format";
+import { VIDEO_PRESETS, capChoices, hasExactSizes, keptQuality, qualityChoices } from "../resolution";
 import { store, type BatchChoices, type BatchSession } from "../store";
 import { button, chipCheck, chipRadio, segmented, toast, toggle } from "../ui/components";
 import { clear, h, replace } from "../ui/dom";
@@ -29,7 +30,6 @@ const ROWS_PER_FRAME = 40;
 /** Skipped lines listed by name; the rest are counted. */
 const ISSUES_SHOWN = 6;
 
-const STANDARD_HEIGHTS = [2160, 1440, 1080, 720, 480, 360, 240, 144];
 const AUDIO_FORMATS = [
   { value: "mp3", label: "MP3" },
   { value: "m4a", label: "M4A" },
@@ -39,16 +39,28 @@ const AUDIO_FORMATS = [
   { value: "best", label: "Original" },
 ];
 
-function qualityChoices(heights: number[], playlist: boolean): { value: number; label: string }[] {
-  const label = (value: number) => (value === 2160 ? "4K" : `${value}p`);
-  // A flat playlist read has no formats; the choice is a cap, so any height works.
-  if (playlist && heights.length === 0) {
-    return STANDARD_HEIGHTS.filter((h) => h >= 360).map((value) => ({ value, label: label(value) }));
-  }
-  const max = heights[0] ?? 0;
-  let picks = STANDARD_HEIGHTS.filter((h) => heights.some((available) => available >= h * 0.95) && h <= max * 1.05);
-  if (picks.length === 0) picks = heights.slice(0, 6);
-  return picks.slice(0, 7).map((value) => ({ value, label: label(value) }));
+/**
+ * The video Format choice (Compatible or Original), with a hint that follows it. Updated in
+ * place, so the control in use keeps focus.
+ */
+function presetRow(value: VideoPreset, onChange: (next: VideoPreset) => void): HTMLElement {
+  const describe = (preset: VideoPreset) => VIDEO_PRESETS.find((p) => p.value === preset)?.hint ?? "";
+  const hint = h("span", { text: describe(value) });
+  const control = segmented<(typeof VIDEO_PRESETS)[number]["value"]>(
+    "Video format",
+    VIDEO_PRESETS.map((p) => ({ value: p.value, label: p.label })),
+    value === "original" ? "original" : "compatible",
+    (next) => {
+      hint.textContent = describe(next);
+      onChange(next);
+    },
+  );
+  return row("Format", control.el, hint);
+}
+
+/** The Quality chips: Best, then each choice with its cap as the hint. */
+function qualityChips(choices: { value: number; label: string; hint: string }[], value: number | null, onChange: (next: number | null) => void): HTMLElement {
+  return chipRadio<number>("Quality", [{ value: 0, label: "Best" }, ...choices], value ?? 0, (next) => onChange(next === 0 ? null : next));
 }
 
 export function looksLikeUrl(text: string): boolean {
@@ -72,6 +84,7 @@ function batchOptions(choices: BatchChoices): DownloadOptions {
   return {
     mode: choices.mode,
     maxHeight: choices.mode === "video" ? choices.maxHeight : null,
+    videoPreset: choices.mode === "video" ? choices.videoPreset : "compatible",
     audioFormat: choices.audioFormat,
     subtitleLangs: [],
     autoSubs: false,
@@ -217,6 +230,7 @@ export const mountDownload: MountView = (container, ctx) => {
 
   let mode: DownloadOptions["mode"] = "video";
   let height: number | null = null;
+  let videoPreset: VideoPreset = "compatible";
   let audioFormat = "mp3";
   let subs = new Set<string>();
   let embedSubs = false;
@@ -359,6 +373,7 @@ export const mountDownload: MountView = (container, ctx) => {
     result = next;
     mode = "video";
     height = null;
+    videoPreset = "compatible";
     audioFormat = "mp3";
     subs = new Set();
     embedSubs = false;
@@ -371,13 +386,17 @@ export const mountDownload: MountView = (container, ctx) => {
 
   /** When this is unchanged, a refresh redraws nothing. */
   const shape = (r: ProbeResult) =>
-    JSON.stringify([r.title, r.thumbnail, r.duration, r.uploader, r.heights, r.subtitles.map((s) => s.code), r.entries.map((e) => e.url + e.title)]);
+    JSON.stringify([r.title, r.thumbnail, r.duration, r.uploader, r.heights, r.resolutions ?? null, r.subtitles.map((s) => s.code), r.entries.map((e) => e.url + e.title)]);
 
   /** Takes refreshed details while keeping the choices already made. */
   function adoptRefresh(next: ProbeResult) {
     const before = result;
     result = next;
     subs = new Set([...subs].filter((code) => next.subtitles.some((s) => s.code === code)));
+    // A size the refresh no longer offers (or a cap read from heights saved before exact
+    // sizes, which for portrait video were the longer side) goes back to Best, so the cap
+    // sent is always the chip shown as chosen.
+    height = keptQuality(height, qualityChoices(next, next.kind === "playlist"));
     if (!before || before.entries.length !== next.entries.length) selected = new Set(next.entries.map((_, i) => i));
     // Sizes estimated for other videos do not describe these.
     const urls = (r: ProbeResult) => JSON.stringify(r.entries.map((e) => [e.url, e.playlistIndex]));
@@ -511,6 +530,7 @@ export const mountDownload: MountView = (container, ctx) => {
     return {
       mode,
       maxHeight: mode === "video" ? height : null,
+      videoPreset: mode === "video" ? videoPreset : "compatible",
       audioFormat,
       subtitleLangs: mode === "video" ? chosenSubs : [],
       autoSubs: hasAuto,
@@ -735,7 +755,7 @@ export const mountDownload: MountView = (container, ctx) => {
 
   function renderOptions(r: ProbeResult): HTMLElement {
     const playlist = r.kind === "playlist";
-    const qualities = qualityChoices(r.heights, playlist);
+    const qualities = qualityChoices(r, playlist);
     const body = h("div", { class: "options-body" });
 
     const paint = () => {
@@ -758,21 +778,22 @@ export const mountDownload: MountView = (container, ctx) => {
         rows.push(
           row(
             "Quality",
-            chipRadio<number>(
-              "Quality",
-              [{ value: 0, label: "Best" }, ...qualities.map((q) => ({ value: q.value, label: q.label, hint: `Up to ${q.value}p` }))],
-              height ?? 0,
-              (value) => {
-                height = value === 0 ? null : value;
-                scheduleEstimate();
-              },
-            ),
+            qualityChips(qualities, height, (value) => {
+              height = value;
+              scheduleEstimate();
+            }),
             qualities.length === 0
               ? "Quality options appear once the site reports them."
               : playlist
-                ? "Each video is saved at the best quality it has, up to this limit. MP4 when possible."
-                : "Saved as MP4 when possible.",
+                ? "Each video is saved at the largest size it has, up to this limit. Nothing is upscaled."
+                : hasExactSizes(r)
+                  ? "The sizes this video is offered in, by the shorter side. Nothing is upscaled."
+                  : "Saved at the largest size this video has, up to this limit on its shorter side. Nothing is upscaled.",
           ),
+          presetRow(videoPreset, (next) => {
+            videoPreset = next;
+            scheduleEstimate();
+          }),
         );
         if (r.subtitles.length > 0) {
           rows.push(
@@ -1145,20 +1166,18 @@ export const mountDownload: MountView = (container, ctx) => {
     // Choices shared by the whole batch. The rows are shown or hidden, never rebuilt, so
     // the control in use keeps focus.
     const choices = session.choices;
-    const qualities = qualityChoices([], true);
     const qualityRow = row(
       "Quality",
-      chipRadio<number>(
-        "Quality",
-        [{ value: 0, label: "Best" }, ...qualities.map((q) => ({ value: q.value, label: q.label, hint: `Up to ${q.value}p` }))],
-        choices.maxHeight ?? 0,
-        (value) => {
-          choices.maxHeight = value === 0 ? null : value;
-          scheduleCounts(); // an estimate for other choices no longer applies
-        },
-      ),
-      "Each video is saved at the best quality it has, up to this limit. MP4 when possible.",
+      qualityChips(capChoices(), choices.maxHeight, (value) => {
+        choices.maxHeight = value;
+        scheduleCounts(); // an estimate for other choices no longer applies
+      }),
+      "Each video is saved at the largest size it has, up to this limit. Nothing is upscaled.",
     );
+    const presetChoice = presetRow(choices.videoPreset, (next) => {
+      choices.videoPreset = next;
+      scheduleCounts();
+    });
     const formatRow = row(
       "Format",
       chipRadio<string>("Audio format", AUDIO_FORMATS, choices.audioFormat, (value) => {
@@ -1169,6 +1188,7 @@ export const mountDownload: MountView = (container, ctx) => {
     );
     const showMode = () => {
       qualityRow.hidden = choices.mode !== "video";
+      presetChoice.hidden = choices.mode !== "video";
       formatRow.hidden = choices.mode !== "audio";
     };
     const typeSeg = segmented<"video" | "audio">(
@@ -1204,6 +1224,7 @@ export const mountDownload: MountView = (container, ctx) => {
       group(
         row("Type", typeSeg.el, "Applies to every link here. Subtitles can be chosen when a link is read on its own."),
         qualityRow,
+        presetChoice,
         formatRow,
       ),
       h("div", { class: "entries-head" }, sectionTitle("Links"), counts, announcer, stopBtn, retryBtn, estimateBtn, toggleAll, clearBtn),

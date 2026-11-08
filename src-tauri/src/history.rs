@@ -7,7 +7,8 @@ use tauri::{Emitter, Manager};
 
 use crate::AppHandle;
 
-use crate::downloader::Job;
+use crate::download_policy::VideoPreset;
+use crate::downloader::{DownloadOptions, Job};
 use crate::error::notify;
 use crate::state::AppState;
 use crate::store;
@@ -54,14 +55,7 @@ pub fn record(app: &AppHandle, job: &Job) -> crate::error::Result<()> {
         .as_deref()
         .and_then(|p| std::fs::metadata(p).ok())
         .map(|m| m.len());
-    let quality = match job.options.mode.as_str() {
-        "audio" => job.options.audio_format.to_uppercase(),
-        _ => job
-            .options
-            .max_height
-            .map(|h| format!("{h}p"))
-            .unwrap_or_else(|| "Best".into()),
-    };
+    let quality = quality(&job.options);
     let item = HistoryItem {
         id: job.id.clone(),
         title: job.title.clone(),
@@ -91,6 +85,20 @@ pub fn record(app: &AppHandle, job: &Job) -> crate::error::Result<()> {
         });
     }
     Ok(())
+}
+
+/// The Library's one-word description of what was kept: the audio format, or the video's
+/// size cap, followed by the preset when it is not the default (Compatible).
+pub fn quality(options: &DownloadOptions) -> String {
+    if options.mode == "audio" {
+        return options.audio_format.to_uppercase();
+    }
+    let size = options.max_height.map(|h| format!("{h}p")).unwrap_or_else(|| "Best".into());
+    match options.video_preset {
+        VideoPreset::Compatible => size,
+        VideoPreset::Original => format!("{size} · Original"),
+        VideoPreset::EditingProRes => format!("{size} · Editing"),
+    }
 }
 
 const THUMB_MAX_BYTES: usize = 5 * 1024 * 1024;
@@ -169,5 +177,28 @@ async fn cache_thumbnail(app: &AppHandle, id: &str, url: &str) {
 pub fn remove_thumbnail(item: &HistoryItem) {
     if let Some(path) = &item.thumbnail_local {
         let _ = std::fs::remove_file(Path::new(path));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_library_names_the_size_and_a_non_default_preset() {
+        let video = |max_height, video_preset| DownloadOptions { max_height, video_preset, ..DownloadOptions::default() };
+        assert_eq!(quality(&video(Some(1080), VideoPreset::Compatible)), "1080p", "unchanged for the default");
+        assert_eq!(quality(&video(None, VideoPreset::Compatible)), "Best");
+        assert_eq!(quality(&video(Some(4320), VideoPreset::Original)), "4320p · Original");
+        assert_eq!(quality(&video(None, VideoPreset::Original)), "Best · Original");
+        let audio = DownloadOptions { mode: "audio".into(), audio_format: "flac".into(), video_preset: VideoPreset::Original, ..DownloadOptions::default() };
+        assert_eq!(quality(&audio), "FLAC");
+    }
+
+    #[test]
+    fn a_library_entry_saved_before_presets_still_loads() {
+        let saved = r#"[{"id":"h1","title":"T","url":"https://example.com/v","uploader":null,"duration":1.0,"thumbnail":null,"thumbnailLocal":null,"filePath":"D:/Out/T.mp4","fileSize":10,"mode":"video","quality":"4K","finishedAt":1}]"#;
+        let items: Vec<HistoryItem> = serde_json::from_str(saved).unwrap();
+        assert_eq!(items[0].quality, "4K");
     }
 }

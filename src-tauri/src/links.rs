@@ -164,6 +164,20 @@ mod tests {
     }
 
     #[test]
+    fn a_video_saved_before_resolutions_existed_keeps_its_heights() {
+        let dir = std::env::temp_dir().join(format!("claws-links-heights-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = path_for(&dir, "https://example.com/v");
+        let saved = r#"{"savedAt":1762500000000,"result":{"kind":"video","url":"https://example.com/v","title":"V","uploader":null,"thumbnail":null,"duration":12.0,"site":"Example","heights":[2160,1440,1080],"subtitles":[],"entries":[]}}"#;
+        std::fs::write(&path, saved).unwrap();
+        let entry = read(&path).expect("an entry without resolutions loads");
+        assert!(path.exists());
+        assert!(entry.result.resolutions.is_empty());
+        assert_eq!(entry.result.heights, vec![2160, 1440, 1080]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn damaged_entry_is_dropped() {
         let dir = std::env::temp_dir().join(format!("claws-links-bad-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();

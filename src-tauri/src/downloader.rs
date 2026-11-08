@@ -13,7 +13,7 @@ use tokio::io::BufReader;
 use crate::bounded_io;
 use crate::disk_budget;
 use crate::download_files::{self, Publication, WorkspaceRef};
-use crate::download_policy::{self, FailureKind, JobExecution, Source};
+use crate::download_policy::{self, FailureKind, JobExecution, Source, VideoPreset};
 use crate::error::{notify, AppError, Result};
 use crate::history;
 use crate::queue_writer::{QueueSnapshot, QUEUE_SCHEMA};
@@ -57,8 +57,11 @@ impl JobStatus {
 pub struct DownloadOptions {
     /// "video" or "audio".
     pub mode: String,
-    /// Tallest video to fetch; `None` means the best available.
+    /// Largest video to fetch, as its shorter side (yt-dlp's `res`, so a 1080×1920 portrait
+    /// video is 1080); `None` means the best available. Never upscaled.
     pub max_height: Option<u32>,
+    /// Which streams a video keeps and what file they become. Ignored for audio.
+    pub video_preset: VideoPreset,
     pub audio_format: String,
     pub subtitle_langs: Vec<String>,
     pub auto_subs: bool,
@@ -73,6 +76,7 @@ impl Default for DownloadOptions {
         Self {
             mode: "video".into(),
             max_height: None,
+            video_preset: VideoPreset::Compatible,
             audio_format: "mp3".into(),
             subtitle_langs: Vec::new(),
             auto_subs: false,
@@ -95,7 +99,15 @@ impl DownloadOptions {
         if !AUDIO_FORMATS.contains(&self.audio_format.as_str()) {
             return Err(AppError::msg("Unsupported audio format."));
         }
-        self.max_height = self.max_height.map(|h| h.clamp(144, 4320));
+        if !self.video_preset.available() {
+            return Err(AppError::msg("The editing preset is not available yet."));
+        }
+        if self.mode == "audio" {
+            // No video, so no video preset: the same audio download has one duplicate key.
+            self.video_preset = VideoPreset::Compatible;
+        }
+        // A shorter side: 4320 is 8K landscape, 8640 the most a portrait 16K could need.
+        self.max_height = self.max_height.map(|h| h.clamp(144, 8640));
         self.subtitle_langs.truncate(12);
         let valid_lang = |l: &String| {
             !l.is_empty()
@@ -1060,6 +1072,10 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
         // Paused or cancelled between being claimed and starting.
         return Outcome::failed("");
     }
+    if !job.options.video_preset.available() {
+        // Saved by a version that can make it; never run as something else.
+        return Outcome::failed("This download uses an editing preset this version of Claws cannot make. Remove it, or open the version that added it.");
+    }
     let Some(ytdlp) = tools::find_ytdlp(app) else {
         return Outcome::failed("yt-dlp is not installed yet. Open Settings to install it.");
     };
@@ -1851,6 +1867,49 @@ mod tests {
         assert_eq!(jobs[0].status, JobStatus::Paused);
         assert_eq!(jobs[0].partial_files.len(), 1);
         assert_eq!(jobs[1].status, JobStatus::Failed);
+    }
+
+    #[test]
+    fn validation_accepts_source_resolutions_up_to_8k_and_never_the_unbuilt_preset() {
+        let video = |max_height, video_preset| DownloadOptions { max_height, video_preset, ..DownloadOptions::default() };
+        let mut eight_k = video(Some(4320), VideoPreset::Original);
+        eight_k.validate().unwrap();
+        assert_eq!(eight_k.max_height, Some(4320));
+        // The cap is a shorter side; 8640 is the largest accepted, and nothing is upscaled.
+        let mut huge = video(Some(20_000), VideoPreset::Compatible);
+        huge.validate().unwrap();
+        assert_eq!(huge.max_height, Some(8640));
+        let mut tiny = video(Some(10), VideoPreset::Compatible);
+        tiny.validate().unwrap();
+        assert_eq!(tiny.max_height, Some(144));
+
+        let err = video(None, VideoPreset::EditingProRes).validate().unwrap_err().to_string();
+        assert_eq!(err, "The editing preset is not available yet.");
+        let parsed: DownloadOptions = serde_json::from_str(r#"{"mode":"video","videoPreset":"editingProRes"}"#).unwrap();
+        assert!(parsed.clone().validate().is_err(), "a preset from the frontend is checked again here");
+        assert!(serde_json::from_str::<DownloadOptions>(r#"{"videoPreset":"prores4444"}"#).is_err(), "unknown presets are refused");
+
+        // Audio has no video preset: one key for the same audio download however it is sent.
+        let mut audio = DownloadOptions { mode: "audio".into(), video_preset: VideoPreset::Original, ..DownloadOptions::default() };
+        audio.validate().unwrap();
+        assert_eq!(audio.video_preset, VideoPreset::Compatible);
+        let mut plain_audio = DownloadOptions { mode: "audio".into(), ..DownloadOptions::default() };
+        plain_audio.validate().unwrap();
+        assert_eq!(options_key(&audio), options_key(&plain_audio));
+    }
+
+    #[test]
+    fn presets_are_part_of_the_duplicate_key_and_serialize_by_name() {
+        let compatible = DownloadOptions::default();
+        let original = DownloadOptions { video_preset: VideoPreset::Original, ..DownloadOptions::default() };
+        assert_ne!(options_key(&compatible), options_key(&original), "the same link may be queued once per preset");
+        assert!(options_key(&original).contains(r#""videoPreset":"original""#));
+        assert!(options_key(&compatible).contains(r#""videoPreset":"compatible""#));
+        let pro: DownloadOptions = serde_json::from_str(r#"{"videoPreset":"editingProRes"}"#).unwrap();
+        assert_eq!(pro.video_preset, VideoPreset::EditingProRes);
+        // A job saved before presets reads back with the same key a new Compatible job has.
+        let old: DownloadOptions = serde_json::from_str(r#"{"mode":"video","maxHeight":null,"audioFormat":"mp3","subtitleLangs":[],"autoSubs":false,"embedSubs":false,"fastSave":false}"#).unwrap();
+        assert_eq!(options_key(&old), options_key(&compatible));
     }
 
     #[test]

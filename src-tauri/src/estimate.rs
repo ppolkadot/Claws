@@ -527,6 +527,44 @@ mod tests {
     }
 
     #[test]
+    fn the_preset_changes_the_estimated_streams_and_container() {
+        use crate::download_policy::VideoPreset::{Compatible, Original};
+        let ytdlp = require_ytdlp!();
+        let at = |height: Option<u32>, preset| run(&ytdlp, sample_formats(), Some(600.0), &DownloadOptions { max_height: height, video_preset: preset, ..options("video") }, Best);
+
+        // Same picture size; Original takes the site's preferred audio (Opus, larger) and
+        // so cannot be MP4 by yt-dlp's rules: MKV, copied, not converted.
+        let compatible = at(Some(1080), Compatible);
+        assert_eq!(ids(&compatible), ["v1080", "a140"]);
+        assert_eq!(compatible.container.as_deref(), Some("mp4"));
+        let original = at(Some(1080), Original);
+        assert_eq!(ids(&original), ["v1080", "a251"]);
+        assert_eq!(original.container.as_deref(), Some("mkv"));
+        assert!(!original.converted);
+        assert_eq!(original.download_bytes, Some(300_000_000 + 160 * 1000 / 8 * 600));
+
+        let best = at(None, Original);
+        assert_eq!(ids(&best), ["v2160", "a251"]);
+        assert_eq!(best.container.as_deref(), Some("mkv"));
+        assert_eq!(best.parts[0].vcodec.as_deref(), Some("vp09.00.50.08"));
+    }
+
+    #[test]
+    fn explicit_6k_and_8k_caps_select_those_streams() {
+        let ytdlp = require_ytdlp!();
+        let mut formats = sample_formats();
+        let list = formats.as_array_mut().unwrap();
+        list.push(video("v2880", "webm", "vp09.00.61.08", 5120, 2880, json!({})));
+        list.push(video("v3240", "webm", "vp09.00.61.08", 5760, 3240, json!({})));
+        list.push(video("v4320", "mp4", "av01.0.17M.08", 7680, 4320, json!({})));
+        let pick = |height| ids(&run(&ytdlp, formats.clone(), Some(60.0), &DownloadOptions { max_height: Some(height), ..options("video") }, Best))[0].to_string();
+        assert_eq!(pick(4320), "v4320");
+        assert_eq!(pick(3240), "v3240");
+        assert_eq!(pick(2880), "v2880");
+        assert_eq!(pick(2160), "v2160");
+    }
+
+    #[test]
     fn the_audio_selection_setting_changes_the_estimated_stream() {
         let ytdlp = require_ytdlp!();
         let m4a = DownloadOptions { audio_format: "m4a".into(), ..options("audio") };

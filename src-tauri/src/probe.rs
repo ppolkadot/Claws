@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,6 +39,21 @@ pub struct EntrySummary {
     pub uploader: Option<String>,
 }
 
+/// One picture size the source offers. Choices are made by the shorter side, because that is
+/// what yt-dlp's `-S res:N` caps: a portrait 1080×1920 stream is a 1080 choice.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Resolution {
+    pub short_side: u32,
+    /// Absent when the site gives only a height; then `short_side` is that height.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    /// What the site says about the stream at this size, when it says anything.
+    pub vcodec: Option<String>,
+    pub dynamic_range: Option<String>,
+    pub fps: Option<f64>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ProbeResult {
@@ -50,8 +65,13 @@ pub struct ProbeResult {
     pub thumbnail: Option<String>,
     pub duration: Option<f64>,
     pub site: Option<String>,
-    /// Available video heights, tallest first.
+    /// The shorter sides of `resolutions`, largest first. Kept for saved links and older
+    /// readers; `resolutions` has the detail.
     pub heights: Vec<u32>,
+    /// Every picture size the source offers, one per shorter side, largest first. Empty in
+    /// links saved before it existed (their `heights` still apply) and for flat playlists.
+    #[serde(default)]
+    pub resolutions: Vec<Resolution>,
     pub subtitles: Vec<SubtitleLang>,
     pub entries: Vec<EntrySummary>,
 }
@@ -134,19 +154,55 @@ fn collect_subtitles(value: &Value) -> Vec<SubtitleLang> {
     out
 }
 
-fn collect_heights(value: &Value) -> Vec<u32> {
-    let mut heights = BTreeSet::new();
-    if let Some(formats) = value["formats"].as_array() {
-        for format in formats {
-            let has_video = format["vcodec"].as_str().is_some_and(|c| c != "none");
-            if let (true, Some(h)) = (has_video, format["height"].as_u64()) {
-                if h >= 144 {
-                    heights.insert(h as u32);
-                }
+/// The smallest size offered as a choice.
+const MIN_SHORT_SIDE: u32 = 144;
+
+fn dimension(value: &Value) -> Option<u32> {
+    value.as_u64().filter(|n| *n > 0).and_then(|n| u32::try_from(n).ok())
+}
+
+/// The picture sizes the formats offer, one per shorter side, largest first. A format counts
+/// as video unless its codec is "none": yt-dlp's `bv*` takes a stream whose codec the site
+/// does not name, so its size is offered too. A format with only a width is skipped, since
+/// yt-dlp's `res` cannot place it either.
+fn collect_resolutions(value: &Value) -> Vec<Resolution> {
+    let mut by_side: BTreeMap<u32, Resolution> = BTreeMap::new();
+    for format in value["formats"].as_array().into_iter().flatten() {
+        if format["vcodec"].as_str() == Some("none") {
+            continue;
+        }
+        let (width, height) = (dimension(&format["width"]), dimension(&format["height"]));
+        let Some(height) = height else { continue };
+        let short_side = width.map_or(height, |w| w.min(height));
+        if short_side < MIN_SHORT_SIDE {
+            continue;
+        }
+        let text = |key: &str| format[key].as_str().filter(|s| !s.is_empty() && *s != "none").map(str::to_string);
+        let candidate = Resolution {
+            short_side,
+            width,
+            height: Some(height),
+            vcodec: text("vcodec"),
+            dynamic_range: text("dynamic_range"),
+            fps: format["fps"].as_f64().filter(|f| f.is_finite() && *f > 0.0),
+        };
+        match by_side.get_mut(&short_side) {
+            Some(kept) if detail(&candidate) > detail(kept) => *kept = candidate,
+            Some(_) => {}
+            None => {
+                by_side.insert(short_side, candidate);
             }
         }
     }
-    heights.into_iter().rev().collect()
+    by_side.into_values().rev().collect()
+}
+
+/// Which of two streams with the same shorter side describes it better: the one with both
+/// dimensions, then the larger picture, then the one naming its codec, HDR and frame rate.
+fn detail(r: &Resolution) -> (bool, u32, bool, bool, u64) {
+    let long_side = r.width.unwrap_or(0).max(r.height.unwrap_or(0));
+    let hdr = r.dynamic_range.as_deref().is_some_and(|d| d != "SDR");
+    (r.width.is_some(), long_side, r.vcodec.is_some(), hdr, r.fps.map_or(0, |f| f.round() as u64))
 }
 
 fn parse(url: &str, value: &Value) -> ProbeResult {
@@ -193,6 +249,7 @@ fn parse(url: &str, value: &Value) -> ProbeResult {
         Vec::new()
     };
 
+    let resolutions = collect_resolutions(value);
     ProbeResult {
         kind: if is_playlist { "playlist" } else { "video" }.into(),
         url: if is_playlist {
@@ -209,7 +266,8 @@ fn parse(url: &str, value: &Value) -> ProbeResult {
         thumbnail: pick_thumbnail(value),
         duration: value["duration"].as_f64(),
         site: str_field(value, "extractor_key").or_else(|| str_field(value, "extractor")),
-        heights: collect_heights(value),
+        heights: resolutions.iter().map(|r| r.short_side).collect(),
+        resolutions,
         subtitles: collect_subtitles(value),
         entries,
     }
@@ -698,6 +756,96 @@ mod tests {
         assert_eq!(result.heights, vec![1080, 720]);
         let codes: Vec<_> = result.subtitles.iter().map(|s| (s.code.as_str(), s.auto)).collect();
         assert_eq!(codes, vec![("en", false), ("fr", true)]);
+    }
+
+    fn video_format(id: &str, vcodec: &str, width: u32, height: u32) -> Value {
+        json!({ "format_id": id, "vcodec": vcodec, "acodec": "none", "width": width, "height": height, "ext": "mp4" })
+    }
+
+    fn sides(result: &ProbeResult) -> Vec<(u32, Option<u32>, Option<u32>)> {
+        result.resolutions.iter().map(|r| (r.short_side, r.width, r.height)).collect()
+    }
+
+    #[test]
+    fn choices_reach_as_high_as_the_source_goes() {
+        let value = json!({
+            "title": "V",
+            "formats": [
+                { "format_id": "sb0", "vcodec": "none", "acodec": "none", "width": 320, "height": 180, "ext": "mhtml" },
+                { "format_id": "a", "vcodec": "none", "acodec": "opus", "ext": "webm" },
+                video_format("144", "avc1.4d400c", 256, 144),
+                video_format("1080", "avc1.640028", 1920, 1080),
+                { "format_id": "2160h", "vcodec": "vp09.02.51.10", "acodec": "none", "width": 3840, "height": 2160, "dynamic_range": "HDR10", "fps": 60.0 },
+                video_format("2160", "vp09.00.51.08", 3840, 2160),
+                video_format("2880", "vp09.00.61.08", 5120, 2880),
+                video_format("3240", "vp09.00.61.08", 5760, 3240),
+                { "format_id": "4320", "vcodec": "av01.0.17M.08", "acodec": "none", "width": 7680, "height": 4320, "fps": 30.0, "dynamic_range": "SDR" },
+                video_format("tiny", "avc1", 160, 90)
+            ]
+        });
+        let result = parse("https://example.com/v", &value);
+        assert_eq!(result.heights, vec![4320, 3240, 2880, 2160, 1080, 144], "no 2160 ceiling and no fixed ladder");
+        assert_eq!(
+            sides(&result),
+            vec![
+                (4320, Some(7680), Some(4320)),
+                (3240, Some(5760), Some(3240)),
+                (2880, Some(5120), Some(2880)),
+                (2160, Some(3840), Some(2160)),
+                (1080, Some(1920), Some(1080)),
+                (144, Some(256), Some(144)),
+            ]
+        );
+        let eight_k = &result.resolutions[0];
+        assert_eq!(eight_k.vcodec.as_deref(), Some("av01.0.17M.08"));
+        assert_eq!(eight_k.fps, Some(30.0));
+        // Two 2160 streams: the one that says more (HDR, frame rate) describes the size.
+        assert_eq!(result.resolutions[3].dynamic_range.as_deref(), Some("HDR10"));
+        assert_eq!(result.resolutions[3].fps, Some(60.0));
+    }
+
+    #[test]
+    fn portrait_video_is_chosen_by_its_shorter_side() {
+        let value = json!({
+            "title": "Portrait",
+            "formats": [video_format("p1920", "avc1", 1080, 1920), video_format("p1280", "avc1", 720, 1280), video_format("p3840", "vp9", 2160, 3840)]
+        });
+        let result = parse("https://example.com/p", &value);
+        // yt-dlp's `res:1080` takes the 1080×1920 stream; a "1920" cap would ask for 4K.
+        assert_eq!(result.heights, vec![2160, 1080, 720]);
+        assert_eq!(sides(&result), vec![(2160, Some(2160), Some(3840)), (1080, Some(1080), Some(1920)), (720, Some(720), Some(1280))]);
+    }
+
+    #[test]
+    fn streams_without_codec_fields_still_offer_their_size() {
+        // yt-dlp leaves a missing codec missing, and `bv*` treats such a stream as video.
+        let value = json!({
+            "title": "Generic",
+            "formats": [
+                { "format_id": "hls-2160", "width": 3840, "height": 2160, "ext": "mp4" },
+                { "format_id": "hls-1440", "height": 1440, "ext": "mp4" },
+                { "format_id": "hls-wide", "width": 7680, "ext": "mp4" },
+                { "format_id": "audio", "acodec": "mp4a.40.2", "vcodec": "none", "ext": "m4a" },
+                { "format_id": "unknown", "ext": "mp4" }
+            ]
+        });
+        let result = parse("https://example.com/g", &value);
+        assert_eq!(sides(&result), vec![(2160, Some(3840), Some(2160)), (1440, None, Some(1440))], "a width alone says nothing about res");
+        assert_eq!(result.resolutions[0].vcodec, None);
+        // The same size given once with and once without its width keeps the width.
+        let value = json!({ "formats": [{ "format_id": "a", "height": 2160 }, { "format_id": "b", "width": 4096, "height": 2160, "vcodec": "hvc1" }] });
+        assert_eq!(sides(&parse("https://example.com/x", &value)), vec![(2160, Some(4096), Some(2160))]);
+    }
+
+    #[test]
+    fn a_probe_saved_before_resolutions_still_reads() {
+        let saved = r#"{"kind":"video","url":"https://example.com/v","title":"V","uploader":null,"thumbnail":null,"duration":10.0,"site":"Example","heights":[2160,1080],"subtitles":[],"entries":[]}"#;
+        let result: ProbeResult = serde_json::from_str(saved).unwrap();
+        assert!(result.resolutions.is_empty());
+        assert_eq!(result.heights, vec![2160, 1080], "the old heights still load; the UI offers them only as caps");
+        // Its own shape round-trips with the new field.
+        let again: ProbeResult = serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+        assert_eq!(again.heights, result.heights);
     }
 
     #[test]
