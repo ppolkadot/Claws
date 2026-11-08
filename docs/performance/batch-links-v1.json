@@ -1,0 +1,118 @@
+[
+  {
+    "links": 100,
+    "paste": {
+      "scriptMs": 0.8,
+      "layoutMs": 6.6,
+      "styleMs": 5.9,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "button": "Look Up 100 Links"
+    },
+    "lookup": {
+      "scriptMs": 26.3,
+      "layoutMs": 60.3,
+      "styleMs": 57.9,
+      "wallMs": 959,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "rowsInFirstFrame": 100,
+      "probes": 100,
+      "maxProbesInFlight": 3,
+      "rows": {
+        "built": 100,
+        "ready": 96,
+        "failed": 4,
+        "selected": 96,
+        "failedSelectable": 0,
+        "retryButtons": 4,
+        "summary": "96 ready  ·  4 failed",
+        "button": "Download 110 Videos"
+      }
+    },
+    "add": {
+      "scriptMs": 1.7,
+      "layoutMs": 1.4,
+      "styleMs": 3,
+      "wallMs": 6,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "enqueueCalls": 1,
+      "itemsSent": 110,
+      "jobsReturned": 110,
+      "afterAdd": {
+        "batchStillShown": true,
+        "added": 96,
+        "failedLeft": 4,
+        "toast": "Added 110 videos to the queue."
+      }
+    },
+    "secondPressEnqueueCalls": 0,
+    "queueRowsAfter": 116
+  },
+  {
+    "links": 500,
+    "paste": {
+      "scriptMs": 2,
+      "layoutMs": 9,
+      "styleMs": 3.2,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "button": "Look Up 500 Links"
+    },
+    "lookup": {
+      "scriptMs": 142.5,
+      "layoutMs": 146.6,
+      "styleMs": 74.2,
+      "wallMs": 5035,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "rowsInFirstFrame": 120,
+      "probes": 500,
+      "maxProbesInFlight": 3,
+      "rows": {
+        "built": 500,
+        "ready": 480,
+        "failed": 20,
+        "selected": 480,
+        "failedSelectable": 0,
+        "retryButtons": 20,
+        "summary": "480 ready  ·  20 failed",
+        "button": "Download 550 Videos"
+      }
+    },
+    "add": {
+      "scriptMs": 4.8,
+      "layoutMs": 2,
+      "styleMs": 13.6,
+      "wallMs": 9,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "enqueueCalls": 2,
+      "itemsSent": 550,
+      "jobsReturned": 550,
+      "afterAdd": {
+        "batchStillShown": true,
+        "added": 480,
+        "failedLeft": 20,
+        "toast": "Added 550 videos to the queue."
+      }
+    },
+    "secondPressEnqueueCalls": 0,
+    "queueRowsAfter": 556
+  },
+  {
+    "stop": {
+      "probesStartedBeforeStop": 3,
+      "probesStartedAfterStop": 0,
+      "inFlightAfterWait": 0,
+      "maxProbesInFlight": 3,
+      "stopped": 30,
+      "ready": 0,
+      "failed": 0,
+      "stillLooking": 0,
+      "summary": "30 stopped",
+      "focused": "Read 30 Again"
+    }
+  }
+]

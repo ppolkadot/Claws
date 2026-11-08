@@ -11,7 +11,7 @@ import { StartupEvents } from "./queue-events";
 import { h } from "./ui/dom";
 import { toast } from "./ui/components";
 import { installSprings } from "./ui/motion";
-import { looksLikeUrl, mountDownload } from "./views/download";
+import { looksLikeLinkList, looksLikeUrl, mountDownload } from "./views/download";
 import { mountLibrary } from "./views/library";
 import { mountQueue } from "./views/queue";
 import { mountSettings } from "./views/settings";
@@ -81,12 +81,12 @@ async function start() {
   notices.forEach((message) => toast(message, { tone: "error" }));
 
   // Ctrl+V with a link anywhere in the window (outside a text field) looks it up,
-  // whichever view is open.
+  // whichever view is open. A list of links is put in the link field to look up.
   document.addEventListener("paste", (event) => {
     const target = event.target as HTMLElement | null;
     if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
     const text = event.clipboardData?.getData("text")?.trim() ?? "";
-    if (looksLikeUrl(text)) {
+    if (looksLikeUrl(text) || looksLikeLinkList(text)) {
       event.preventDefault();
       store.pasteLink(text);
     }

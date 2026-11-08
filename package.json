@@ -10,7 +10,8 @@
     "test:fonts": "node --test scripts/tests/font-bundle.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test:queue": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .test-build src/queue-events.ts && node --test scripts/tests/queue-events.test.mjs"
+    "test:queue": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .test-build src/queue-events.ts && node --test scripts/tests/queue-events.test.mjs",
+    "test:logic": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .test-build src/download-input.ts && node --test scripts/tests/download-input.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

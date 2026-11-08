@@ -1,15 +1,30 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { api, errorMessage, type DownloadOptions, type ProbeResult } from "../api";
+import {
+  MAX_LINKS,
+  describeEnqueue,
+  isBatchInput,
+  parseLinks,
+  selectable,
+  type BatchRow,
+  type ParsedInput,
+} from "../download-input";
 import { formatDate, formatDuration, folderName } from "../format";
-import { store } from "../store";
+import { store, type BatchChoices, type BatchSession } from "../store";
 import { button, chipCheck, chipRadio, segmented, toast, toggle } from "../ui/components";
 import { clear, h, replace } from "../ui/dom";
 import { icon } from "../ui/icons";
 import { group, progressBar, row, sectionTitle, setProgress, spinner } from "../ui/layout";
+import { settleIn } from "../ui/motion";
 import type { MountView } from "./shell";
 
-type Phase = "idle" | "loading" | "result" | "error";
+type Phase = "idle" | "loading" | "result" | "error" | "batch";
+
+/** Batch rows built per frame, as in the Queue view: about a frame's worth of work. */
+const ROWS_PER_FRAME = 40;
+/** Skipped lines listed by name; the rest are counted. */
+const ISSUES_SHOWN = 6;
 
 const STANDARD_HEIGHTS = [2160, 1440, 1080, 720, 480, 360, 240, 144];
 const AUDIO_FORMATS = [
@@ -37,6 +52,41 @@ export function looksLikeUrl(text: string): boolean {
   return /^https?:\/\/\S+$/i.test(text.trim());
 }
 
+/** Text with two or more links on separate lines: filled in, never looked up by itself. */
+export function looksLikeLinkList(text: string): boolean {
+  return /[\r\n]/.test(text.trim()) && parseLinks(text).links.length >= 2;
+}
+
+function audioHint(): string {
+  return store.settings.audioSelection === "preferMatching"
+    ? "Original keeps the site's own audio. For other formats, a stream already in that format is saved without conversion when the site has one."
+    : "Original keeps the site's own audio without re-encoding. Other formats are converted from the site's best audio.";
+}
+
+const shorten = (text: string, max = 70) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+function batchOptions(choices: BatchChoices): DownloadOptions {
+  return {
+    mode: choices.mode,
+    maxHeight: choices.mode === "video" ? choices.maxHeight : null,
+    audioFormat: choices.audioFormat,
+    subtitleLangs: [],
+    autoSubs: false,
+    embedSubs: false,
+    fastSave: false,
+  };
+}
+
+interface BatchRowRefs {
+  pick: HTMLButtonElement;
+  thumb: HTMLElement;
+  thumbFor: string | null;
+  title: HTMLElement;
+  sub: HTMLElement;
+  side: HTMLElement;
+  sideFor: string;
+}
+
 export const mountDownload: MountView = (container, ctx) => {
   ctx.setActions([
     button({
@@ -48,10 +98,18 @@ export const mountDownload: MountView = (container, ctx) => {
     }),
   ]);
 
-  let phase: Phase = "idle";
+  let phase: Phase = store.batch ? "batch" : "idle";
   let result: ProbeResult | null = null;
+  let errorTitle = "Couldn't read that link";
   let errorText = "";
+  let errorRetry = true;
   let lastUrl = "";
+  /** Lines skipped beside the one link being looked up (several lines, one link in them). */
+  let skipped: ParsedInput | null = null;
+  /** Bumped by every submission; an older lookup's reply is dropped. */
+  let ticket = 0;
+  let stageAnimation: Animation | null = null;
+  let batchView: { paintRow(row: BatchRow<ProbeResult>): void; refresh(): void; dispose(): void } | null = null;
 
   let mode: DownloadOptions["mode"] = "video";
   let height: number | null = null;
@@ -67,17 +125,22 @@ export const mountDownload: MountView = (container, ctx) => {
   let staleReason = "";
   let freshnessEl: HTMLElement | null = null;
 
-  const input = h("input", {
+  // A text area that looks like a one-line field until it holds several lines: one link
+  // per line makes a batch.
+  const input = h("textarea", {
     class: "url-input",
     attrs: {
-      type: "url",
-      placeholder: "Paste a video link",
-      "aria-label": "Video link",
+      rows: 1,
+      wrap: "off",
+      placeholder: "Paste a video link, or several on separate lines",
+      "aria-label": "Video link, or several links on separate lines",
+      "aria-keyshortcuts": "Control+Enter",
       autocomplete: "off",
       spellcheck: false,
     },
   });
   const goButton = button({ label: "Get Info", variant: "primary", onClick: () => void submit() });
+  const goLabel = goButton.querySelector("span")!;
   const pasteButton = button({
     icon: "paste",
     title: "Paste from clipboard",
@@ -87,7 +150,9 @@ export const mountDownload: MountView = (container, ctx) => {
         const text = (await navigator.clipboard.readText()).trim();
         if (text) {
           input.value = text;
+          fitInput();
           input.focus();
+          // A list waits for "Look Up"; a single link is looked up at once, as before.
           if (looksLikeUrl(text)) void submit();
         }
       } catch {
@@ -99,6 +164,26 @@ export const mountDownload: MountView = (container, ctx) => {
   urlBar.addEventListener("submit", (event) => {
     event.preventDefault();
     void submit();
+  });
+
+  const multiline = () => /[\r\n]/.test(input.value.trim());
+  /** Grows the field with its lines (up to six, then it scrolls) and names the button. */
+  function fitInput() {
+    const lines = input.value.replace(/\s+$/, "").split(/\r\n|\r|\n/).length;
+    input.rows = Math.min(Math.max(lines, 1), 6);
+    urlBar.classList.toggle("multiline", lines > 1);
+    const count = lines > 1 ? parseLinks(input.value).links.length : 0;
+    goLabel.textContent = count > 1 ? `Look Up ${count} Links` : "Get Info";
+  }
+  input.addEventListener("input", fitInput);
+  // Enter looks up a single link. With several lines, Enter adds a line and Ctrl+Enter
+  // looks them all up; Shift+Enter always adds a line.
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing) return;
+    if (event.ctrlKey || event.metaKey || (!event.shiftKey && !multiline())) {
+      event.preventDefault();
+      void submit();
+    }
   });
 
   const setup = h("div", { class: "setup-slot" });
@@ -170,28 +255,51 @@ export const mountDownload: MountView = (container, ctx) => {
     if (!before || before.entries.length !== next.entries.length) selected = new Set(next.entries.map((_, i) => i));
   }
 
+  function showError(title: string, text: string, retry = true) {
+    phase = "error";
+    errorTitle = title;
+    errorText = text;
+    errorRetry = retry;
+    render();
+  }
+
   async function submit() {
-    const url = input.value.trim();
-    if (!url) {
+    const text = input.value.trim();
+    if (!text) {
       input.focus();
       return;
     }
+    if (multiline()) {
+      const parsed = parseLinks(text);
+      if (isBatchInput(parsed)) return submitBatch(parsed);
+      // The same link on several lines is still one link, and one link beside lines that
+      // are not links gets the ordinary preview, which names the skipped lines.
+      if (parsed.links.length === 1) return lookUp(parsed.links[0].url, parsed.invalid.length > 0 ? parsed : null);
+    }
+    return lookUp(text);
+  }
+
+  // A batch is never discarded by another lookup or by input that was refused: it stays in
+  // the store, one "Back to Links" press away (see batchReturn). Only Clear, a new list
+  // that is actually looked up, or adding every row ends it.
+  async function lookUp(url: string, issues: ParsedInput | null = null) {
+    const mine = ++ticket;
+    skipped = issues;
     if (!looksLikeUrl(url)) {
-      phase = "error";
-      errorText = "That does not look like a link. Paste the full address, starting with https://";
-      return render();
+      lastUrl = "";
+      return showError("Couldn't read that link", "That does not look like a link. Paste the full address, starting with https://");
     }
     await store.toolsReady;
+    if (mine !== ticket) return;
     if (!store.tools.ytdlp) {
-      phase = "error";
-      errorText = "yt-dlp is still being set up. Try again in a moment.";
-      return render();
+      lastUrl = "";
+      return showError("Couldn't read that link", "yt-dlp is still being set up. Try again in a moment.");
     }
     lastUrl = url;
 
     // Saved details show at once; the lookup below checks them.
     const cached = await api.cachedLink(url).catch(() => null);
-    if (lastUrl !== url) return; // a newer request replaced this one
+    if (mine !== ticket) return; // a newer request replaced this one
     if (cached) {
       showResult(cached.result);
       freshness = "checking";
@@ -203,7 +311,7 @@ export const mountDownload: MountView = (container, ctx) => {
 
     try {
       const probed = await api.probe(url);
-      if (lastUrl !== url) return;
+      if (mine !== ticket) return;
       if (cached && phase === "result" && result) {
         const changed = shape(result) !== shape(probed);
         freshness = "fresh";
@@ -218,7 +326,7 @@ export const mountDownload: MountView = (container, ctx) => {
       }
       showResult(probed);
     } catch (error) {
-      if (lastUrl !== url) return;
+      if (mine !== ticket) return;
       if (cached && phase === "result") {
         // Keep the saved details on screen, but say they could not be confirmed.
         freshness = "stale";
@@ -227,13 +335,41 @@ export const mountDownload: MountView = (container, ctx) => {
         return;
       }
       phase = "error";
+      errorTitle = "Couldn't read that link";
       errorText = errorMessage(error);
+      errorRetry = true;
     }
     render();
   }
 
+  /** Several links: each is looked up (three at a time); nothing downloads until asked. */
+  async function submitBatch(parsed: ParsedInput) {
+    const mine = ++ticket;
+    lastUrl = "";
+    skipped = null;
+    if (parsed.overLimit) {
+      return showError(
+        "Too many links",
+        `That is ${parsed.links.length} different links. Claws looks up at most ${MAX_LINKS} at once: paste the first ${MAX_LINKS}, add them to the queue, then paste the rest.`,
+        false,
+      );
+    }
+    if (parsed.links.length === 0) {
+      const first = parsed.invalid[0];
+      return showError("No links found", first ? `Line ${first.line}: ${first.reason}` : "Paste one http(s) link on each line.", false);
+    }
+    await store.toolsReady;
+    if (mine !== ticket) return;
+    if (!store.tools.ytdlp) return showError("Couldn't read those links", "yt-dlp is still being set up. Try again in a moment.");
+    input.value = "";
+    fitInput();
+    phase = "batch";
+    store.startBatch(parsed); // its "batch" event draws the panel
+  }
+
   function openLink(url: string) {
     input.value = url;
+    fitInput();
     void submit();
   }
 
@@ -255,6 +391,7 @@ export const mountDownload: MountView = (container, ctx) => {
     // A double click, or a click during the confirmation, would queue it twice.
     if (!result || enqueuing) return;
     enqueuing = true;
+    const mine = ticket;
     if (trigger) trigger.disabled = true;
     const items =
       result.kind === "playlist"
@@ -291,10 +428,13 @@ export const mountDownload: MountView = (container, ctx) => {
       toast(jobs.length === 1 ? "Added to the queue." : `${jobs.length} videos added to the queue.`, {
         action: { label: "View Queue", run: () => store.go("queue") },
       });
+      if (mine !== ticket) return; // another link was submitted meanwhile
       input.value = "";
+      fitInput();
       lastUrl = "";
       result = null;
-      phase = "idle";
+      // Back to the list this link was looked up over, if there is one.
+      phase = store.batch ? "batch" : "idle";
       render();
     } catch (error) {
       toast(errorMessage(error), { tone: "error" });
@@ -352,7 +492,8 @@ export const mountDownload: MountView = (container, ctx) => {
   function renderEntries(r: ProbeResult): HTMLElement {
     const countLabel = h("span", { class: "entries-count" });
     const list = h("div", { class: "entries", attrs: { role: "group", "aria-label": "Videos in this playlist" } });
-    const downloadBtn: HTMLButtonElement = button({ icon: "download", variant: "primary", onClick: () => void startDownload(downloadBtn) });
+    // Created with a label: an icon-only button is a fixed 28 px wide.
+    const downloadBtn: HTMLButtonElement = button({ label: "Download", icon: "download", variant: "primary", onClick: () => void startDownload(downloadBtn) });
     const paintCount = () => {
       countLabel.textContent = `${selected.size} of ${r.entries.length} selected`;
       const label = selected.size === 1 ? "Download 1 Video" : `Download ${selected.size} Videos`;
@@ -473,9 +614,7 @@ export const mountDownload: MountView = (container, ctx) => {
           row(
             "Format",
             chipRadio<string>("Audio format", AUDIO_FORMATS, audioFormat, (value) => (audioFormat = value)),
-            store.settings.audioSelection === "preferMatching"
-              ? "Original keeps the site's own audio. For other formats, a stream already in that format is saved without conversion when the site has one."
-              : "Original keeps the site's own audio without re-encoding. Other formats are converted from the site's best audio.",
+            audioHint(),
           ),
         );
       }
@@ -534,6 +673,321 @@ export const mountDownload: MountView = (container, ctx) => {
     return wrap;
   }
 
+  // ---- Several links ---------------------------------------------------------------
+
+  async function addBatch() {
+    const session = store.batch;
+    if (!session || store.links.submitting) return;
+    const options = batchOptions(session.choices);
+    const sending = store.links.enqueue(async (items) => {
+      // No link-cache source: the cache records one looked-up link per call.
+      const added = await api.enqueue(items, options, null);
+      // Usually already applied from the jobs-added event; the revisions make this a no-op.
+      store.addJobs(added);
+      return added;
+    });
+    batchView?.refresh(); // disables the button while the rows are sent
+    const summary = await sending;
+    batchView?.refresh();
+    if (!summary) return;
+    toast(describeEnqueue(summary), {
+      tone: summary.added === 0 && summary.failed > 0 ? "error" : "info",
+      action: summary.added > 0 ? { label: "View Queue", run: () => store.go("queue") } : undefined,
+    });
+    // Everything is queued: back to the empty page, with the keyboard in the link field.
+    // Otherwise the rest stays, to retry.
+    if (store.batch === session && store.links.rows.every((r) => r.added)) {
+      const active = document.activeElement;
+      const wasHere = !active || active === document.body || stage.contains(active);
+      store.clearBatch();
+      if (wasHere) input.focus({ preventScroll: true });
+    }
+  }
+
+  function rowNote(r: BatchRow<ProbeResult>): [string, string] {
+    // Created now, or already waiting there with the same choices: either way it is queued.
+    if (r.added) return ["In the queue", "done"];
+    switch (r.status) {
+      case "waiting":
+        return ["Waiting to be read", ""];
+      case "looking":
+        return ["Reading the link…", ""];
+      case "failed":
+        return [r.error ?? "Couldn't read this link", "error"];
+      case "cancelled":
+        return ["Stopped before it was read", ""];
+      case "ready": {
+        if (r.addError) return [`Couldn't add: ${r.addError}`, "error"];
+        const res = r.result!;
+        const count = res.entries.length;
+        const lead =
+          res.kind === "playlist"
+            ? count === 0
+              ? "Playlist · no downloadable videos"
+              : `Playlist · ${count} ${count === 1 ? "item" : "items"}`
+            : formatDuration(res.duration);
+        return [[lead, res.uploader, res.site].filter(Boolean).join("  ·  "), ""];
+      }
+    }
+  }
+
+  function renderIssues(parsed: ParsedInput): HTMLElement | null {
+    const lines = [
+      ...parsed.invalid.map((i) => ({ line: i.line, text: `Line ${i.line}, “${shorten(i.text)}”: ${i.reason}` })),
+      ...parsed.duplicates.map((d) => ({ line: d.line, text: `Line ${d.line} repeats line ${d.firstLine}; it is read once.` })),
+    ].sort((a, b) => a.line - b.line);
+    if (lines.length === 0) return null;
+    return h(
+      "div",
+      { class: "notice batch-issues" },
+      icon("alert", 16),
+      h(
+        "div",
+        { class: "notice-text" },
+        h("strong", { text: lines.length === 1 ? "1 line was skipped" : `${lines.length} lines were skipped` }),
+        h("ul", {}, ...lines.slice(0, ISSUES_SHOWN).map((l) => h("li", { text: l.text }))),
+        lines.length > ISSUES_SHOWN ? h("span", { text: `And ${lines.length - ISSUES_SHOWN} more.` }) : null,
+      ),
+    );
+  }
+
+  /**
+   * The batch: one row per link with its own status, built ROWS_PER_FRAME rows a frame.
+   * A row change repaints that row only; the counts repaint at most once a frame.
+   */
+  function renderBatch(session: BatchSession): HTMLElement {
+    const links = store.links;
+    const rows = links.rows;
+    const refs = new Map<number, BatchRowRefs>();
+    let built = 0;
+    let buildFrame = 0;
+    let countFrame = 0;
+
+    const counts = h("span", { class: "entries-count" });
+    // The counts change many times a second while links are read, so a screen reader is
+    // told only when reading starts again and when it ends, with the outcome.
+    const announcer = h("span", { class: "visually-hidden", attrs: { role: "status", "aria-live": "polite" } });
+    let wasBusy: boolean | null = null;
+    // Stop and Retry hide themselves; focus moves to the one that appears instead.
+    const swap = (action: () => void, next: () => HTMLElement) => () => {
+      action();
+      cancelAnimationFrame(countFrame);
+      paintCounts();
+      if (!next().hidden) next().focus();
+    };
+    const stopBtn: HTMLButtonElement = button({ label: "Stop", variant: "plain", size: "small", onClick: swap(() => links.cancel(), () => retryBtn) });
+    stopBtn.title = "Stops reading the links not read yet. A lookup already running finishes in the background; its answer is ignored.";
+    const retryBtn: HTMLButtonElement = button({ label: "Retry", icon: "retry", variant: "plain", size: "small", onClick: swap(() => links.retryAll(), () => stopBtn) });
+    const allSelected = () => rows.some(selectable) && rows.every((r) => !selectable(r) || r.selected);
+    // Select All and Download are marked unavailable (aria-disabled), never disabled: a
+    // disabled button that holds focus drops the keyboard to the top of the page.
+    const unavailable = (btn: HTMLElement) => btn.getAttribute("aria-disabled") === "true";
+    const toggleAll = button({
+      label: "Select All",
+      variant: "plain",
+      size: "small",
+      onClick: () => {
+        if (!unavailable(toggleAll)) links.selectAll(!allSelected());
+      },
+    });
+    const clearBtn = button({
+      label: "Clear",
+      variant: "plain",
+      size: "small",
+      onClick: () => {
+        store.clearBatch();
+        input.focus();
+      },
+    });
+    const selectedNote = h("span", { class: "save-to" });
+    const addBtn = button({
+      label: "Download",
+      icon: "download",
+      variant: "primary",
+      onClick: () => {
+        if (!unavailable(addBtn)) void addBatch();
+      },
+    });
+    const addLabel = addBtn.querySelector("span")!;
+
+    const paintCounts = () => {
+      countFrame = 0;
+      const c = links.counts();
+      const ready = c.ready - c.added;
+      counts.textContent = [
+        ready > 0 ? `${ready} ready` : null,
+        c.added > 0 ? `${c.added} added` : null,
+        c.failed > 0 ? `${c.failed} failed` : null,
+        c.looking > 0 ? `${c.looking} reading` : null,
+        c.waiting > 0 ? `${c.waiting} waiting` : null,
+        c.cancelled > 0 ? `${c.cancelled} stopped` : null,
+      ]
+        .filter(Boolean)
+        .join("  ·  ");
+      const busy = c.looking + c.waiting > 0;
+      if (wasBusy !== null && busy !== wasBusy) {
+        announcer.textContent = busy
+          ? `Reading ${c.looking + c.waiting} ${c.looking + c.waiting === 1 ? "link" : "links"}.`
+          : `Finished reading: ${counts.textContent}.`;
+      }
+      wasBusy = busy;
+      // Stop or Retry may hide while it has focus (the reading it controls ended): focus
+      // then moves to the other one, or to Select All, instead of falling to the page.
+      const focused = document.activeElement;
+      stopBtn.hidden = !busy;
+      const again = c.failed + c.cancelled;
+      retryBtn.hidden = again === 0;
+      if ((focused === stopBtn || focused === retryBtn) && (focused as HTMLElement).hidden) {
+        (focused === stopBtn && !retryBtn.hidden ? retryBtn : focused === retryBtn && !stopBtn.hidden ? stopBtn : toggleAll).focus();
+      }
+      retryBtn.querySelector("span")!.textContent = c.cancelled === 0 ? `Retry ${c.failed} Failed` : `Read ${again} Again`;
+      toggleAll.querySelector("span")!.textContent = allSelected() ? "Select None" : "Select All";
+      toggleAll.setAttribute("aria-disabled", String(!rows.some(selectable)));
+      const n = c.selectedItems;
+      addLabel.textContent = n === 0 ? "Download" : n === 1 ? "Download 1 Video" : `Download ${n} Videos`;
+      addBtn.setAttribute("aria-disabled", String(n === 0 || links.submitting));
+      selectedNote.textContent = `${c.selectedRows} of ${rows.length} links selected  ·  Saves to ${folderName(store.settings.outputDir)}`;
+    };
+    const scheduleCounts = () => {
+      if (!countFrame) countFrame = requestAnimationFrame(paintCounts);
+    };
+
+    const fallbackThumb = () => h("div", { class: "entry-thumb thumb-fallback" }, icon("link", 16));
+
+    const paintRow = (r: BatchRow<ProbeResult>) => {
+      scheduleCounts();
+      const ref = refs.get(r.id);
+      if (!ref) return; // not built yet; it is painted when it is
+      const can = selectable(r);
+      ref.pick.setAttribute("aria-checked", String(r.selected));
+      // aria-disabled, not disabled: the row keeps keyboard focus when it changes.
+      ref.pick.setAttribute("aria-disabled", String(!can));
+      ref.pick.dataset.status = r.added ? "added" : r.status;
+      ref.title.textContent = r.result?.title || r.url;
+      ref.title.title = r.url;
+      const [note, tone] = rowNote(r);
+      ref.sub.textContent = note;
+      ref.sub.dataset.tone = tone;
+      const art = r.result ? (r.result.thumbnail ?? r.result.entries.find((e) => e.thumbnail)?.thumbnail ?? null) : null;
+      if (art !== ref.thumbFor) {
+        const next = art ? thumbnailEl(art, "entry-thumb") : fallbackThumb();
+        ref.thumb.replaceWith(next);
+        ref.thumb = next;
+        ref.thumbFor = art;
+      }
+      const side = r.status === "failed" || r.status === "cancelled" ? "retry" : "";
+      if (side !== ref.sideFor) {
+        ref.sideFor = side;
+        replace(
+          ref.side,
+          side
+            ? button({
+                icon: "retry",
+                title: "Read this link again",
+                variant: "plain",
+                size: "small",
+                onClick: () => {
+                  links.retry(r.id);
+                  ref.pick.focus(); // the button goes away; focus stays on the row
+                },
+              })
+            : null,
+        );
+      }
+    };
+
+    const buildRow = (r: BatchRow<ProbeResult>): HTMLElement => {
+      const thumb = fallbackThumb();
+      const title = h("span", { class: "entry-title" });
+      const sub = h("span", { class: "entry-sub" });
+      const pick = h(
+        "button",
+        { class: "entry batch-pick", attrs: { type: "button", role: "checkbox", "aria-checked": "false" } },
+        h("span", { class: "check" }, icon("check", 12)),
+        thumb,
+        h("span", { class: "entry-text" }, title, sub),
+      );
+      pick.addEventListener("click", () => links.setSelected(r.id, !r.selected));
+      const side = h("span", { class: "batch-side" });
+      refs.set(r.id, { pick, thumb, thumbFor: null, title, sub, side, sideFor: "" });
+      paintRow(r);
+      return h("div", { class: "batch-row" }, pick, side);
+    };
+
+    const list = h("div", { class: "batch-list", attrs: { role: "group", "aria-label": "Links in this batch" } });
+    const buildSome = () => {
+      buildFrame = 0;
+      const end = Math.min(built + ROWS_PER_FRAME, rows.length);
+      const fragment = document.createDocumentFragment();
+      for (; built < end; built++) fragment.append(buildRow(rows[built]));
+      list.append(fragment);
+      if (built < rows.length) buildFrame = requestAnimationFrame(buildSome);
+    };
+    buildSome();
+
+    // Choices shared by the whole batch. The rows are shown or hidden, never rebuilt, so
+    // the control in use keeps focus.
+    const choices = session.choices;
+    const qualities = qualityChoices([], true);
+    const qualityRow = row(
+      "Quality",
+      chipRadio<number>(
+        "Quality",
+        [{ value: 0, label: "Best" }, ...qualities.map((q) => ({ value: q.value, label: q.label, hint: `Up to ${q.value}p` }))],
+        choices.maxHeight ?? 0,
+        (value) => (choices.maxHeight = value === 0 ? null : value),
+      ),
+      "Each video is saved at the best quality it has, up to this limit. MP4 when possible.",
+    );
+    const formatRow = row(
+      "Format",
+      chipRadio<string>("Audio format", AUDIO_FORMATS, choices.audioFormat, (value) => (choices.audioFormat = value)),
+      audioHint(),
+    );
+    const showMode = () => {
+      qualityRow.hidden = choices.mode !== "video";
+      formatRow.hidden = choices.mode !== "audio";
+    };
+    const typeSeg = segmented<"video" | "audio">(
+      "Type",
+      [
+        { value: "video", label: "Video", icon: "video" },
+        { value: "audio", label: "Audio Only", icon: "music" },
+      ],
+      choices.mode,
+      (next) => {
+        choices.mode = next;
+        showMode();
+      },
+    );
+    showMode();
+
+    batchView = {
+      paintRow,
+      refresh: scheduleCounts,
+      dispose: () => {
+        cancelAnimationFrame(buildFrame);
+        cancelAnimationFrame(countFrame);
+      },
+    };
+    paintCounts();
+
+    return h(
+      "div",
+      { class: "result batch" },
+      renderIssues(session.parsed),
+      sectionTitle("Options"),
+      group(
+        row("Type", typeSeg.el, "Applies to every link here. Subtitles can be chosen when a link is read on its own."),
+        qualityRow,
+        formatRow,
+      ),
+      h("div", { class: "entries-head" }, sectionTitle("Links"), counts, announcer, stopBtn, retryBtn, toggleAll, clearBtn),
+      h("div", { class: "glass group" }, list),
+      h("div", { class: "actions" }, selectedNote, addBtn),
+    );
+  }
+
   function renderRecent(): Node | null {
     const recent = store.history.slice(0, 4);
     if (recent.length === 0) return null;
@@ -569,31 +1023,85 @@ export const mountDownload: MountView = (container, ctx) => {
     );
   }
 
+  /** Shown above a single link's details, or an error, while a batch is kept behind them. */
+  function batchReturn(): HTMLElement | null {
+    if (!store.batch || phase === "batch") return null;
+    const total = store.links.rows.length;
+    const waiting = store.links.rows.filter((r) => !r.added).length;
+    return h(
+      "div",
+      { class: "batch-return" },
+      h("span", { text: `Your list of ${total} ${total === 1 ? "link" : "links"} is kept${waiting > 0 ? `, ${waiting} not added yet` : ""}.` }),
+      button({
+        label: "Back to Links",
+        variant: "secondary",
+        size: "small",
+        onClick: () => {
+          ticket += 1; // a single lookup still running is dropped
+          lastUrl = "";
+          result = null;
+          phase = "batch";
+          render();
+        },
+      }),
+    );
+  }
+
+  /** What the stage shows; a change of it (not a refresh of the same) animates in. */
+  const stageKey = () =>
+    phase === "result" ? `result:${lastUrl}` : phase === "batch" ? `batch:${store.links.rows[0]?.id ?? ""}` : phase;
+  let shownKey = "";
+
   function render() {
     goButton.disabled = phase === "loading";
+    // A newer transition replaces one still running; errors and loading never wait for one.
+    stageAnimation?.cancel();
+    stageAnimation = null;
+    batchView?.dispose();
+    batchView = null;
+    const hadFocus = stage.contains(document.activeElement);
+    const key = stageKey();
+    const changed = key !== shownKey;
+    shownKey = key;
+    const back = batchReturn();
+    // Shown with the single link's loading, error and details; never with a batch.
+    const issues = skipped && phase !== "idle" && phase !== "batch" ? renderIssues(skipped) : null;
     switch (phase) {
       case "loading":
-        replace(stage, h("div", { class: "loading", attrs: { role: "status" } }, spinner(), h("span", { text: "Reading the link…" })));
+        replace(stage, back, issues, h("div", { class: "loading", attrs: { role: "status" } }, spinner(), h("span", { text: "Reading the link…" })));
         break;
       case "error":
         replace(
           stage,
+          back,
+          issues,
           h(
             "div",
             { class: "notice notice-error", attrs: { role: "alert" } },
             icon("alert", 18),
-            h("div", { class: "notice-text" }, h("strong", { text: "Couldn't read that link" }), h("span", { text: errorText })),
-            button({ label: "Try Again", variant: "secondary", size: "small", onClick: () => void submit() }),
+            h("div", { class: "notice-text" }, h("strong", { text: errorTitle }), h("span", { text: errorText })),
+            errorRetry ? button({ label: "Try Again", variant: "secondary", size: "small", onClick: () => void submit() }) : null,
           ),
         );
         break;
-      case "result":
-        replace(stage, renderResult(result!));
-        stage.firstElementChild?.classList.add("settle");
+      case "result": {
+        const shown = renderResult(result!);
+        replace(stage, back, issues, shown);
+        if (changed) stageAnimation = settleIn(shown);
+        break;
+      }
+      case "batch":
+        if (!store.batch) {
+          phase = "idle";
+          return render();
+        }
+        replace(stage, renderBatch(store.batch));
+        if (changed) stageAnimation = settleIn(stage.firstElementChild);
         break;
       default:
         replace(
           stage,
+          back,
           h(
             "div",
             { class: "empty" },
@@ -607,18 +1115,30 @@ export const mountDownload: MountView = (container, ctx) => {
           renderRecent(),
         );
     }
+    // The focused control was replaced: keep the keyboard in the link field, not lost.
+    if (hadFocus && !stage.contains(document.activeElement)) input.focus({ preventScroll: true });
   }
 
   // Ctrl+V anywhere in the window lands here (routed by main.ts).
+  // A list of links is only filled in: reading 500 links is not started by a paste.
   const takePaste = () => {
     const pasted = store.takePastedLink();
     if (!pasted) return;
     input.value = pasted;
-    void submit();
+    fitInput();
+    if (looksLikeUrl(pasted)) void submit();
+    else input.focus();
   };
   const offPaste = store.on("paste", takePaste);
   const offFocus = store.on("focusLink", () => input.focus());
   const offHistory = store.on("history", () => phase === "idle" && render());
+  const offBatch = store.on("batch", () => {
+    if (store.batch) phase = "batch";
+    else if (phase === "batch") phase = "idle";
+    else return;
+    render();
+  });
+  const offBatchRow = store.on("batchRow", (detail) => batchView?.paintRow(detail as BatchRow<ProbeResult>));
 
   render();
   input.focus();
@@ -629,6 +1149,12 @@ export const mountDownload: MountView = (container, ctx) => {
     offFocus();
     offTools.forEach((off) => off());
     offHistory();
+    offBatch();
+    offBatchRow();
+    batchView?.dispose();
+    batchView = null;
+    stageAnimation?.cancel();
+    ticket += 1; // replies to lookups still running are ignored
     lastUrl = "";
   };
 };

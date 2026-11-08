@@ -38,3 +38,20 @@ New rows are now built at most 40 per frame, also when the view opens. Measured 
 | 500 | 8 | 1 → 0 | 117 ms → none | 506 |
 
 Script time while adding 500 rises slightly (about 28 → 33–42 ms in total) because the work is split over more frames; progress updates are unchanged (≤ 0.016 ms per event, no long tasks).
+
+## Pasted link batches (2026-11-07)
+
+Measured with `node scripts/dev/batch-bench.mjs` on the same PC and headless Edge, against the dev mock with its lookup delays scaled to 2% (6 to 46 ms each). Every 25th link fails and every 50th is an 8-video playlist. Paste and Ctrl+Enter are separate tasks, as when typed. Three runs; raw results of the second are in `batch-links-v1.json`.
+
+| Links | Long tasks: paste / lookups / add | Lookups: script, layout, style | Most lookups at once | Enqueue calls (items) |
+| ---: | --- | --- | ---: | --- |
+| 100 | 0 / 0 / 0 | 26–41, 54–60, 48–60 ms | 3 | 1 (110) |
+| 500 | 0 / 0 / 0 | 140–169, 147–178, 74–83 ms | 3 | 2 (500 + 50) |
+
+- Rows are built 40 per frame. Each answered lookup repaints its own row; the counts repaint at most once per frame.
+- Two clicks on Download in one task sent each item once. A third press after everything was added sent nothing. The Queue view then showed 6 + 550 rows.
+- Stop after 400 ms (30 links, unscaled mock delays): no lookup started after Stop, and the replies still running were ignored. All 30 rows showed as stopped.
+- An earlier version animated the check's colours on every row as it became ready. Style recalculation for 500 links was then 2,730 ms in total, and rose as more rows were ready. Transform-only check feedback reduced this to 183–227 ms, and `content-visibility: auto` on the rows reduced it to 74–83 ms. Before these changes, adding 550 items at once caused one 55–115 ms long task in 4 of 5 runs; there were none in the 3 runs after.
+- The existing `queue-bench.mjs` was re-run after this change: no long tasks while adding 1, 100 or 500 jobs, and at most 0.012 ms per progress event.
+- These numbers come from the mock, not from real yt-dlp lookups, which take seconds each and are limited to three at a time.
+- Disk: each video lookup saves yt-dlp's full answer (it can be megabytes, up to the 32 MB read limit) so the download can skip a second extraction. A batch writes one such file per video, so the cache is now capped at 256 MB in total as well as 20 minutes per file; the oldest files go first, after every write, one prune at a time. A download that starts after its file was evicted reads the site again; a file a running download already uses is held until that run ends, so the prune skips it. Not measured with real lookups.
