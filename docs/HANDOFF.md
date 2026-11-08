@@ -13,6 +13,7 @@ Source version is **1.1.0** in all five version files. It is a release candidate
 - **Probe cache.** It has a 256 MB budget; `probe::cached_info` returns a lease that a download holds until yt-dlp exits, and prunes skip leased files.
 - **Tests.** `npm run test:logic` (pure frontend logic), `npm run test:motion` (motion and drag gesture) and `npm run test:queue`, `test:fonts`, `python scripts/test_font_metrics.py`, plus `cargo test` (227 tests; build the fixture tool first). Media tests use the installed yt-dlp and ffmpeg and skip without them; `CLAWS_TEST_FFMPEG_DIR` overrides the folder.
 - **Benchmarks.** `scripts/dev/batch-bench.mjs`, `motion-bench.mjs` and `queue-bench.mjs` drive headless Edge against the dev mock; results are in `docs/performance/`.
+- **Installer.** `installers/Claws_1.1.0_x64-setup.exe`, 2,897,698 bytes, SHA-256 `79d07160868c625a2617e3dcdc127831f5d72fed818ea56ae1bcf9f7d41f5d5f`, built from `90de684` (checksum file alongside). Not installed or published.
 - **Not verified.** Real-site downloads, editor import of dragged files, Explorer drags, Windows 10, a fresh install and an upgrade, and the real WebView2 window under Reduce motion. The manual checklist is in `docs/CURRENT_DEVELOPMENT_STATUS.md`.
 - **Process note.** A parallel session added the drag and completion feedback while transcripts were being finished; the commits were split afterwards (`9501fa6` transcripts, `4b07877` drag and scope notes).
 
