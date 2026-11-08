@@ -390,3 +390,276 @@ fn yt_dlp_picks_the_matching_audio_stream() {
     let only_combined = serde_json::json!([combined]);
     assert_eq!(pick(&only_combined, "m4a", PreferMatching), pick(&only_combined, "m4a", Best));
 }
+
+// ---- Presets on real media ------------------------------------------------------------
+//
+// Short synthetic clips made with the installed FFmpeg, described in a made-up info file
+// the way a site describes its streams, read through file links, saved by the real yt-dlp
+// with the exact arguments the policy builds, and inspected with ffprobe. They need
+// yt-dlp, ffmpeg and ffprobe (the copies Claws manages, or CLAWS_TEST_YTDLP and
+// CLAWS_TEST_FFMPEG_DIR); without them they skip.
+
+/// The folder holding ffmpeg and ffprobe: CLAWS_TEST_FFMPEG_DIR, or the one Claws manages.
+fn ffmpeg_dir() -> Option<PathBuf> {
+    let dir = match std::env::var_os("CLAWS_TEST_FFMPEG_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => Path::new(&std::env::var_os("APPDATA")?).join("dev.claws.downloader").join("bin"),
+    };
+    let exe = |name: &str| dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    (exe("ffmpeg").is_file() && exe("ffprobe").is_file()).then_some(dir)
+}
+
+struct MediaKit {
+    ytdlp: PathBuf,
+    tools: PathBuf,
+    dir: PathBuf,
+}
+
+impl Drop for MediaKit {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+macro_rules! require_media {
+    ($tag:expr) => {
+        match (ytdlp(), ffmpeg_dir()) {
+            (Some(ytdlp), Some(tools)) => MediaKit { ytdlp, tools, dir: temp_dir($tag) },
+            _ => {
+                eprintln!("skipped: needs yt-dlp, ffmpeg and ffprobe");
+                return;
+            }
+        }
+    };
+}
+
+/// 1 second of a flat picture: tiny files, so even 8K encodes in a moment.
+const CLIP: &str = "r=10:d=1";
+
+impl MediaKit {
+    fn tool(&self, name: &str) -> PathBuf {
+        self.tools.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+    }
+
+    /// Encodes `name` in the kit's folder from FFmpeg's built-in test sources.
+    fn make(&self, name: &str, args: &[&str]) -> PathBuf {
+        let path = self.dir.join(name);
+        let output = Command::new(self.tool("ffmpeg")).args(["-hide_banner", "-loglevel", "error", "-y"]).args(args).arg(&path).output().unwrap();
+        assert!(output.status.success(), "ffmpeg could not make {name}: {}", String::from_utf8_lossy(&output.stderr));
+        path
+    }
+
+    fn picture(&self, name: &str, size: &str, encode: &[&str]) -> PathBuf {
+        let source = format!("color=c=gray:s={size}:{CLIP}");
+        let mut args = vec!["-f", "lavfi", "-i", &source, "-an"];
+        args.extend_from_slice(encode);
+        self.make(name, &args)
+    }
+
+    fn h264(&self, name: &str, size: &str) -> PathBuf {
+        self.picture(name, size, &["-c:v", "libx264", "-preset", "ultrafast", "-crf", "51", "-pix_fmt", "yuv420p"])
+    }
+
+    fn sound(&self, name: &str, encode: &[&str]) -> PathBuf {
+        let mut args = vec!["-f", "lavfi", "-i", "sine=f=440:d=1", "-ac", "2", "-vn"];
+        args.extend_from_slice(encode);
+        self.make(name, &args)
+    }
+
+    /// A stream entry for `path` as a site would list it, read through a file link.
+    fn format(path: &Path, id: &str, fields: serde_json::Value) -> serde_json::Value {
+        let mut format = serde_json::json!({
+            "format_id": id,
+            "url": url::Url::from_file_path(path).unwrap().to_string(),
+            "protocol": "file",
+            "ext": path.extension().unwrap().to_string_lossy(),
+        });
+        format.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+        format
+    }
+
+    /// Saves `formats` with the policy's arguments for `options` into a fresh work folder and
+    /// returns the file yt-dlp reported as finished.
+    fn download(&self, formats: serde_json::Value, options: &crate::downloader::DownloadOptions, embed_metadata: bool) -> PathBuf {
+        let work = self.dir.join(format!("work-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&work).unwrap();
+        let info = self.dir.join(format!("info-{}.json", uuid::Uuid::new_v4().simple()));
+        let value = serde_json::json!({
+            "id": "fixture", "title": "fixture", "ext": "mp4", "extractor": "generic", "extractor_key": "Generic",
+            "webpage_url": "https://example.invalid/v", "duration": 1.0, "formats": formats
+        });
+        std::fs::write(&info, value.to_string()).unwrap();
+        let execution = JobExecution {
+            filename_template: "payload.%(ext)s".into(),
+            embed_metadata,
+            ..JobExecution::freeze(&Settings { output_dir: "unused".into(), ..Settings::default() }, false)
+        };
+        // As tools::common_args gives them, with this FFmpeg.
+        let common = vec!["--no-colors".into(), "--ignore-config".into(), "--ffmpeg-location".into(), self.tools.to_string_lossy().into_owned()];
+        let mut args = download_policy::download_args(common, options, &execution, &work, Source::InfoJson(&info));
+        // Only the test reads file links; the source stays last.
+        let tail = args.split_off(args.len() - 2);
+        args.push("--enable-file-urls".into());
+        args.extend(tail);
+        let output = Command::new(&self.ytdlp).args(&args).output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{}\n{stdout}", String::from_utf8_lossy(&output.stderr));
+        let done = stdout.lines().find_map(|l| l.trim_end().strip_prefix("CLAWSDONE|")).expect("yt-dlp reported the finished file");
+        PathBuf::from(done)
+    }
+
+    /// ffprobe's view of each stream: codec, picture size, pixel format, colour and channels.
+    fn streams(&self, file: &Path) -> Vec<serde_json::Value> {
+        let output = Command::new(self.tool("ffprobe"))
+            .args(["-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,pix_fmt,color_space,color_transfer,color_primaries,channels", "-of", "json"])
+            .arg(file)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        value["streams"].as_array().unwrap().clone()
+    }
+
+    fn stream<'a>(streams: &'a [serde_json::Value], kind: &str) -> &'a serde_json::Value {
+        let mut matching = streams.iter().filter(|s| s["codec_type"] == kind);
+        let first = matching.next().unwrap_or_else(|| panic!("no {kind} stream in {streams:?}"));
+        assert!(matching.next().is_none(), "one {kind} stream expected: {streams:?}");
+        first
+    }
+
+    /// A hash of the first `kind` ("v" or "a") stream's packets: equal only when the stream
+    /// was copied, whatever container now holds it.
+    fn packets(&self, file: &Path, kind: &str) -> String {
+        let output = Command::new(self.tool("ffmpeg"))
+            .args(["-v", "error", "-i"])
+            .arg(file)
+            .args(["-map", &format!("0:{kind}:0"), "-c", "copy", "-f", "streamhash", "-hash", "sha256", "-"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let text = String::from_utf8_lossy(&output.stdout);
+        text.lines().rev().find(|l| !l.starts_with('#')).and_then(|l| l.rsplit(',').next()).unwrap().trim().to_string()
+    }
+}
+
+fn video_options(max_height: Option<u32>, video_preset: crate::download_policy::VideoPreset) -> crate::downloader::DownloadOptions {
+    crate::downloader::DownloadOptions { max_height, video_preset, ..crate::downloader::DownloadOptions::default() }
+}
+
+#[test]
+fn original_keeps_hdr_vp9_and_opus_untouched_while_compatible_still_prefers_h264() {
+    use crate::download_policy::VideoPreset::{Compatible, Original};
+    let kit = require_media!("media-hdr");
+    // A YouTube-like 720p: VP9 Profile 2 HDR10 or H.264 SDR, and Opus or AAC.
+    let hdr = kit.picture(
+        "v-hdr.webm",
+        "1280x720",
+        &["-vf", "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:range=tv,format=yuv420p10le", "-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-b:v", "50k"],
+    );
+    let sdr = kit.h264("v-sdr.mp4", "1280x720");
+    let aac = kit.sound("a-aac.m4a", &["-c:a", "aac", "-b:a", "32k"]);
+    let opus = kit.sound("a-opus.webm", &["-c:a", "libopus", "-b:a", "24k"]);
+    let formats = serde_json::json!([
+        MediaKit::format(&hdr, "vp9-hdr", serde_json::json!({"vcodec": "vp09.02.31.10.01.09.16.09.00", "acodec": "none", "width": 1280, "height": 720, "fps": 10, "dynamic_range": "HDR10", "tbr": 50})),
+        MediaKit::format(&sdr, "avc1", serde_json::json!({"vcodec": "avc1.64001f", "acodec": "none", "width": 1280, "height": 720, "fps": 10, "tbr": 40})),
+        MediaKit::format(&aac, "aac", serde_json::json!({"vcodec": "none", "acodec": "mp4a.40.2", "abr": 32, "tbr": 32})),
+        MediaKit::format(&opus, "opus", serde_json::json!({"vcodec": "none", "acodec": "opus", "abr": 24, "tbr": 24})),
+    ]);
+
+    // Original: the site's own best streams, copied (also through the metadata pass) into a
+    // container that holds them. Nothing promises an editor opens VP9 in MKV.
+    let saved = kit.download(formats.clone(), &video_options(None, Original), true);
+    assert_eq!(saved.extension().unwrap(), "mkv", "VP9 and Opus are not MP4 by yt-dlp's rules");
+    let streams = kit.streams(&saved);
+    let video = MediaKit::stream(&streams, "video");
+    assert_eq!((video["codec_name"].as_str(), video["width"].as_u64(), video["height"].as_u64()), (Some("vp9"), Some(1280), Some(720)));
+    assert_eq!(video["pix_fmt"], "yuv420p10le", "10-bit kept");
+    assert_eq!((video["color_primaries"].as_str(), video["color_transfer"].as_str(), video["color_space"].as_str()), (Some("bt2020"), Some("smpte2084"), Some("bt2020nc")), "HDR colour kept");
+    let audio = MediaKit::stream(&streams, "audio");
+    assert_eq!((audio["codec_name"].as_str(), audio["channels"].as_u64()), (Some("opus"), Some(2)));
+    assert_eq!(kit.packets(&saved, "v"), kit.packets(&hdr, "v"), "the video was copied, not re-encoded");
+    assert_eq!(kit.packets(&saved, "a"), kit.packets(&opus, "a"), "the audio was copied, not re-encoded");
+
+    // Compatible, as before presets: H.264 and AAC at the same size, in MP4, also copied.
+    let saved = kit.download(formats, &video_options(None, Compatible), true);
+    assert_eq!(saved.extension().unwrap(), "mp4");
+    let streams = kit.streams(&saved);
+    let video = MediaKit::stream(&streams, "video");
+    assert_eq!((video["codec_name"].as_str(), video["width"].as_u64(), video["height"].as_u64()), (Some("h264"), Some(1280), Some(720)));
+    assert_eq!(MediaKit::stream(&streams, "audio")["codec_name"], "aac");
+    assert_eq!(kit.packets(&saved, "v"), kit.packets(&sdr, "v"));
+    assert_eq!(kit.packets(&saved, "a"), kit.packets(&aac, "a"));
+}
+
+#[test]
+fn an_8k_source_is_saved_at_8k_only_when_asked_and_never_upscaled() {
+    use crate::download_policy::VideoPreset::{Compatible, Original};
+    let kit = require_media!("media-8k");
+    let eight_k = kit.h264("v-4320.mp4", "7680x4320");
+    let hd = kit.h264("v-720.mp4", "1280x720");
+    let aac = kit.sound("a.m4a", &["-c:a", "aac", "-b:a", "32k"]);
+    let formats = serde_json::json!([
+        MediaKit::format(&hd, "720", serde_json::json!({"vcodec": "avc1.64001f", "acodec": "none", "width": 1280, "height": 720, "tbr": 40})),
+        MediaKit::format(&eight_k, "4320", serde_json::json!({"vcodec": "avc1.640033", "acodec": "none", "width": 7680, "height": 4320, "tbr": 400})),
+        MediaKit::format(&aac, "aac", serde_json::json!({"vcodec": "none", "acodec": "mp4a.40.2", "abr": 32, "tbr": 32})),
+    ]);
+    let size = |file: &Path| {
+        let streams = kit.streams(file);
+        let video = MediaKit::stream(&streams, "video").clone();
+        (video["codec_name"].as_str().unwrap().to_string(), video["width"].as_u64().unwrap(), video["height"].as_u64().unwrap())
+    };
+
+    let saved = kit.download(formats.clone(), &video_options(Some(4320), Original), false);
+    assert_eq!(saved.extension().unwrap(), "mp4", "H.264 and AAC fit MP4, so Original keeps MP4 here");
+    assert_eq!(size(&saved), ("h264".to_string(), 7680, 4320));
+    assert_eq!(kit.packets(&saved, "v"), kit.packets(&eight_k, "v"));
+
+    let saved = kit.download(formats.clone(), &video_options(Some(4320), Compatible), false);
+    assert_eq!(size(&saved), ("h264".to_string(), 7680, 4320));
+    // A cap between the offered sizes takes the one below; nothing is scaled up or down.
+    let saved = kit.download(formats, &video_options(Some(2160), Compatible), false);
+    assert_eq!(size(&saved), ("h264".to_string(), 1280, 720));
+}
+
+#[test]
+fn portrait_video_is_capped_by_its_shorter_side() {
+    use crate::download_policy::VideoPreset::{Compatible, Original};
+    let kit = require_media!("media-portrait");
+    let small = kit.h264("p-640.mp4", "360x640");
+    let large = kit.h264("p-1280.mp4", "720x1280");
+    let aac = kit.sound("a.m4a", &["-c:a", "aac", "-b:a", "32k"]);
+    let formats = serde_json::json!([
+        MediaKit::format(&small, "p360", serde_json::json!({"vcodec": "avc1.64001e", "acodec": "none", "width": 360, "height": 640, "tbr": 30})),
+        MediaKit::format(&large, "p720", serde_json::json!({"vcodec": "avc1.64001f", "acodec": "none", "width": 720, "height": 1280, "tbr": 60})),
+        MediaKit::format(&aac, "aac", serde_json::json!({"vcodec": "none", "acodec": "mp4a.40.2", "abr": 32, "tbr": 32})),
+    ]);
+    let dims = |file: &Path| {
+        let streams = kit.streams(file);
+        let video = MediaKit::stream(&streams, "video").clone();
+        (video["width"].as_u64().unwrap(), video["height"].as_u64().unwrap())
+    };
+    // The "360p" choice of a portrait video is the 360×640 stream, as the probe offers it.
+    assert_eq!(dims(&kit.download(formats.clone(), &video_options(Some(360), Compatible), false)), (360, 640));
+    assert_eq!(dims(&kit.download(formats, &video_options(None, Original), false)), (720, 1280));
+}
+
+#[test]
+fn a_stream_without_codec_fields_is_kept_whole() {
+    use crate::download_policy::VideoPreset::{Compatible, Original};
+    let kit = require_media!("media-nocodec");
+    // One file with picture and sound, listed with its size but no codec names.
+    let muxed = kit.make(
+        "muxed.mp4",
+        &["-f", "lavfi", "-i", &format!("color=c=gray:s=640x360:{CLIP}"), "-f", "lavfi", "-i", "sine=f=440:d=1", "-shortest", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "51", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "32k"],
+    );
+    let formats = serde_json::json!([MediaKit::format(&muxed, "only", serde_json::json!({"width": 640, "height": 360}))]);
+    for preset in [Original, Compatible] {
+        let saved = kit.download(formats.clone(), &video_options(Some(360), preset), false);
+        assert_eq!(saved.extension().unwrap(), "mp4", "{preset:?}");
+        let streams = kit.streams(&saved);
+        assert_eq!(MediaKit::stream(&streams, "video")["codec_name"], "h264");
+        assert_eq!(MediaKit::stream(&streams, "audio")["codec_name"], "aac");
+        assert_eq!(kit.packets(&saved, "v"), kit.packets(&muxed, "v"), "{preset:?}");
+        assert_eq!(kit.packets(&saved, "a"), kit.packets(&muxed, "a"), "{preset:?}");
+    }
+}

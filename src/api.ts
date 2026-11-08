@@ -3,8 +3,9 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { DownloadEstimate } from "./download-estimates";
 import type { JobEvent, JobRemoved, JobsAdded } from "./queue-events";
+import type { Resolution, VideoPreset } from "./resolution";
 
-export type { DownloadEstimate, JobEvent, JobRemoved, JobsAdded };
+export type { DownloadEstimate, JobEvent, JobRemoved, JobsAdded, Resolution, VideoPreset };
 
 export type Theme = "system" | "light" | "dark";
 export type Backdrop = "glass" | "acrylic" | "mica" | "tabbed" | "none";
@@ -45,7 +46,13 @@ export type JobStatus =
 
 export interface DownloadOptions {
   mode: "video" | "audio";
+  /** Largest video to fetch, as its shorter side (yt-dlp's `res`); null is the best. */
   maxHeight: number | null;
+  /**
+   * Which streams a video keeps and what file they become. Jobs saved before presets read
+   * as "compatible" (the backend fills it in). Ignored for audio.
+   */
+  videoPreset: VideoPreset;
   audioFormat: string;
   subtitleLangs: string[];
   autoSubs: boolean;
@@ -150,7 +157,14 @@ export interface ProbeResult {
   thumbnail: string | null;
   duration: number | null;
   site: string | null;
+  /**
+   * Shorter sides of `resolutions`, largest first. In links saved before `resolutions`
+   * existed these are raw format heights (the longer side for portrait video), so they are
+   * offered only as caps (see resolution.ts qualityChoices).
+   */
   heights: number[];
+  /** Every picture size offered, largest first. Absent in links saved before it existed. */
+  resolutions?: Resolution[];
   subtitles: SubtitleLang[];
   entries: EntrySummary[];
 }

@@ -15,7 +15,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::downloader::Job;
 
-pub const QUEUE_SCHEMA: u16 = 2;
+/// 3: jobs carry `videoPreset` (and later option fields). An older Claws would read such a
+/// job but drop the field on its next save, silently turning an Original download back
+/// into a Compatible one, so it sets a schema 3 file aside instead. Schema 2 files load
+/// unchanged; their jobs read as Compatible.
+pub const QUEUE_SCHEMA: u16 = 3;
 const COALESCE: Duration = Duration::from_millis(250);
 const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(2);
 
@@ -407,6 +411,70 @@ mod tests {
         assert!(!path.exists());
         let kept: Vec<String> = crate::download_tests::names(&dir);
         assert!(kept.iter().any(|n| n.starts_with("queue.newer-version-")), "{kept:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// One saved job as 1.0.5 (queue schema 2) wrote it: no `videoPreset`. `execution` is
+    /// the frozen settings of a job that had started, or null for one that had not.
+    fn schema_2_job(id: &str, status: &str, execution: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","url":"https://example.com/{id}","playlistIndex":null,"title":"{id}","thumbnail":null,"uploader":null,"duration":60.0,
+               "options":{{"mode":"video","maxHeight":2160,"audioFormat":"mp3","subtitleLangs":[],"autoSubs":false,"embedSubs":false,"fastSave":false}},
+               "status":"{status}","progress":0.25,"progressKnown":true,"progressEstimated":false,"downloadedBytes":100,"totalBytes":400,
+               "speed":null,"eta":null,"filePath":null,"error":null,"createdAt":1,"partialFiles":[],"execution":{execution},
+               "workspace":null,"cancelRequested":false,"revision":4,"attempt":0}}"#
+        )
+    }
+
+    #[test]
+    fn a_schema_2_queue_loads_with_every_job_compatible() {
+        use crate::download_policy::VideoPreset;
+        let dir = temp("queue-schema-2");
+        let path = dir.join("queue.json");
+        let execution = r#"{"schemaVersion":1,"outputDir":"D:/Out","filenameTemplate":"%(title)s.%(ext)s","embedMetadata":true,"audioSelection":"preferMatching","fragmentConcurrency":8,"transport":"native"}"#;
+        let text = format!(r#"{{"schemaVersion":2,"revision":9,"jobs":[{},{}]}}"#, schema_2_job("started", "paused", execution), schema_2_job("waiting", "queued", "null"));
+        std::fs::write(&path, text).unwrap();
+        let mut notices = Vec::new();
+        let jobs = load(&path, &mut notices);
+        assert!(notices.is_empty(), "{notices:?}");
+        assert!(path.exists(), "an older queue is read in place, not set aside");
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs.iter().all(|j| j.options.video_preset == VideoPreset::Compatible));
+        assert!(jobs[0].execution.as_ref().is_some_and(|e| e.output_dir == Path::new("D:/Out")), "the frozen settings survive");
+        assert!(jobs[1].execution.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_schema_3_queue_round_trips_its_presets() {
+        use crate::download_policy::VideoPreset;
+        assert_eq!(QUEUE_SCHEMA, 3, "presets are a field an older Claws would drop: it must set the file aside");
+        let dir = temp("queue-schema-3");
+        let path = dir.join("queue.json");
+        let mut job: crate::downloader::Job = serde_json::from_str(&schema_2_job("eight-k", "paused", "null")).unwrap();
+        job.options.video_preset = VideoPreset::Original;
+        job.options.max_height = Some(4320);
+        let snapshot = QueueSnapshot { schema_version: QUEUE_SCHEMA, revision: 3, jobs: vec![job] };
+        let text = serde_json::to_string(&snapshot).unwrap();
+        assert!(text.contains(r#""schemaVersion":3"#) && text.contains(r#""videoPreset":"original""#), "{text}");
+        std::fs::write(&path, text).unwrap();
+        let mut notices = Vec::new();
+        let jobs = load(&path, &mut notices);
+        assert!(notices.is_empty(), "{notices:?}");
+        assert_eq!(jobs[0].options.video_preset, VideoPreset::Original);
+        assert_eq!(jobs[0].options.max_height, Some(4320));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_next_schema_is_set_aside() {
+        let dir = temp("queue-schema-next");
+        let path = dir.join("queue.json");
+        std::fs::write(&path, format!(r#"{{"schemaVersion":{},"revision":1,"jobs":[]}}"#, QUEUE_SCHEMA + 1)).unwrap();
+        let mut notices = Vec::new();
+        assert!(load(&path, &mut notices).is_empty());
+        assert_eq!(notices.len(), 1);
+        assert!(crate::download_tests::names(&dir).iter().any(|n| n.starts_with("queue.newer-version-")));
         let _ = std::fs::remove_dir_all(dir);
     }
 

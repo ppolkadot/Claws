@@ -24,6 +24,31 @@ pub enum AudioSelection {
     PreferMatching,
 }
 
+/// What a video download keeps: which streams are chosen and what the saved file is. Part
+/// of the job's options, so it is fixed at enqueue and a paused or retried job never
+/// changes it. A missing value (jobs saved before presets existed) is `Compatible`, the
+/// behaviour those jobs were queued with.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum VideoPreset {
+    /// Prefers H.264 video and AAC audio at the chosen resolution and saves MP4. Where a
+    /// resolution exists only in another codec, that codec is taken (still in MP4).
+    #[default]
+    Compatible,
+    /// The site's best streams at the chosen resolution, with no codec preference, merged
+    /// without re-encoding into MP4 when the codecs allow it and MKV otherwise.
+    Original,
+    /// An editing transcode. Reserved: not offered or accepted until processing exists.
+    EditingProRes,
+}
+
+impl VideoPreset {
+    /// Whether this build can make it.
+    pub fn available(self) -> bool {
+        self != VideoPreset::EditingProRes
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum Transport {
@@ -118,23 +143,39 @@ pub fn audio_selector(audio_format: &str, selection: AudioSelection) -> &'static
     }
 }
 
+/// Merge containers for `Original`, in order of preference. yt-dlp takes the first its own
+/// rules accept for the selected codecs as they are: MP4 for H.264 with AAC (checked with
+/// yt-dlp 2026.10.26), MKV, which holds any of them, otherwise (VP9 or Opus, and also HEVC
+/// labelled `hvc1`). The streams are copied, never re-encoded.
+pub const ORIGINAL_MERGE: &str = "mp4/mkv";
+
 /// The arguments that decide which streams are downloaded and what they become: format
 /// selection, sort, merge container and audio conversion. The download and the size
 /// preview (estimate.rs) both take them from here, so a preview sizes the streams the
 /// download will actually fetch.
+///
+/// `res:N` caps the shorter side of the picture (a portrait 1080×1920 stream is 1080) and
+/// is a preference, not a filter: nothing is ever scaled. Where nothing is that small,
+/// yt-dlp takes the smallest stream above it.
 pub fn selection_args(options: &DownloadOptions, audio_selection: AudioSelection) -> Vec<String> {
     if options.mode == "audio" {
         let format = options.audio_format.as_str();
-        ["-f", audio_selector(format, audio_selection), "-x", "--audio-format", format, "--audio-quality", "0"]
+        return ["-f", audio_selector(format, audio_selection), "-x", "--audio-format", format, "--audio-quality", "0"]
             .map(String::from)
-            .to_vec()
-    } else {
-        let sort = match options.max_height {
-            Some(h) => format!("res:{h},vcodec:h264,acodec:aac"),
-            None => "res,vcodec:h264,acodec:aac".to_string(),
-        };
-        vec!["-f".into(), "bv*+ba/b".into(), "-S".into(), sort, "--merge-output-format".into(), "mp4".into()]
+            .to_vec();
     }
+    let res = match options.max_height {
+        Some(h) => format!("res:{h}"),
+        None => "res".to_string(),
+    };
+    let (sort, merge) = match options.video_preset {
+        // H.264 and AAC win only between streams of the same resolution.
+        VideoPreset::Compatible => (format!("{res},vcodec:h264,acodec:aac"), "mp4"),
+        // EditingProRes is never accepted by this build (`DownloadOptions::validate`, and
+        // `execute` refuses a saved one); its source selection would be Original's.
+        VideoPreset::Original | VideoPreset::EditingProRes => (res, ORIGINAL_MERGE),
+    };
+    ["-f", "bv*+ba/b", "-S", &sort, "--merge-output-format", merge].map(String::from).to_vec()
 }
 
 pub fn download_args(
@@ -373,6 +414,8 @@ mod tests {
             DownloadOptions { subtitle_langs: vec!["en".into()], embed_subs: true, ..options("video") },
             DownloadOptions { audio_format: "m4a".into(), ..options("audio") },
             DownloadOptions { audio_format: "best".into(), ..options("audio") },
+            DownloadOptions { max_height: Some(4320), video_preset: VideoPreset::Original, ..options("video") },
+            DownloadOptions { video_preset: VideoPreset::Original, subtitle_langs: vec!["en".into()], ..options("video") },
         ];
         for selection in [AudioSelection::Best, AudioSelection::PreferMatching] {
             let mut execution = execution();
@@ -394,6 +437,63 @@ mod tests {
             selection_args(&DownloadOptions { audio_format: "opus".into(), ..options("audio") }, AudioSelection::PreferMatching),
             ["-f", "ba[acodec=opus]/ba/b", "-x", "--audio-format", "opus", "--audio-quality", "0"]
         );
+    }
+
+    #[test]
+    fn compatible_is_exactly_the_selection_jobs_had_before_presets() {
+        // Missing from every job saved before presets: they keep what they were queued with.
+        let old: DownloadOptions = serde_json::from_str(r#"{"mode":"video","maxHeight":1080,"audioFormat":"mp3","subtitleLangs":[],"autoSubs":false,"embedSubs":false,"fastSave":false}"#).unwrap();
+        assert_eq!(old.video_preset, VideoPreset::Compatible);
+        assert_eq!(
+            selection_args(&old, AudioSelection::Best),
+            ["-f", "bv*+ba/b", "-S", "res:1080,vcodec:h264,acodec:aac", "--merge-output-format", "mp4"]
+        );
+        assert_eq!(
+            selection_args(&DownloadOptions { video_preset: VideoPreset::Compatible, ..options("video") }, AudioSelection::Best),
+            ["-f", "bv*+ba/b", "-S", "res,vcodec:h264,acodec:aac", "--merge-output-format", "mp4"]
+        );
+    }
+
+    #[test]
+    fn original_keeps_the_best_streams_without_a_codec_preference_or_re_encoding() {
+        let original = |max_height| DownloadOptions { max_height, video_preset: VideoPreset::Original, ..options("video") };
+        assert_eq!(
+            selection_args(&original(Some(4320)), AudioSelection::Best),
+            ["-f", "bv*+ba/b", "-S", "res:4320", "--merge-output-format", "mp4/mkv"]
+        );
+        assert_eq!(selection_args(&original(None), AudioSelection::Best), ["-f", "bv*+ba/b", "-S", "res", "--merge-output-format", "mp4/mkv"]);
+        let args = download_args(vec![], &original(Some(2160)), &execution(), Path::new("W"), Source::Url("https://e.com/v"));
+        for flag in ["--recode-video", "--remux-video", "--postprocessor-args", "--ppa", "--exec"] {
+            assert!(!args.iter().any(|a| a == flag), "{flag}: Original never re-encodes");
+        }
+        assert!(!args.iter().any(|a| a.contains("vcodec") || a.contains("acodec")), "no codec preference: {args:?}");
+        // Subtitles and metadata are unchanged by the preset.
+        let with_subs = DownloadOptions { subtitle_langs: vec!["en".into()], embed_subs: true, ..original(None) };
+        let args = download_args(vec![], &with_subs, &execution(), Path::new("W"), Source::Url("https://e.com/v"));
+        assert!(args.contains(&"--embed-subs".to_string()) && args.contains(&"--embed-metadata".to_string()));
+    }
+
+    #[test]
+    fn the_preset_does_not_touch_audio_downloads() {
+        for preset in [VideoPreset::Compatible, VideoPreset::Original] {
+            let audio = DownloadOptions { audio_format: "m4a".into(), video_preset: preset, ..options("audio") };
+            assert_eq!(selection_args(&audio, AudioSelection::Best), ["-f", "ba/b", "-x", "--audio-format", "m4a", "--audio-quality", "0"]);
+        }
+    }
+
+    #[test]
+    fn a_frozen_job_keeps_its_preset_whatever_the_settings_say_later() {
+        // A paused or failed job starts again from its saved options and frozen execution;
+        // nothing in the settings (there is no preset setting) reaches its selection.
+        let options = DownloadOptions { max_height: Some(2880), video_preset: VideoPreset::Original, ..options("video") };
+        let first = JobExecution::freeze(&Settings { output_dir: "D:/Out".into(), ..Settings::default() }, false);
+        let first_args = download_args(vec![], &options, &first, Path::new("W"), Source::Url("https://e.com/v"));
+        let saved: DownloadOptions = serde_json::from_str(&serde_json::to_string(&options).unwrap()).unwrap();
+        let frozen: JobExecution = serde_json::from_str(&serde_json::to_string(&first).unwrap()).unwrap();
+        let retry_args = download_args(vec![], &saved, &frozen, Path::new("W"), Source::Url("https://e.com/v"));
+        assert_eq!(first_args, retry_args);
+        assert_eq!(value_after(&retry_args, "-S"), ["res:2880"]);
+        assert_eq!(value_after(&retry_args, "--merge-output-format"), ["mp4/mkv"]);
     }
 
     #[test]

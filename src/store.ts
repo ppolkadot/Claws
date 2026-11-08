@@ -10,6 +10,7 @@ import {
   type Settings,
   type ToolProgress,
   type ToolsStatus,
+  type VideoPreset,
 } from "./api";
 import { LinkBatch, type ParsedInput } from "./download-input";
 import { JobTable } from "./queue-events";
@@ -20,6 +21,7 @@ export type Route = "download" | "queue" | "library" | "settings";
 export interface BatchChoices {
   mode: "video" | "audio";
   maxHeight: number | null;
+  videoPreset: VideoPreset;
   audioFormat: string;
 }
 
@@ -262,7 +264,7 @@ class Store {
 
   /** Replaces any batch with these links and starts looking them up (never downloading). */
   startBatch(parsed: ParsedInput) {
-    this.batch = { parsed, choices: { mode: "video", maxHeight: null, audioFormat: "mp3" } };
+    this.batch = { parsed, choices: { mode: "video", maxHeight: null, videoPreset: "compatible", audioFormat: "mp3" } };
     this.links.start(parsed.links);
     this.emit("batch");
   }

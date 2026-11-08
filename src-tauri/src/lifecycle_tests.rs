@@ -86,9 +86,15 @@ impl TestApp {
 
     /// Closes this app the way Claws exits and starts a new one on the same data.
     pub fn restart(self) -> Self {
+        self.restart_after(|_| {})
+    }
+
+    /// Like `restart`, with `change` applied to the data folder while Claws is closed.
+    pub fn restart_after(self, change: impl FnOnce(&Path)) -> Self {
         let (dir, out) = (self.dir.clone(), self.out.clone());
         downloader::shutdown(self.handle());
         std::mem::forget(self); // its folder is reused, so Drop must not remove it
+        change(&dir);
         let mut notices = Vec::new();
         let queue = crate::queue_writer::load(&dir.join("queue.json"), &mut notices);
         Self::with_data(dir, out, queue)
@@ -103,8 +109,12 @@ impl TestApp {
     }
 
     pub fn enqueue(&self, link: &str) -> String {
+        self.enqueue_with(link, DownloadOptions::default())
+    }
+
+    pub fn enqueue_with(&self, link: &str, options: DownloadOptions) -> String {
         let item = EnqueueItem { url: link.into(), playlist_index: None, title: link.into(), thumbnail: None, uploader: None, duration: None };
-        let added = downloader::enqueue(self.handle(), vec![item], DownloadOptions::default()).expect("enqueue");
+        let added = downloader::enqueue(self.handle(), vec![item], options).expect("enqueue");
         added.jobs[0].job_id.clone()
     }
 
@@ -595,4 +605,79 @@ fn startup_recovery_returns_before_library_work_and_prevents_duplicate_starts() 
     assert_eq!(t.job(&id).unwrap().status, JobStatus::Completed);
     assert_eq!(library_entries(&t, &id), 1);
     assert_eq!(t.starts().len(), 1);
+}
+
+// ---- Video presets ------------------------------------------------------------------------
+
+fn original(max_height: Option<u32>) -> DownloadOptions {
+    DownloadOptions { max_height, video_preset: crate::download_policy::VideoPreset::Original, ..DownloadOptions::default() }
+}
+
+#[test]
+fn a_paused_original_download_resumes_with_the_same_selection_after_settings_change_and_restart() {
+    let Some(t) = TestApp::new("preset-frozen") else { return };
+    let id = t.enqueue_with("https://fixture.invalid/hang/hotel", original(Some(4320)));
+    t.wait_job(&id, running, "the first start");
+    downloader::pause(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Paused, "the pause");
+    {
+        // Every setting that shapes a download, changed while it is paused.
+        let state = t.state();
+        let mut settings = state.settings.lock().unwrap();
+        settings.audio_selection = crate::download_policy::AudioSelection::Best;
+        settings.embed_metadata = true;
+        settings.filename_template = "%(id)s.%(ext)s".into();
+    }
+    let t = t.restart();
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(t.dir.join("queue.json")).unwrap()).unwrap();
+    assert_eq!(saved["schemaVersion"], 3);
+    assert_eq!(saved["jobs"][0]["options"]["videoPreset"], "original");
+    let job = t.job(&id).expect("still queued");
+    assert_eq!(job.options.video_preset, crate::download_policy::VideoPreset::Original);
+    assert_eq!(job.options.max_height, Some(4320));
+
+    downloader::resume(t.handle(), &id);
+    wait_until("the resumed start", || t.starts().len() == 2);
+    let starts = t.starts();
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    for start in &starts {
+        assert!(start.ends_with("sort=res:4320 merge=mp4/mkv"), "every start uses the preset it was queued with: {start}");
+    }
+}
+
+#[test]
+fn an_original_download_saved_as_mkv_reaches_the_folder_and_library() {
+    let Some(t) = TestApp::new("preset-mkv") else { return };
+    let id = t.enqueue_with("https://fixture.invalid/ok-fast/india/4096/mkv", original(None));
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Completed, "the download");
+    let saved = PathBuf::from(job.file_path.expect("a saved file"));
+    assert_eq!(saved, t.out.join("india.mkv"));
+    assert_eq!(std::fs::read(&saved).unwrap(), b"merged");
+    let history = { t.state().history.lock().unwrap().clone() };
+    let item = history.iter().find(|h| h.id == id).expect("in the Library");
+    assert_eq!(item.quality, "Best · Original");
+    assert_eq!(item.mode, "video");
+    assert_eq!(item.file_path.as_deref(), Some(saved.to_string_lossy().as_ref()));
+}
+
+#[test]
+fn a_saved_job_with_a_preset_this_version_cannot_make_fails_without_starting() {
+    let Some(t) = TestApp::new("preset-unavailable") else { return };
+    let id = t.enqueue("https://fixture.invalid/hang/juliet");
+    t.wait_job(&id, running, "the first start");
+    downloader::pause(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Paused, "the pause");
+    // As a later version that can make it would have saved it.
+    let t = t.restart_after(|dir| {
+        let path = dir.join("queue.json");
+        let mut saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        saved["jobs"][0]["options"]["videoPreset"] = "editingProRes".into();
+        std::fs::write(path, saved.to_string()).unwrap();
+    });
+    let job = t.job(&id).expect("the saved job still loads");
+    assert_eq!(job.options.video_preset, crate::download_policy::VideoPreset::EditingProRes);
+    downloader::resume(t.handle(), &id);
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Failed, "the refusal");
+    assert!(job.error.unwrap_or_default().contains("editing preset"));
+    assert_eq!(t.starts().len(), 1, "yt-dlp was never started for it");
 }

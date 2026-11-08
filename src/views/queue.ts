@@ -6,6 +6,7 @@ import { h, replace } from "../ui/dom";
 import { icon } from "../ui/icons";
 import { progressBar, setProgress } from "../ui/layout";
 import { collapseOut, expandIn } from "../ui/motion";
+import { videoOptionsText } from "../resolution";
 import type { MountView } from "./shell";
 
 const fail = (error: unknown) => toast(errorMessage(error), { tone: "error" });
@@ -53,7 +54,7 @@ function statusText(job: Job): string {
 function optionsText(job: Job): string {
   const o = job.options;
   if (o.mode === "audio") return o.audioFormat === "best" ? "Audio" : o.audioFormat.toUpperCase();
-  return o.maxHeight ? `Video up to ${o.maxHeight}p` : "Video, best quality";
+  return videoOptionsText(o.maxHeight, o.videoPreset);
 }
 
 /** New rows built per frame during a large addition: about a frame's worth of work. */
