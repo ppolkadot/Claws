@@ -1,14 +1,20 @@
 # Claws: handoff
 
-Everything a new session (human or AI) needs to pick this project up. Lives at `docs/HANDOFF.md`. Last updated 2026-11-05.
+Everything a new session (human or AI) needs to pick this project up. Lives at `docs/HANDOFF.md`. Last updated 2026-11-08.
 
-## Feature scope update (2026-11-08)
+## 1.1.0 feature expansion (2026-11-08, branch `feature-expansion-and-motion`)
 
-The owner removed macOS support, vocal removal, ProRes presets and clip sections from the feature plan. Claws remains Windows-only. Keep Compatible/Original output, batch downloads, size previews, higher resolutions, transcript export, native file dragging and animation improvements. Replay metadata and optional speech recognition remain deferred; they must not implicitly reintroduce the removed features. See `docs/superpowers/plans/2026-11-07-feature-expansion-and-motion.md`. This is a planning change only.
+Source version is **1.1.0** in all five version files. It is a release candidate: no 1.1.0 installer has been published, and the published release is still 1.0.5. What changed, newest decisions first:
 
-## Current development audit (2026-11-08)
-
-See `docs/CURRENT_DEVELOPMENT_STATUS.md` for committed features, pre-existing transcript work, new native file dragging/completion feedback and outstanding native acceptance checks. The owner selected core features only; optional speech recognition/replay metadata remain deferred. These working changes are not packaged in release 1.0.5.
+- **Scope.** The owner removed macOS, vocal removal, ProRes presets and clip sections from this release. Clip sections are **deferred to a future version**, not abandoned. Claws stays Windows-only. Replay metadata and optional speech recognition remain deferred. See `docs/superpowers/plans/2026-11-07-feature-expansion-and-motion.md` (remaining work only) and `docs/CURRENT_DEVELOPMENT_STATUS.md`.
+- **Delivered.** Independent-link batches (`src/download-input.ts`), size and temporary-space previews (`estimate.rs`, `disk_budget::RunPlan`, `download_policy::selection_args`), source-driven resolutions up to 8K with Compatible / Original output (`resolution.ts`, `videoPreset`), transcript export (`transcript.rs`, `transcriptFormat`, mode `transcript`), native outgoing file drag (`file_drag.rs`, `drag` 2.1.1) and the motion pass (`src/ui/progress-motion.ts`, `row-order.ts`, `job-status.ts`, DESIGN.md "Motion").
+- **Data format changes.** `QUEUE_SCHEMA` is **3** (1.0.5 sets a schema-3 queue aside instead of reading it; a schema-2 queue loads with every job Compatible). `DownloadOptions` gained `videoPreset` and `transcriptFormat`, and `mode` gained `"transcript"`. `ProbeResult` gained `resolutions` and `captions`; cached links without them still load. Every new persisted field is `#[serde(default)]` and has a legacy-shape test, because one unreadable job or history entry sets the whole file aside.
+- **Shared formulas.** Admission (`downloader.rs` `Budget`) and the size preview both size a run through `disk_budget::RunPlan`; the download and the preview both take their `-f`/`-S`/merge arguments from `download_policy::selection_args`. Change them there, not in one place.
+- **Probe cache.** It has a 256 MB budget; `probe::cached_info` returns a lease that a download holds until yt-dlp exits, and prunes skip leased files.
+- **Tests.** `npm run test:logic` (pure frontend logic), `npm run test:motion` (motion and drag gesture) and `npm run test:queue`, `test:fonts`, `python scripts/test_font_metrics.py`, plus `cargo test` (227 tests; build the fixture tool first). Media tests use the installed yt-dlp and ffmpeg and skip without them; `CLAWS_TEST_FFMPEG_DIR` overrides the folder.
+- **Benchmarks.** `scripts/dev/batch-bench.mjs`, `motion-bench.mjs` and `queue-bench.mjs` drive headless Edge against the dev mock; results are in `docs/performance/`.
+- **Not verified.** Real-site downloads, editor import of dragged files, Explorer drags, Windows 10, a fresh install and an upgrade, and the real WebView2 window under Reduce motion. The manual checklist is in `docs/CURRENT_DEVELOPMENT_STATUS.md`.
+- **Process note.** A parallel session added the drag and completion feedback while transcripts were being finished; the commits were split afterwards (`9501fa6` transcripts, `4b07877` drag and scope notes).
 
 ## Current state: 1.0.5 (2026-11-05)
 
