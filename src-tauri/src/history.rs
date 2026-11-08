@@ -26,7 +26,7 @@ pub struct HistoryItem {
     pub thumbnail_local: Option<String>,
     pub file_path: Option<String>,
     pub file_size: Option<u64>,
-    /// "video" or "audio".
+    /// "video", "audio" or "transcript".
     pub mode: String,
     pub quality: String,
     pub finished_at: i64,
@@ -88,8 +88,12 @@ pub fn record(app: &AppHandle, job: &Job) -> crate::error::Result<()> {
 }
 
 /// The Library's one-word description of what was kept: the audio format, or the video's
-/// size cap, followed by the preset when it is not the default (Compatible).
+/// size cap, followed by the preset when it is not the default (Compatible); for a
+/// transcript, its language, kind of captions and format.
 pub fn quality(options: &DownloadOptions) -> String {
+    if options.mode == "transcript" {
+        return crate::transcript::quality(options);
+    }
     if options.mode == "audio" {
         return options.audio_format.to_uppercase();
     }
@@ -193,6 +197,23 @@ mod tests {
         assert_eq!(quality(&video(None, VideoPreset::Original)), "Best · Original");
         let audio = DownloadOptions { mode: "audio".into(), audio_format: "flac".into(), video_preset: VideoPreset::Original, ..DownloadOptions::default() };
         assert_eq!(quality(&audio), "FLAC");
+    }
+
+    #[test]
+    fn the_library_names_a_transcript_by_language_kind_and_format() {
+        let transcript = DownloadOptions {
+            mode: "transcript".into(),
+            subtitle_langs: vec!["en".into()],
+            auto_subs: true,
+            transcript_format: crate::transcript::TranscriptFormat::Txt,
+            ..DownloadOptions::default()
+        };
+        assert_eq!(quality(&transcript), "Transcript · English (auto-generated) · TXT");
+        let human = DownloadOptions { auto_subs: false, transcript_format: crate::transcript::TranscriptFormat::Srt, ..transcript };
+        assert_eq!(quality(&human), "Transcript · English · SRT");
+        let saved = r#"[{"id":"h2","title":"T","url":"https://example.com/v","uploader":null,"duration":1.0,"thumbnail":null,"thumbnailLocal":null,"filePath":"D:/Out/T [en].txt","fileSize":12,"mode":"transcript","quality":"Transcript · English · TXT","finishedAt":2}]"#;
+        let items: Vec<HistoryItem> = serde_json::from_str(saved).unwrap();
+        assert_eq!(items[0].mode, "transcript");
     }
 
     #[test]

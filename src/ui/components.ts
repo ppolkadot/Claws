@@ -33,6 +33,9 @@ export interface Segment<T extends string> {
   value: T;
   label: string;
   icon?: IconName;
+  /** Shown but not choosable; `title` says why (also read out by screen readers). */
+  disabled?: boolean;
+  title?: string;
 }
 
 export interface SegmentedHandle<T extends string> {
@@ -52,9 +55,17 @@ export function segmented<T extends string>(
       "button",
       {
         class: "seg-item",
-        attrs: { type: "button", role: "radio", "data-index": index },
+        attrs: {
+          type: "button",
+          role: "radio",
+          "data-index": index,
+          title: segment.title,
+          // aria-disabled, not disabled: it stays discoverable and explains itself.
+          "aria-disabled": segment.disabled ? "true" : undefined,
+        },
         on: {
           click: () => {
+            if (segment.disabled) return;
             select(segment.value);
             onChange(segment.value);
           },
@@ -83,13 +94,19 @@ export function segmented<T extends string>(
       b.tabIndex = i === index ? 0 : -1;
     });
   }
+  // Arrow keys move the choice (and the thumb) to the next segment that can be chosen.
   el.addEventListener("keydown", (event) => {
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
-    const current = buttons.findIndex((b) => b.getAttribute("aria-checked") === "true");
-    const next = (current + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;
-    buttons[next].focus();
-    buttons[next].click();
     event.preventDefault();
+    const step = event.key === "ArrowRight" ? 1 : -1;
+    const current = buttons.findIndex((b) => b.getAttribute("aria-checked") === "true");
+    for (let i = 1; i < buttons.length; i++) {
+      const next = (current + step * i + buttons.length * i) % buttons.length;
+      if (segments[next].disabled) continue;
+      buttons[next].focus();
+      buttons[next].click();
+      return;
+    }
   });
   select(value);
   return { el, set: select };

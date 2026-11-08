@@ -73,6 +73,11 @@ pub struct ProbeResult {
     #[serde(default)]
     pub resolutions: Vec<Resolution>,
     pub subtitles: Vec<SubtitleLang>,
+    /// Caption tracks a transcript can be made from, human and automatic kept apart (the
+    /// same language may be in both). `None` in links saved before transcripts existed;
+    /// an empty list means the video has no captions.
+    #[serde(default)]
+    pub captions: Option<Vec<SubtitleLang>>,
     pub entries: Vec<EntrySummary>,
 }
 
@@ -150,6 +155,44 @@ fn collect_subtitles(value: &Value) -> Vec<SubtitleLang> {
                 });
             }
         }
+    }
+    out
+}
+
+/// Sites with at most this many automatic tracks (and no `-orig` track) have all of them
+/// offered for transcripts. A longer list is YouTube's machine translations, which are not
+/// a transcript of what was said.
+const ALL_AUTO_CAPTIONS_UP_TO: usize = 12;
+
+fn track_name(tracks: &Value, code: &str) -> String {
+    tracks.get(0).and_then(|t| t["name"].as_str()).filter(|n| !n.is_empty()).unwrap_or(code).to_string()
+}
+
+/// The caption tracks a transcript can be made from: every human track, then the automatic
+/// tracks that transcribe the speech itself. A language can be in both lists; `auto` keeps
+/// them apart.
+///
+/// On YouTube the speech-recognition track is the one ending in `-orig`; every other
+/// automatic code is a machine translation of it (or of the human captions, when the video
+/// has no `-orig` track). So when a `-orig` track exists only it is offered; with none, a
+/// short list (a site's own per-language tracks) is offered whole and a long one not at
+/// all.
+fn collect_captions(value: &Value) -> Vec<SubtitleLang> {
+    let mut out = Vec::new();
+    for (code, tracks) in value["subtitles"].as_object().into_iter().flatten() {
+        if code != "live_chat" {
+            out.push(SubtitleLang { code: code.clone(), name: track_name(tracks, code), auto: false });
+        }
+    }
+    if let Some(map) = value["automatic_captions"].as_object() {
+        let tracks = || map.iter().filter(|(code, _)| *code != "live_chat");
+        let has_original = tracks().any(|(code, _)| code.ends_with("-orig"));
+        let wanted = |code: &str| if has_original { code.ends_with("-orig") } else { map.len() <= ALL_AUTO_CAPTIONS_UP_TO };
+        let mut automatic: Vec<(&String, &Value)> = tracks().filter(|(code, _)| wanted(code)).collect();
+        // The common languages in their usual order, then the rest by code.
+        let rank = |code: &str| AUTO_CAPTION_LANGS.iter().position(|c| *c == code).unwrap_or(AUTO_CAPTION_LANGS.len());
+        automatic.sort_by_key(|(code, _)| rank(code));
+        out.extend(automatic.into_iter().map(|(code, tracks)| SubtitleLang { code: code.clone(), name: track_name(tracks, code), auto: true }));
     }
     out
 }
@@ -269,6 +312,8 @@ fn parse(url: &str, value: &Value) -> ProbeResult {
         heights: resolutions.iter().map(|r| r.short_side).collect(),
         resolutions,
         subtitles: collect_subtitles(value),
+        // A flat playlist's entries carry no captions; transcripts are made per video.
+        captions: (!is_playlist).then(|| collect_captions(value)),
         entries,
     }
 }
@@ -756,6 +801,56 @@ mod tests {
         assert_eq!(result.heights, vec![1080, 720]);
         let codes: Vec<_> = result.subtitles.iter().map(|s| (s.code.as_str(), s.auto)).collect();
         assert_eq!(codes, vec![("en", false), ("fr", true)]);
+    }
+
+    fn caption_kinds(result: &ProbeResult) -> Vec<(String, bool)> {
+        result.captions.clone().unwrap_or_default().iter().map(|s| (s.code.clone(), s.auto)).collect()
+    }
+
+    #[test]
+    fn captions_keep_human_and_automatic_tracks_apart() {
+        let mut automatic = serde_json::Map::new();
+        // A YouTube-like list: the original-language track, then many translations.
+        automatic.insert("de-orig".into(), json!([{ "name": "German (Original)" }]));
+        for code in ["af", "ar", "de", "en", "es", "fr", "ja", "ko", "pt", "ru", "zh-Hans", "zh-Hant", "zu"] {
+            automatic.insert(code.into(), json!([{ "name": code }]));
+        }
+        let value = json!({
+            "title": "V",
+            "subtitles": { "en": [{ "name": "English" }], "de": [{ "name": "German" }], "live_chat": [{}] },
+            "automatic_captions": automatic
+        });
+        let result = parse("https://example.com/v", &value);
+        let kinds = caption_kinds(&result);
+        let human: Vec<_> = kinds.iter().filter(|(_, auto)| !auto).map(|(c, _)| c.as_str()).collect();
+        assert_eq!(human, ["de", "en"]);
+        let automatic: Vec<_> = kinds.iter().filter(|(_, auto)| *auto).map(|(c, _)| c.as_str()).collect();
+        assert_eq!(automatic, ["de-orig"], "only the speech-recognition track; the rest are machine translations");
+        assert!(!kinds.iter().any(|(c, _)| c == "live_chat"), "{kinds:?}");
+        assert!(kinds.iter().position(|(_, a)| *a) > kinds.iter().rposition(|(_, a)| !*a), "human tracks first");
+        // The video-mode subtitle list is unchanged.
+        assert!(result.subtitles.iter().all(|s| !(s.code == "en" && s.auto)));
+
+        // A video with human captions and no `-orig` track: YouTube's automatic list is
+        // translations of those captions, so none is offered.
+        let mut translations = serde_json::Map::new();
+        for code in ["af", "ar", "de", "en", "es", "fr", "ja", "ko", "pt", "ru", "zh-Hans", "zh-Hant", "zu"] {
+            translations.insert(code.into(), json!([{ "name": code }]));
+        }
+        let translated = json!({ "subtitles": { "en": [{ "name": "English" }] }, "automatic_captions": translations });
+        assert_eq!(caption_kinds(&parse("https://example.com/t", &translated)), [("en".to_string(), false)]);
+        // A site with a few automatic tracks offers all of them.
+        let few = json!({ "automatic_captions": { "nl": [{ "name": "Dutch" }], "sv": [{}] } });
+        assert_eq!(caption_kinds(&parse("https://example.com/x", &few)), [("nl".to_string(), true), ("sv".to_string(), true)]);
+        // No captions at all: an empty list, which the interface shows as unavailable.
+        assert_eq!(parse("https://example.com/y", &json!({ "title": "Silent" })).captions.map(|c| c.len()), Some(0));
+    }
+
+    #[test]
+    fn a_probe_saved_before_captions_still_reads() {
+        let saved = r#"{"kind":"video","url":"https://example.com/v","title":"V","uploader":null,"thumbnail":null,"duration":10.0,"site":"Example","heights":[1080],"resolutions":[],"subtitles":[{"code":"en","name":"English","auto":false}],"entries":[]}"#;
+        let result: ProbeResult = serde_json::from_str(saved).unwrap();
+        assert!(result.captions.is_none(), "unknown, so the interface falls back to the subtitle list");
     }
 
     fn video_format(id: &str, vcodec: &str, width: u32, height: u32) -> Value {

@@ -17,6 +17,7 @@ use crate::download_policy::{self, FailureKind, JobExecution, Source, VideoPrese
 use crate::error::{notify, AppError, Result};
 use crate::history;
 use crate::queue_writer::{QueueSnapshot, QUEUE_SCHEMA};
+use crate::transcript::{self, TranscriptFormat};
 use crate::transfer_progress::TransferProgress;
 use crate::probe::{self, error_text, validate_url};
 use crate::settings::Settings;
@@ -33,6 +34,8 @@ const TAG_PROGRESS: &str = "CLAWS|";
 const TAG_POST: &str = "CLAWSPP|";
 const TAG_FORMATS: &str = "CLAWSFMT|";
 const TAG_DONE: &str = "CLAWSDONE|";
+/// A transcript run's caption files (a JSON list of paths).
+const TAG_CAPTIONS: &str = "CLAWSCAPTIONS|";
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -55,7 +58,7 @@ impl JobStatus {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DownloadOptions {
-    /// "video" or "audio".
+    /// "video", "audio" or "transcript" (the site's captions as text; no media).
     pub mode: String,
     /// Largest video to fetch, as its shorter side (yt-dlp's `res`, so a 1080×1920 portrait
     /// video is 1080); `None` means the best available. Never upscaled.
@@ -69,6 +72,8 @@ pub struct DownloadOptions {
     /// Fast Save: no metadata pass and subtitles kept as separate files, so the file is not
     /// rewritten after it downloads. The chosen video and audio streams are unchanged.
     pub fast_save: bool,
+    /// What a transcript is saved as. Ignored (and kept at the default) for video and audio.
+    pub transcript_format: TranscriptFormat,
 }
 
 impl Default for DownloadOptions {
@@ -82,6 +87,7 @@ impl Default for DownloadOptions {
             auto_subs: false,
             embed_subs: false,
             fast_save: false,
+            transcript_format: TranscriptFormat::Txt,
         }
     }
 }
@@ -93,7 +99,7 @@ impl DownloadOptions {
     }
 
     pub(crate) fn validate(&mut self) -> Result<()> {
-        if self.mode != "video" && self.mode != "audio" {
+        if !matches!(self.mode.as_str(), "video" | "audio" | "transcript") {
             return Err(AppError::msg("Unknown download type."));
         }
         if !AUDIO_FORMATS.contains(&self.audio_format.as_str()) {
@@ -108,13 +114,31 @@ impl DownloadOptions {
         }
         // A shorter side: 4320 is 8K landscape, 8640 the most a portrait 16K could need.
         self.max_height = self.max_height.map(|h| h.clamp(144, 8640));
-        self.subtitle_langs.truncate(12);
         let valid_lang = |l: &String| {
             !l.is_empty()
                 && l.len() <= 24
                 && l.chars()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         };
+        if self.mode == "transcript" {
+            // One caption track, of the kind `auto_subs` names. Nothing about media applies,
+            // so those choices are reset: the same transcript has one duplicate key.
+            let one = match self.subtitle_langs.as_slice() {
+                [code] => valid_lang(code) && code.starts_with(|c: char| c.is_ascii_alphanumeric()),
+                _ => false,
+            };
+            if !one {
+                return Err(AppError::msg("Choose one caption language for the transcript."));
+            }
+            self.max_height = None;
+            self.video_preset = VideoPreset::Compatible;
+            self.audio_format = "mp3".into();
+            self.embed_subs = false;
+            self.fast_save = false;
+            return Ok(());
+        }
+        self.transcript_format = TranscriptFormat::Txt;
+        self.subtitle_langs.truncate(12);
         if !self.subtitle_langs.iter().all(valid_lang) {
             return Err(AppError::msg("Invalid subtitle language."));
         }
@@ -1043,6 +1067,8 @@ struct Outcome {
     keep_workspace: bool,
     error: Option<String>,
     final_path: Option<String>,
+    /// The caption files a transcript run reported; `None` until (or unless) it does.
+    captions: Option<Vec<String>>,
     used_cache: bool,
     /// What kind of failure, when yt-dlp itself failed.
     kind: Option<FailureKind>,
@@ -1057,6 +1083,7 @@ impl Outcome {
             keep_workspace: false,
             error: Some(message.into()),
             final_path: None,
+            captions: None,
             used_cache: false,
             kind: None,
         }
@@ -1132,6 +1159,7 @@ async fn run_prepared(
             keep_workspace: false,
             error: None,
             final_path: None,
+            captions: None,
             used_cache: false,
             kind: None,
         };
@@ -1190,6 +1218,11 @@ async fn run_prepared(
         }
         child
     };
+    if job.options.mode == "transcript" {
+        // Only captions are fetched: there are no media bytes to count, so the job shows
+        // as processing (an indeterminate bar), never as a made-up download percentage.
+        mark_processing(app, id);
+    }
 
     // yt-dlp prints download progress on stdout but post-processing progress and its
     // errors on stderr, so both streams are read as they arrive.
@@ -1260,6 +1293,7 @@ async fn run_prepared(
         keep_workspace: false,
         error: None,
         final_path: None,
+        captions: None,
         used_cache: info_json.is_some(),
         kind: None,
     };
@@ -1473,6 +1507,8 @@ fn handle_line(
         if !rest.trim().is_empty() {
             outcome.final_path = Some(rest.trim().to_string());
         }
+    } else if let Some(rest) = line.strip_prefix(TAG_CAPTIONS) {
+        outcome.captions = serde_json::from_str::<Vec<String>>(rest.trim()).ok();
     } else if let Some(rest) = line.strip_prefix(TAG_POST) {
         if rest.starts_with("started") {
             mark_processing(app, id);
@@ -1563,19 +1599,33 @@ async fn publish(app: &AppHandle, id: &str, outcome: &mut Outcome) {
         return;
     };
     let reported = outcome.final_path.clone();
+    let captions = outcome.captions.clone();
+    let options = job.options.clone();
     let wants_sidecars = !job.options.subtitle_langs.is_empty() && !job.options.embeds_subtitles();
     let app_for_reservations = app.clone();
     let id_owned = id.to_string();
-    let result = tokio::task::spawn_blocking(move || -> std::result::Result<download_files::Published, String> {
+    // Caption cues of a transcript that could not be read and were left out.
+    let mut unreadable = 0;
+    let result = tokio::task::spawn_blocking(move || -> std::result::Result<(download_files::Published, usize), String> {
         let mut manifest = download_files::verify(&workspace, &id_owned).map_err(|e| e.to_string())?;
+        let mut unreadable = 0;
         if manifest.state == Publication::Active {
-            let reported = reported.ok_or("yt-dlp did not report the finished file.")?;
-            let media = download_files::owned_relative(&workspace.path, Path::new(&reported))
-                .ok_or("yt-dlp reported a finished file outside the download's work folder.")?;
-            let mut outputs = vec![media.to_string_lossy().into_owned()];
-            if wants_sidecars {
-                outputs.extend(download_files::sidecars(&workspace.path, &media).iter().map(|p| p.to_string_lossy().into_owned()));
-            }
+            let outputs = if options.mode == "transcript" {
+                // The text made from the captions is the one output; the raw captions file
+                // stays in the work folder and goes with it.
+                let artifact = transcript::from_reported(&workspace.path, captions.as_deref(), &options)?;
+                unreadable = artifact.skipped;
+                vec![artifact.relative.to_string_lossy().into_owned()]
+            } else {
+                let reported = reported.ok_or("yt-dlp did not report the finished file.")?;
+                let media = download_files::owned_relative(&workspace.path, Path::new(&reported))
+                    .ok_or("yt-dlp reported a finished file outside the download's work folder.")?;
+                let mut outputs = vec![media.to_string_lossy().into_owned()];
+                if wants_sidecars {
+                    outputs.extend(download_files::sidecars(&workspace.path, &media).iter().map(|p| p.to_string_lossy().into_owned()));
+                }
+                outputs
+            };
             manifest.outputs = outputs;
             manifest.state = Publication::Ready;
             download_files::write_manifest(&manifest).map_err(|e| e.to_string())?;
@@ -1596,21 +1646,31 @@ async fn publish(app: &AppHandle, id: &str, outcome: &mut Outcome) {
                 destinations.remove(&key);
             }
         }
-        result.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                let name = manifest.outputs.first().map(|o| o.as_str()).unwrap_or("The file");
-                let folder = manifest.destination_root.display();
-                format!("“{name}” already exists in {folder}. Move or rename that file, then press Try Again; the download is kept until then.")
-            } else {
-                format!("The finished file could not be saved to the output folder: {e}")
-            }
-        })
+        result
+            .map(|published| (published, unreadable))
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    let name = manifest.outputs.first().map(|o| o.as_str()).unwrap_or("The file");
+                    let folder = manifest.destination_root.display();
+                    format!("“{name}” already exists in {folder}. Move or rename that file, then press Try Again; the download is kept until then.")
+                } else {
+                    format!("The finished file could not be saved to the output folder: {e}")
+                }
+            })
     })
     .await
-    .unwrap_or_else(|e| Err(e.to_string()));
+    .unwrap_or_else(|e| Err(e.to_string()))
+    .map(|(published, skipped)| {
+        unreadable = skipped;
+        published
+    });
 
     match result {
         Ok(published) => {
+            if unreadable > 0 {
+                let cues = if unreadable == 1 { "1 caption" } else { "some captions" };
+                notify(app, format!("Saved the transcript of “{}”, but {cues} in the site's file could not be read and {} left out.", job.title, if unreadable == 1 { "was" } else { "were" }));
+            }
             outcome.published = true;
             outcome.final_path = Some(published.media.to_string_lossy().into_owned());
             // The work folder (and its manifest, the recovery record) stays until `finish`
@@ -1910,6 +1970,74 @@ mod tests {
         // A job saved before presets reads back with the same key a new Compatible job has.
         let old: DownloadOptions = serde_json::from_str(r#"{"mode":"video","maxHeight":null,"audioFormat":"mp3","subtitleLangs":[],"autoSubs":false,"embedSubs":false,"fastSave":false}"#).unwrap();
         assert_eq!(options_key(&old), options_key(&compatible));
+    }
+
+    fn transcript(langs: &[&str]) -> DownloadOptions {
+        DownloadOptions { mode: "transcript".into(), subtitle_langs: langs.iter().map(|l| l.to_string()).collect(), ..DownloadOptions::default() }
+    }
+
+    #[test]
+    fn a_transcript_needs_exactly_one_language_and_drops_media_choices() {
+        for langs in [&[][..], &["en", "fr"][..], &["-en"][..], &["en,fr"][..], &[""][..]] {
+            let err = transcript(langs).validate().unwrap_err().to_string();
+            assert!(err.contains("caption language"), "{langs:?}: {err}");
+        }
+        let mut busy = DownloadOptions {
+            max_height: Some(1080),
+            video_preset: VideoPreset::Original,
+            audio_format: "flac".into(),
+            embed_subs: true,
+            fast_save: true,
+            auto_subs: true,
+            transcript_format: TranscriptFormat::Srt,
+            ..transcript(&["en-orig"])
+        };
+        busy.validate().unwrap();
+        assert_eq!(busy.max_height, None);
+        assert_eq!(busy.video_preset, VideoPreset::Compatible);
+        assert!(!busy.embed_subs && !busy.fast_save);
+        assert!(busy.auto_subs, "which kind of captions is kept");
+        assert_eq!(busy.transcript_format, TranscriptFormat::Srt);
+        // The same transcript has one duplicate key however the media choices were sent.
+        let mut plain = DownloadOptions { auto_subs: true, transcript_format: TranscriptFormat::Srt, ..transcript(&["en-orig"]) };
+        plain.validate().unwrap();
+        assert_eq!(options_key(&busy), options_key(&plain));
+        // Human and automatic captions are different transcripts.
+        let mut human = DownloadOptions { transcript_format: TranscriptFormat::Srt, ..transcript(&["en-orig"]) };
+        human.validate().unwrap();
+        assert_ne!(options_key(&human), options_key(&plain));
+    }
+
+    #[test]
+    fn the_transcript_format_is_ignored_outside_transcripts_and_saved_by_name() {
+        let mut video = DownloadOptions { transcript_format: TranscriptFormat::Vtt, ..DownloadOptions::default() };
+        video.validate().unwrap();
+        assert_eq!(video.transcript_format, TranscriptFormat::Txt);
+        assert_eq!(options_key(&video), options_key(&DownloadOptions::default()));
+        let timed = DownloadOptions { transcript_format: TranscriptFormat::TxtTimestamps, ..transcript(&["ja"]) };
+        assert!(options_key(&timed).contains(r#""transcriptFormat":"txtTimestamps""#));
+        assert!(serde_json::from_str::<DownloadOptions>(r#"{"mode":"transcript","transcriptFormat":"docx"}"#).is_err(), "unknown formats are refused");
+        // Saved before transcripts existed: the default, so the key is unchanged.
+        let old: DownloadOptions = serde_json::from_str(r#"{"mode":"audio","maxHeight":null,"videoPreset":"compatible","audioFormat":"m4a","subtitleLangs":[],"autoSubs":false,"embedSubs":false,"fastSave":false}"#).unwrap();
+        assert_eq!(old.transcript_format, TranscriptFormat::Txt);
+        assert!(DownloadOptions { mode: "lyrics".into(), ..DownloadOptions::default() }.validate().is_err());
+    }
+
+    #[test]
+    fn a_queue_saved_before_transcripts_still_loads_and_a_transcript_job_round_trips() {
+        let saved = r#"{"schemaVersion":3,"revision":4,"jobs":[
+          {"id":"j1","url":"https://example.com/v","title":"Old","thumbnail":null,"uploader":null,"duration":null,
+           "options":{"mode":"video","maxHeight":2160,"videoPreset":"original","audioFormat":"mp3","subtitleLangs":["en"],"autoSubs":false,"embedSubs":true,"fastSave":false},
+           "status":"paused","progress":0.5,"speed":null,"eta":null,"filePath":null,"error":null,"createdAt":1}]}"#;
+        let snapshot: QueueSnapshot = serde_json::from_str(saved).unwrap();
+        assert_eq!(snapshot.jobs[0].options.transcript_format, TranscriptFormat::Txt);
+        assert_eq!(snapshot.jobs[0].options.video_preset, VideoPreset::Original);
+        let mut job = snapshot.jobs[0].clone();
+        job.options = DownloadOptions { auto_subs: true, transcript_format: TranscriptFormat::TxtTimestamps, ..transcript(&["en"]) };
+        let again: Job = serde_json::from_str(&serde_json::to_string(&job).unwrap()).unwrap();
+        assert_eq!(again.options.mode, "transcript");
+        assert_eq!(again.options.transcript_format, TranscriptFormat::TxtTimestamps);
+        assert_eq!(options_key(&again.options), options_key(&job.options));
     }
 
     #[test]

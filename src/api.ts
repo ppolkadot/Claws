@@ -4,8 +4,9 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { DownloadEstimate } from "./download-estimates";
 import type { JobEvent, JobRemoved, JobsAdded } from "./queue-events";
 import type { Resolution, VideoPreset } from "./resolution";
+import type { TranscriptFormat } from "./transcript-options";
 
-export type { DownloadEstimate, JobEvent, JobRemoved, JobsAdded, Resolution, VideoPreset };
+export type { DownloadEstimate, JobEvent, JobRemoved, JobsAdded, Resolution, TranscriptFormat, VideoPreset };
 
 export type Theme = "system" | "light" | "dark";
 export type Backdrop = "glass" | "acrylic" | "mica" | "tabbed" | "none";
@@ -44,8 +45,11 @@ export type JobStatus =
   | "failed"
   | "cancelled";
 
+export type DownloadMode = "video" | "audio" | "transcript";
+
 export interface DownloadOptions {
-  mode: "video" | "audio";
+  /** "transcript" saves text made from one of the site's caption tracks; no media. */
+  mode: DownloadMode;
   /** Largest video to fetch, as its shorter side (yt-dlp's `res`); null is the best. */
   maxHeight: number | null;
   /**
@@ -59,6 +63,12 @@ export interface DownloadOptions {
   embedSubs: boolean;
   /** No metadata pass, subtitles as separate files: nothing rewrites the file afterwards. */
   fastSave: boolean;
+  /**
+   * What a transcript is saved as. For a transcript, `subtitleLangs` holds its one caption
+   * language and `autoSubs` says whether that track is an automatic one. Jobs saved before
+   * transcripts read as "txt" (the backend fills it in); ignored for video and audio.
+   */
+  transcriptFormat: TranscriptFormat;
 }
 
 export interface Job {
@@ -112,7 +122,7 @@ export interface HistoryItem {
   thumbnailLocal: string | null;
   filePath: string | null;
   fileSize: number | null;
-  mode: "video" | "audio";
+  mode: DownloadMode;
   quality: string;
   finishedAt: number;
 }
@@ -166,6 +176,11 @@ export interface ProbeResult {
   /** Every picture size offered, largest first. Absent in links saved before it existed. */
   resolutions?: Resolution[];
   subtitles: SubtitleLang[];
+  /**
+   * Caption tracks a transcript can be made from, human and automatic apart (a language can
+   * be in both). Absent in links saved before transcripts; empty when there are none.
+   */
+  captions?: SubtitleLang[] | null;
   entries: EntrySummary[];
 }
 

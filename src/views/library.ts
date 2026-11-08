@@ -32,12 +32,16 @@ async function confirmRemove(item: HistoryItem) {
   }
 }
 
+function modeIcon(item: HistoryItem) {
+  return item.mode === "audio" ? "music" : item.mode === "transcript" ? "captions" : "video";
+}
+
 function tile(item: HistoryItem): HTMLElement {
   const art = thumbSrc(item);
   const thumb = art
     ? h("img", { class: "tile-img", attrs: { src: art, alt: "", loading: "lazy", decoding: "async", referrerpolicy: "no-referrer", draggable: false } })
-    : h("div", { class: "tile-img thumb-fallback" }, icon(item.mode === "audio" ? "music" : "video", 26));
-  thumb.addEventListener("error", () => thumb.replaceWith(h("div", { class: "tile-img thumb-fallback" }, icon("video", 26))));
+    : h("div", { class: "tile-img thumb-fallback" }, icon(modeIcon(item), 26));
+  thumb.addEventListener("error", () => thumb.replaceWith(h("div", { class: "tile-img thumb-fallback" }, icon(modeIcon(item), 26))));
   const duration = formatDuration(item.duration);
   const meta = [item.quality, formatBytes(item.fileSize)].filter(Boolean).join("  ·  ");
   return h(

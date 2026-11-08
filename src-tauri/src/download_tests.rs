@@ -663,3 +663,118 @@ fn a_stream_without_codec_fields_is_kept_whole() {
         assert_eq!(kit.packets(&saved, "a"), kit.packets(&muxed, "a"), "{preset:?}");
     }
 }
+
+// ---- Transcripts through the real yt-dlp ----------------------------------------------------
+// The captions are local files read through file links; the only "media" format points at a
+// file that does not exist, so any attempt to download media would fail the run.
+
+/// Runs a transcript download of `info` with the policy's arguments and returns the files
+/// yt-dlp named on its CLAWSCAPTIONS line, plus everything left in the work folder.
+fn transcript_run(ytdlp: &Path, ffmpeg: Option<&Path>, info: &Path, work: &Path, options: &crate::downloader::DownloadOptions) -> (Vec<PathBuf>, Vec<String>) {
+    std::fs::create_dir_all(work).unwrap();
+    let execution = JobExecution { embed_metadata: true, ..JobExecution::freeze(&Settings { output_dir: "unused".into(), ..Settings::default() }, false) };
+    let mut common: Vec<String> = vec!["--no-colors".into(), "--ignore-config".into()];
+    if let Some(dir) = ffmpeg {
+        common.extend(["--ffmpeg-location".into(), dir.to_string_lossy().into_owned()]);
+    }
+    let mut args = download_policy::download_args(common, options, &execution, work, Source::InfoJson(info));
+    let tail = args.split_off(args.len() - 2);
+    args.push("--enable-file-urls".into());
+    args.extend(tail);
+    let output = Command::new(ytdlp).args(&args).output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{}\n{stdout}", String::from_utf8_lossy(&output.stderr));
+    let named = stdout.lines().find_map(|l| l.trim_end().strip_prefix("CLAWSCAPTIONS|")).expect("yt-dlp named the captions files");
+    let files: Vec<PathBuf> = serde_json::from_str::<Vec<String>>(named).unwrap().into_iter().map(PathBuf::from).collect();
+    (files, names(work))
+}
+
+#[test]
+fn a_transcript_fetches_only_the_chosen_caption_track_through_the_real_yt_dlp() {
+    use crate::transcript::{self, TranscriptFormat};
+    let Some(ytdlp) = ytdlp() else {
+        eprintln!("skipped: needs yt-dlp");
+        return;
+    };
+    let dir = temp_dir("transcript-ytdlp");
+    let link = |name: &str| url::Url::from_file_path(dir.join(name)).unwrap().to_string();
+    std::fs::write(dir.join("human.vtt"), "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<v Ana>Hello &amp; welcome\n\n00:00:02.000 --> 00:00:03.000\nこれは字幕です\n").unwrap();
+    std::fs::write(dir.join("auto.vtt"), "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n \nhello<00:00:00.500><c> there</c>\n\n00:00:02.000 --> 00:00:02.010\nhello there\n \n").unwrap();
+    std::fs::write(dir.join("orig.srt"), "1\n00:00:01,000 --> 00:00:02,000\nGuten Tag\n").unwrap();
+    std::fs::write(dir.join("only.srv3"), "<timedtext><body><p t=\"0\" d=\"1000\">salut</p></body></timedtext>").unwrap();
+    let info = dir.join("info.json");
+    let value = serde_json::json!({
+        "id": "fixture", "title": "Talk: one", "ext": "mp4", "extractor": "generic", "extractor_key": "Generic",
+        "webpage_url": "https://example.invalid/v", "duration": 3.0,
+        "formats": [{ "format_id": "0", "url": link("no-such-media.mp4"), "protocol": "file", "ext": "mp4", "vcodec": "avc1", "acodec": "mp4a.40.2" }],
+        "subtitles": { "en": [{ "ext": "vtt", "url": link("human.vtt"), "name": "English" }] },
+        "automatic_captions": {
+            "en": [{ "ext": "vtt", "url": link("auto.vtt"), "name": "English" }],
+            "de-orig": [{ "ext": "srt", "url": link("orig.srt"), "name": "German (Original)" }],
+            "fr": [{ "ext": "srv3", "url": link("only.srv3"), "name": "French" }]
+        }
+    });
+    std::fs::write(&info, value.to_string()).unwrap();
+    let options = |code: &str, auto: bool| crate::downloader::DownloadOptions {
+        mode: "transcript".into(),
+        subtitle_langs: vec![code.into()],
+        auto_subs: auto,
+        transcript_format: TranscriptFormat::Txt,
+        ..crate::downloader::DownloadOptions::default()
+    };
+
+    // Human captions: exactly that track, and no media file at all.
+    let work = dir.join("work-human");
+    let (files, left) = transcript_run(&ytdlp, None, &info, &work, &options("en", false));
+    assert_eq!(left, ["Talk： one [fixture].en.vtt"], "only the captions file was written");
+    assert_eq!(files, [work.join("Talk： one [fixture].en.vtt")]);
+    let caption = crate::download_files::owned_relative(&work, &files[0]).expect("inside the work folder");
+    let made = transcript::write_artifact(&work, &caption, &options("en", false)).unwrap();
+    assert_eq!(made.relative, Path::new("Talk： one [fixture] [en].txt"));
+    assert_eq!(std::fs::read_to_string(work.join(&made.relative)).unwrap(), "Ana: Hello & welcome\r\nこれは字幕です\r\n");
+
+    // Automatic captions of the same language: the automatic track, not the human one.
+    let work = dir.join("work-auto");
+    let (files, _) = transcript_run(&ytdlp, None, &info, &work, &options("en", true));
+    assert_eq!(files.len(), 1);
+    let caption = crate::download_files::owned_relative(&work, &files[0]).unwrap();
+    let made = transcript::write_artifact(&work, &caption, &options("en", true)).unwrap();
+    assert_eq!(made.relative, Path::new("Talk： one [fixture] [en auto].txt"));
+    assert_eq!(std::fs::read_to_string(work.join(&made.relative)).unwrap(), "hello there\r\n");
+
+    // A language the video does not have: no file, and nothing named.
+    let work = dir.join("work-none");
+    let (files, left) = transcript_run(&ytdlp, None, &info, &work, &options("fr", false));
+    assert!(files.is_empty() && left.is_empty(), "{files:?} {left:?}");
+
+    // Without FFmpeg, SubRip captions arrive as they are and Claws reads them itself; a code
+    // with a hyphen is matched literally.
+    let work = dir.join("work-srt");
+    let (files, left) = transcript_run(&ytdlp, None, &info, &work, &options("de-orig", true));
+    assert_eq!(left, ["Talk： one [fixture].de-orig.srt"]);
+    let caption = crate::download_files::owned_relative(&work, &files[0]).unwrap();
+    let made = transcript::write_artifact(&work, &caption, &options("de-orig", true)).unwrap();
+    assert_eq!(made.relative, Path::new("Talk： one [fixture] [de-orig auto].txt"));
+    assert_eq!(std::fs::read_to_string(work.join(&made.relative)).unwrap(), "Guten Tag\r\n");
+
+    // Without FFmpeg, a format Claws cannot read (srv3) arrives unconverted: a clear message.
+    let work = dir.join("work-srv3");
+    let (files, _) = transcript_run(&ytdlp, None, &info, &work, &options("fr", true));
+    let caption = crate::download_files::owned_relative(&work, &files[0]).unwrap();
+    let err = transcript::write_artifact(&work, &caption, &options("fr", true)).unwrap_err();
+    assert!(err.contains("FFmpeg"), "{err}");
+
+    // With FFmpeg, a site format other than WebVTT is converted by yt-dlp's FFmpeg step.
+    if let Some(tools) = ffmpeg_dir() {
+        let work = dir.join("work-convert");
+        let (files, left) = transcript_run(&ytdlp, Some(&tools), &info, &work, &options("de-orig", true));
+        assert_eq!(left, ["Talk： one [fixture].de-orig.vtt"], "converted to WebVTT, the SubRip original removed");
+        let caption = crate::download_files::owned_relative(&work, &files[0]).unwrap();
+        let made = transcript::write_artifact(&work, &caption, &options("de-orig", true)).unwrap();
+        assert_eq!(made.relative, Path::new("Talk： one [fixture] [de-orig auto].txt"));
+        assert_eq!(std::fs::read_to_string(work.join(&made.relative)).unwrap(), "Guten Tag\r\n");
+    } else {
+        eprintln!("conversion check skipped: needs ffmpeg");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

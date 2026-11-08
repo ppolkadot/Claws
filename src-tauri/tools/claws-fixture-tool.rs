@@ -17,6 +17,14 @@
 //! fail  one stream that stops halfway with an ERROR line; exit 1
 //! hang  starts a stream and then waits forever (for pause/cancel tests)
 //! tree  like hang, but first starts a copy of itself as a child, which also waits
+//!
+//! Transcript runs (`--skip-download` with `--write-subs` or `--write-auto-subs`):
+//! captions        writes `<name>.<lang>.vtt` (rolling captions for automatic ones) and
+//!                 names it on a CLAWSCAPTIONS line, as yt-dlp's `after_video` print does
+//! captions-hang   writes the captions file, then waits forever (for cancel tests)
+//! captions-empty  writes a captions file with no cues
+//! captions-none   names no file: the site has no captions in that language
+//! A captions scenario started without `--skip-download` fails: no media may be fetched.
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -29,11 +37,18 @@ fn main() {
     let mut name = "clip".to_string();
     let mut merged_ext = "mp4".to_string();
     let (mut sort, mut merge) = (String::from("-"), String::from("-"));
+    let (mut skip_download, mut human_subs, mut auto_subs) = (false, false, false);
+    let mut sub_langs = String::from("-");
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-P" => dir = PathBuf::from(args.next().expect("-P needs a directory")),
             "-S" => sort = args.next().expect("-S needs a value"),
             "--merge-output-format" => merge = args.next().expect("--merge-output-format needs a value"),
+            "--skip-download" => skip_download = true,
+            "--write-subs" => human_subs = true,
+            "--write-auto-subs" => auto_subs = true,
+            // A literal language code arrives escaped as a pattern (`zh\-Hans`).
+            "--sub-langs" => sub_langs = args.next().expect("--sub-langs needs a value").replace('\\', ""),
             "--scenario" => scenario = args.next().expect("--scenario needs a value"),
             "--bytes" => bytes = args.next().and_then(|b| b.parse().ok()).expect("--bytes needs a number"),
             "--name" => name = args.next().expect("--name needs a value"),
@@ -59,7 +74,14 @@ fn main() {
     if let Some(output) = dir.parent().and_then(|p| p.parent()) {
         use std::io::Write as _;
         if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(output.join("fixture-starts.log")) {
-            let _ = writeln!(log, "{scenario} {name} {} sort={sort} merge={merge}", dir.display());
+            let kind = match (human_subs, auto_subs) {
+                (true, false) => "human",
+                (false, true) => "auto",
+                (true, true) => "both",
+                (false, false) => "-",
+            };
+            let skip = if skip_download { "yes" } else { "no" };
+            let _ = writeln!(log, "{scenario} {name} {} skip={skip} subs={sub_langs} kind={kind} sort={sort} merge={merge}", dir.display());
         }
     }
     let out = std::io::stdout();
@@ -130,6 +152,42 @@ fn main() {
             loop {
                 std::thread::sleep(Duration::from_secs(3600));
             }
+        }
+        "captions" | "captions-hang" | "captions-empty" | "captions-none" => {
+            if !skip_download {
+                eprintln!("ERROR: fixture: a transcript run asked for the media");
+                std::process::exit(3);
+            }
+            if scenario == "captions-none" {
+                writeln!(out, "CLAWSCAPTIONS|[]").unwrap();
+                return;
+            }
+            let file = dir.join(format!("{name}.{sub_langs}.vtt"));
+            let body = if scenario == "captions-empty" {
+                "WEBVTT\n\n"
+            } else if auto_subs {
+                // YouTube's rolling automatic captions.
+                concat!(
+                    "WEBVTT\nKind: captions\nLanguage: en\n\n",
+                    "00:00:00.320 --> 00:00:02.389 align:start position:0%\n \nhello<00:00:00.640><c> everyone</c>\n\n",
+                    "00:00:02.389 --> 00:00:02.399 align:start position:0%\nhello everyone\n \n\n",
+                    "00:00:02.399 --> 00:00:05.030 align:start position:0%\nhello everyone\nand<00:00:02.800><c> welcome</c><00:00:03.100><c> back</c>\n\n",
+                    "00:00:05.030 --> 00:00:05.040 align:start position:0%\nand welcome back\n \n",
+                )
+            } else {
+                "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<v Ana>Hello &amp; welcome</v>\n\n00:00:02.000 --> 00:00:03.500\nこれは字幕です 🎬\n"
+            };
+            std::fs::write(&file, body.as_bytes()).unwrap();
+            let size = body.len();
+            writeln!(out, "CLAWS|finished|{size}|{size}|NA|NA|NA|NA|NA|NA|{}", file.display()).unwrap();
+            if scenario == "captions-hang" {
+                out.flush().unwrap();
+                loop {
+                    std::thread::sleep(Duration::from_secs(3600));
+                }
+            }
+            let escaped = file.display().to_string().replace('\\', "\\\\").replace('"', "\\\"");
+            writeln!(out, "CLAWSCAPTIONS|[\"{escaped}\"]").unwrap();
         }
         other => {
             eprintln!("ERROR: unknown scenario {other}");

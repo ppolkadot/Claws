@@ -5,6 +5,7 @@ import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 
 import type { DownloadEstimate, DownloadOptions, EnqueueItem, HistoryItem, Job, JobEvent, JobRemoved, JobsAdded, ProbeResult, Resolution, Settings } from "./api";
 import { ALREADY_QUEUED } from "./download-input";
+import { transcriptFileSuffix, transcriptText } from "./transcript-options";
 
 function art(hueA: number, hueB: number): string {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
@@ -19,7 +20,7 @@ function art(hueA: number, hueB: number): string {
 }
 
 const now = Date.now();
-const defaults: DownloadOptions = { mode: "video", maxHeight: 1080, videoPreset: "compatible", audioFormat: "mp3", subtitleLangs: [], autoSubs: false, embedSubs: false, fastSave: false };
+const defaults: DownloadOptions = { mode: "video", maxHeight: 1080, videoPreset: "compatible", audioFormat: "mp3", subtitleLangs: [], autoSubs: false, embedSubs: false, fastSave: false, transcriptFormat: "txt" };
 
 const settings: Settings = {
   schemaVersion: 2,
@@ -71,6 +72,7 @@ const history: HistoryItem[] = [
   ["Sample: Glacier flyover", [180, 210], "4320p · Original", 2_480_000_000, 380],
   ["Sample: Piano improvisation no. 4", [300, 220], "MP3", 9_400_000, 402],
   ["Sample: Understanding tides", [190, 230], "720p", 96_000_000, 845],
+  ["Sample: Lecture on tidal energy", [200, 160], "Transcript · English · TXT", 18_400, 2410],
   ["Sample: Garden tour in spring", [110, 160], "1080p", 241_000_000, 1033],
   ["Sample: Short film, silent", [350, 300], "1440p", 502_000_000, 1620],
 ].map(([title, hues, quality, size, duration], i) => ({
@@ -81,9 +83,9 @@ const history: HistoryItem[] = [
   duration: duration as number,
   thumbnail: art((hues as number[])[0], (hues as number[])[1]),
   thumbnailLocal: null,
-  filePath: `C:\\Users\\Sample\\Downloads\\Claws\\sample-${i}.mp4`,
+  filePath: `C:\\Users\\Sample\\Downloads\\Claws\\sample-${i}.${(quality as string).startsWith("Transcript") ? "txt" : "mp4"}`,
   fileSize: size as number,
-  mode: quality === "MP3" ? "audio" : "video",
+  mode: quality === "MP3" ? "audio" : (quality as string).startsWith("Transcript") ? "transcript" : "video",
   quality: quality as string,
   finishedAt: now - i * 3_600_000 * 7,
 }));
@@ -168,17 +170,36 @@ const probe = (url: string): ProbeResult =>
         site: "Sample Site",
         heights: sampleResolutions(url).map((r) => r.shortSide),
         resolutions: sampleResolutions(url),
-        subtitles: [
-          { code: "en", name: "English", auto: false },
-          { code: "es", name: "Spanish", auto: false },
-          { code: "fr", name: "French (auto)", auto: true },
-        ],
+        ...sampleCaptions(url),
         entries: [],
       };
 
 /**
+ * Caption tracks as probe.rs reports them: links containing "silent" have none (the
+ * Transcript type is then unavailable); others have human English and Spanish plus the
+ * speech-recognition track (`-orig`). YouTube's machine-translated automatic tracks are
+ * not offered for transcripts.
+ */
+function sampleCaptions(url: string): Pick<ProbeResult, "subtitles" | "captions"> {
+  if (url.includes("silent")) return { subtitles: [], captions: [] };
+  return {
+    subtitles: [
+      { code: "en", name: "English", auto: false },
+      { code: "es", name: "Spanish", auto: false },
+      { code: "fr", name: "French (auto)", auto: true },
+    ],
+    captions: [
+      { code: "en", name: "English", auto: false },
+      { code: "es", name: "Spanish", auto: false },
+      { code: "en-orig", name: "English (Original)", auto: true },
+    ],
+  };
+}
+
+/**
  * Lookups take 0.3 to 2.3 seconds, chosen by the link, so a batch answers out of order.
- * A link containing "fail" fails, "private" fails as a private video, "list" is a playlist.
+ * A link containing "fail" fails, "private" fails as a private video, "list" is a playlist,
+ * "silent" has no captions.
  */
 async function probeLink(url: string): Promise<ProbeResult> {
   // scripts/dev/batch-bench.mjs shortens the delays with window.__clawsMockProbeScale.
@@ -189,6 +210,18 @@ async function probeLink(url: string): Promise<ProbeResult> {
   return probe(url);
 }
 
+const unknownEstimate = (reason: string): DownloadEstimate => ({
+  downloadBytes: null,
+  confidence: "unknown",
+  parts: [],
+  container: null,
+  peakTempBytes: null,
+  requiredFreeBytes: null,
+  outputBytes: null,
+  converted: false,
+  unknownReason: reason,
+});
+
 /**
  * A size preview like estimate.rs gives: sizes from the link (so each sample link answers
  * the same every time) and the choices, with the backend's free-space formula. About one
@@ -198,17 +231,8 @@ async function estimateLink(url: string, playlistIndex: number | null, options: 
   const key = hash(`${url}#${playlistIndex ?? ""}`);
   await new Promise((resolve) => setTimeout(resolve, 150 + (key % 500)));
   if (url.includes("fail")) throw "Sample failure: the site did not answer.";
-  const unknown = (reason: string): DownloadEstimate => ({
-    downloadBytes: null,
-    confidence: "unknown",
-    parts: [],
-    container: null,
-    peakTempBytes: null,
-    requiredFreeBytes: null,
-    outputBytes: null,
-    converted: false,
-    unknownReason: reason,
-  });
+  if (options.mode === "transcript") return unknownEstimate("Text only: the video is not downloaded.");
+  const unknown = unknownEstimate;
   // disk_budget.rs `required`: the peak plus a margin of at least 512 MiB.
   const required = (peak: number) => peak + Math.max(512 * 1024 * 1024, Math.floor(peak / 10));
   if (key % 6 === 0) return unknown("The site does not say how large this download is.");
@@ -282,13 +306,19 @@ const queueKey = (url: string, playlistIndex: number | null | undefined, options
 function enqueue(items: EnqueueItem[], requested: DownloadOptions): JobsAdded<Job> {
   if (items.length === 0) throw "Nothing to download.";
   if (items.length > 500) throw "Too many items at once (limit 500).";
-  // DownloadOptions::validate: no editing preset yet, no video preset for audio.
+  // DownloadOptions::validate: no editing preset yet, no video preset for audio, one caption
+  // language and no media choices for a transcript.
   if (requested.videoPreset === "editingProRes") throw "The editing preset is not available yet.";
-  const options: DownloadOptions = {
-    ...requested,
-    videoPreset: requested.mode === "audio" ? "compatible" : (requested.videoPreset ?? "compatible"),
-    maxHeight: requested.maxHeight == null ? null : Math.min(8640, Math.max(144, requested.maxHeight)),
-  };
+  const transcript = requested.mode === "transcript";
+  if (transcript && requested.subtitleLangs.length !== 1) throw "Choose one caption language for the transcript.";
+  const options: DownloadOptions = transcript
+    ? { ...requested, maxHeight: null, videoPreset: "compatible", audioFormat: "mp3", embedSubs: false, fastSave: false, transcriptFormat: requested.transcriptFormat ?? "txt" }
+    : {
+        ...requested,
+        videoPreset: requested.mode === "audio" ? "compatible" : (requested.videoPreset ?? "compatible"),
+        maxHeight: requested.maxHeight == null ? null : Math.min(8640, Math.max(144, requested.maxHeight)),
+        transcriptFormat: "txt",
+      };
   // Built fresh for each call from jobs not finished, cancelled or failed, as the backend
   // does; a refused call changes nothing.
   const pending = new Set(
@@ -323,7 +353,50 @@ function enqueue(items: EnqueueItem[], requested: DownloadOptions): JobsAdded<Jo
   });
   const batch: JobsAdded<Job> = { schemaVersion: 1, jobs: created.map((added) => ({ schemaVersion: 1, jobId: added.id, revision: added.revision, job: added })) };
   void emit("jobs-added", batch);
+  if (transcript) created.forEach((added) => emulateTranscript(added.id));
   return batch;
+}
+
+
+function updateJob(id: string, change: Partial<Job>): Job | null {
+  const current = mockJobs.get(id);
+  if (!current || ["completed", "cancelled", "failed"].includes(current.status)) return null;
+  const next: Job = { ...current, ...change, revision: ++mockRevision };
+  mockJobs.set(id, next);
+  const event: JobEvent<Job> = { schemaVersion: 1, jobId: id, revision: next.revision, job: next };
+  void emit("job-update", event);
+  return next;
+}
+
+/**
+ * A transcript as the backend runs it: captions only, shown as processing with no byte
+ * progress, then saved as a small text file and recorded in the Library.
+ */
+function emulateTranscript(id: string) {
+  window.setTimeout(() => updateJob(id, { status: "processing", progressKnown: false }), 300);
+  window.setTimeout(() => {
+    const current = mockJobs.get(id);
+    if (!current) return;
+    const o = current.options;
+    const filePath = `C:\\Users\\Sample\\Downloads\\Claws\\${current.title}${transcriptFileSuffix(o)}`;
+    const done = updateJob(id, { status: "completed", progress: 1, progressKnown: true, filePath });
+    if (!done) return;
+    history.unshift({
+      id,
+      title: current.title,
+      url: current.url,
+      uploader: current.uploader,
+      duration: current.duration,
+      thumbnail: current.thumbnail,
+      thumbnailLocal: null,
+      filePath,
+      fileSize: 12_000 + (hash(current.url) % 40_000),
+      mode: "transcript",
+      quality: transcriptText(o),
+      finishedAt: Date.now(),
+    });
+    void emit("history-changed", null);
+  }, 1800);
 }
 
 function cancelJob(id: string) {
@@ -350,6 +423,8 @@ export function installMock() {
     (cmd, args) => {
       const payload = (args ?? {}) as Record<string, unknown>;
       switch (cmd) {
+        case "drag_download":
+          throw new Error("Native file dragging requires the Windows app.");
         case "bootstrap":
           return { settings, jobs, history, notices: [] };
         case "tools_status":
