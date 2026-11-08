@@ -107,16 +107,6 @@
   color: var(--label);
 }
 
-.settle {
-  animation: settle var(--spring-smooth-d) var(--spring-smooth) both;
-}
-@keyframes settle {
-  from {
-    opacity: 0;
-    transform: scale(0.985) translateY(6px);
-  }
-}
-
 .urlbar {
   display: flex;
   align-items: center;
@@ -133,14 +123,33 @@
   flex: none;
   color: var(--text-2);
 }
+/* A text area: one line until several links are pasted, then up to six lines. */
 .url-input {
   flex: 1;
   min-width: 0;
-  height: 100%;
+  padding: 0;
   border: 0;
   outline: 0;
   background: transparent;
   font-size: 15px;
+  line-height: 22px;
+  white-space: pre;
+  overflow-x: hidden;
+  overflow-y: auto;
+  resize: none;
+}
+.urlbar.multiline {
+  height: auto;
+  align-items: flex-start;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  border-radius: 20px;
+}
+.urlbar.multiline > .icon {
+  margin-top: 9px;
+}
+.urlbar.multiline .url-input {
+  padding: 7px 0;
 }
 .url-input::placeholder {
   color: var(--text-2);
@@ -373,6 +382,94 @@
   color: var(--text-2);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+/* Several links at once. */
+.batch-issues {
+  align-items: flex-start;
+}
+.batch-issues > .icon {
+  margin-top: 1px;
+  color: var(--orange-text);
+}
+.batch-issues ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--text-2);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.batch .entries-head {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+.batch-list {
+  max-height: 420px;
+  overflow-y: auto;
+}
+.batch-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  /* Rows scrolled out of view skip style and layout when hundreds change at once. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 52px;
+}
+.batch-row + .batch-row::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 122px;
+  right: 0;
+  height: 0.5px;
+  background: var(--separator);
+}
+.batch-row .entry {
+  flex: 1;
+  min-width: 0;
+}
+.batch-side {
+  flex: none;
+  padding-right: 10px;
+}
+.batch-side:empty {
+  display: none;
+}
+/* Rows are checked as their lookups answer, many a second: colour transitions on every
+   check cost style work that grew with the list (measured with scripts/dev/batch-bench.mjs).
+   Only the press feedback stays animated. */
+.batch-pick .check {
+  transition: transform var(--spring-bouncy-d) var(--spring-bouncy);
+}
+/* The row's containment (content-visibility) clips anything drawn outside it, so the
+   keyboard focus ring is drawn inside the row instead. */
+.batch-pick:focus-visible {
+  outline-offset: -4px;
+}
+.batch-return {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.batch-pick[aria-disabled="true"]:hover {
+  background: transparent;
+}
+.batch-pick[aria-disabled="true"] .check {
+  opacity: 0.35;
+}
+.batch-pick:not([data-status="ready"], [data-status="added"]) .entry-title {
+  color: var(--text-2);
+  font-weight: 400;
+}
+.entry-sub[data-tone="error"] {
+  color: var(--red-text);
+}
+.entry-sub[data-tone="done"] {
+  color: var(--green-text);
 }
 
 .recent-head {

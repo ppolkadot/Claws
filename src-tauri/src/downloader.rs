@@ -1122,10 +1122,11 @@ async fn run_prepared(
     }
 
     // Playlist items picked by index are never cached: the cache holds single videos.
+    // The lease keeps the file from being pruned until this run returns.
     let info_json = (allow_cache && job.playlist_index.is_none())
         .then(|| probe::cached_info(app, &job.url))
         .flatten();
-    let args = build_args(app, job, settings, execution, &workspace.path, info_json.as_deref());
+    let args = build_args(app, job, settings, execution, &workspace.path, info_json.as_ref().map(|c| c.path()));
     let mut command = tools::command(ytdlp);
     command
         .args(&args)

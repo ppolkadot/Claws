@@ -6,13 +6,29 @@ import {
   type JobEvent,
   type JobRemoved,
   type JobsAdded,
+  type ProbeResult,
   type Settings,
   type ToolProgress,
   type ToolsStatus,
 } from "./api";
+import { LinkBatch, type ParsedInput } from "./download-input";
 import { JobTable } from "./queue-events";
 
 export type Route = "download" | "queue" | "library" | "settings";
+
+/** The choices shared by every link in a batch. Batches have no subtitle choices. */
+export interface BatchChoices {
+  mode: "video" | "audio";
+  maxHeight: number | null;
+  audioFormat: string;
+}
+
+/** Several links pasted at once, being looked up or waiting to be added to the queue. */
+export interface BatchSession {
+  /** The submitted text's parse, kept for its skipped lines and repeats. */
+  parsed: ParsedInput;
+  choices: BatchChoices;
+}
 
 type Topic =
   | "route"
@@ -31,7 +47,11 @@ type Topic =
   /** Quick Open without a link: put the cursor in the link field. */
   | "focusLink"
   | "tools"
-  | "toolProgress";
+  | "toolProgress"
+  /** A batch of links started or was cleared; see `store.batch`. */
+  | "batch"
+  /** One row of the batch changed (detail: the row). */
+  | "batchRow";
 
 const sameValue = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 type Listener = (detail?: unknown) => void;
@@ -83,6 +103,17 @@ class Store {
   private lastWarning: string | null = null;
 
   private pastedLink: string | null = null;
+
+  /**
+   * The current batch. It lives here, not in the Download view, so its lookups carry on
+   * and its rows stay while another view is open. One scheduler for every batch, so
+   * lookups still running from a replaced batch count towards its limit of three.
+   */
+  batch: BatchSession | null = null;
+  readonly links = new LinkBatch<ProbeResult>((url) => api.probe(url), {
+    onRow: (row) => this.emit("batchRow", row),
+    describe: errorMessage,
+  });
 
   on(topic: Topic, listener: Listener): () => void {
     let set = this.listeners.get(topic);
@@ -229,7 +260,21 @@ class Store {
     }
   }
 
-  /** Sends a link pasted anywhere to the Download view. */
+  /** Replaces any batch with these links and starts looking them up (never downloading). */
+  startBatch(parsed: ParsedInput) {
+    this.batch = { parsed, choices: { mode: "video", maxHeight: null, audioFormat: "mp3" } };
+    this.links.start(parsed.links);
+    this.emit("batch");
+  }
+
+  clearBatch() {
+    if (!this.batch) return;
+    this.links.clear();
+    this.batch = null;
+    this.emit("batch");
+  }
+
+  /** Sends a link, or a list of links, pasted anywhere to the Download view. */
   pasteLink(url: string) {
     this.pastedLink = url;
     if (this.route === "download") this.emit("paste");

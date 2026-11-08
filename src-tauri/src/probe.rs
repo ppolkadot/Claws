@@ -371,6 +371,10 @@ pub fn recent(state: &AppState, url: &str) -> Option<ProbeResult> {
 // extraction. Media links expire, so entries are short-lived and a failed run retries.
 
 const CACHE_MAX_AGE: Duration = Duration::from_secs(20 * 60);
+/// The cache's total size. A pasted list of links is looked up one after another and each
+/// answer can be megabytes, so without a budget one batch could leave gigabytes behind.
+/// Evicting an entry only costs that download a second extraction.
+const CACHE_BUDGET: u64 = 256 * 1024 * 1024;
 
 fn cache_path(dir: &Path, url: &str) -> PathBuf {
     let digest = Sha256::digest(url.as_bytes());
@@ -379,51 +383,131 @@ fn cache_path(dir: &Path, url: &str) -> PathBuf {
 }
 
 async fn remember(app: &AppHandle, url: &str, json: &[u8]) {
-    // Also pruned here (every few minutes): a session can last days, and entries are
-    // megabytes.
-    static LAST_PRUNE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    // Also pruned here, after every write: a session can last days, entries are megabytes,
+    // and a batch writes one entry per link. Listing a few hundred files is cheap next to
+    // the yt-dlp run that produced the entry.
     let dir = app.state::<AppState>().probe_cache_dir();
     if tokio::fs::create_dir_all(&dir).await.is_ok() {
         let _ = tokio::fs::write(cache_path(&dir, url), json).await;
     }
-    let due = {
-        let mut last = LAST_PRUNE.lock().unwrap();
-        let due = last.is_none_or(|t| t.elapsed() >= Duration::from_secs(5 * 60));
-        if due {
-            *last = Some(std::time::Instant::now());
-        }
-        due
-    };
-    if due {
-        let _ = tokio::task::spawn_blocking(move || prune_cache(&dir)).await;
+    let _ = tokio::task::spawn_blocking(move || prune_cache(&dir)).await;
+}
+
+/// Cache files a download run is using. A prune or `forget` leaves them alone until the run
+/// ends, so a lookup finishing elsewhere never deletes the file yt-dlp was just handed
+/// (it opens it only after starting up, which can take seconds).
+static LEASES: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+fn leases() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
+    LEASES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A cache entry held for one download run; it can be pruned again once this is dropped.
+pub struct CachedInfo {
+    path: PathBuf,
+}
+
+impl CachedInfo {
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 }
 
-/// The cached info for `url`, if it is recent enough to still have working links.
-pub fn cached_info(app: &AppHandle, url: &str) -> Option<PathBuf> {
-    let path = cache_path(&app.state::<AppState>().probe_cache_dir(), url);
-    let age = std::fs::metadata(&path)
+impl Drop for CachedInfo {
+    fn drop(&mut self) {
+        let mut leases = leases();
+        if let Some(i) = leases.iter().position(|p| *p == self.path) {
+            leases.swap_remove(i);
+        }
+    }
+}
+
+/// Holds `path` if it is younger than `max_age`. It is leased before it is checked, so a
+/// prune either sees the lease or has already removed the file (and the check fails).
+fn lease_fresh(path: PathBuf, max_age: Duration) -> Option<CachedInfo> {
+    leases().push(path.clone());
+    let lease = CachedInfo { path };
+    let age = std::fs::metadata(&lease.path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| SystemTime::now().duration_since(t).ok())?;
-    (age < CACHE_MAX_AGE).then_some(path)
+    (age < max_age).then_some(lease)
+}
+
+/// The cached info for `url`, if it is recent enough to still have working links. The file
+/// is kept until the returned lease is dropped.
+pub fn cached_info(app: &AppHandle, url: &str) -> Option<CachedInfo> {
+    lease_fresh(cache_path(&app.state::<AppState>().probe_cache_dir(), url), CACHE_MAX_AGE)
 }
 
 pub fn forget(app: &AppHandle, url: &str) {
-    let _ = std::fs::remove_file(cache_path(&app.state::<AppState>().probe_cache_dir(), url));
+    remove_unleased(&cache_path(&app.state::<AppState>().probe_cache_dir(), url));
+}
+
+/// Removes a cache file unless a download run holds it. A file already gone counts as
+/// removed (another prune got there first).
+fn remove_unleased(path: &Path) -> bool {
+    let leases = leases();
+    if leases.iter().any(|p| p == path) {
+        return false;
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => true,
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    }
 }
 
 pub fn prune_cache(dir: &Path) {
+    // One at a time: two prunes listing the folder together would each evict the whole
+    // excess. One skipped here is made up by the next write's prune.
+    static PRUNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    struct Running;
+    impl Drop for Running {
+        fn drop(&mut self) {
+            PRUNING.store(false, Ordering::Release);
+        }
+    }
+    if PRUNING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let _running = Running;
+    prune_cache_within(dir, CACHE_MAX_AGE, CACHE_BUDGET);
+}
+
+/// Removes entries older than `max_age`, then the oldest of the rest until they fit in
+/// `budget` bytes. Entries a download run holds are skipped.
+fn prune_cache_within(dir: &Path, max_age: Duration, budget: u64) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut kept: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
     for entry in entries.flatten() {
-        let stale = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
+        let meta = entry.metadata().ok();
+        let modified = meta.as_ref().and_then(|m| m.modified().ok());
+        let stale = modified
             .and_then(|t| SystemTime::now().duration_since(t).ok())
-            .is_none_or(|age| age >= CACHE_MAX_AGE);
+            .is_none_or(|age| age >= max_age);
         if stale {
-            let _ = std::fs::remove_file(entry.path());
+            remove_unleased(&entry.path());
+        } else if let (Some(meta), Some(modified)) = (meta, modified) {
+            kept.push((modified, meta.len(), entry.path()));
+        }
+    }
+    evict_oldest(kept, budget, remove_unleased);
+}
+
+/// Removes the oldest `entries` (modified, length, path) until the rest fit in `budget`.
+/// `remove` says whether the file is gone afterwards.
+fn evict_oldest(mut entries: Vec<(SystemTime, u64, PathBuf)>, budget: u64, mut remove: impl FnMut(&Path) -> bool) {
+    let mut total: u64 = entries.iter().map(|(_, len, _)| *len).sum();
+    if total <= budget {
+        return;
+    }
+    entries.sort_by_key(|(modified, _, _)| *modified);
+    for (_, len, path) in entries {
+        if total <= budget {
+            break;
+        }
+        if remove(&path) {
+            total = total.saturating_sub(len);
         }
     }
 }
@@ -450,6 +534,111 @@ pub fn error_text(stderr: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn probe_cache_drops_stale_entries_then_the_oldest_beyond_its_budget() {
+        let dir = std::env::temp_dir().join(format!("claws-probe-cache-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = SystemTime::now();
+        let write = |name: &str, len: usize, age_secs: u64| {
+            let path = dir.join(name);
+            std::fs::write(&path, vec![b'x'; len]).unwrap();
+            let file = std::fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(now - Duration::from_secs(age_secs)).unwrap();
+        };
+        write("stale.json", 10, 3_600);
+        write("oldest.json", 400, 300);
+        write("older.json", 400, 200);
+        write("newer.json", 400, 100);
+        write("newest.json", 400, 0);
+
+        prune_cache_within(&dir, Duration::from_secs(20 * 60), 1_000);
+
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["newer.json", "newest.json"], "stale first, then the oldest until 1000 bytes fit");
+
+        // Within its budget, nothing fresh is touched.
+        prune_cache_within(&dir, Duration::from_secs(20 * 60), 1_000);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cache_file_handed_to_a_download_survives_prunes_until_the_run_ends() {
+        let dir = std::env::temp_dir().join(format!("claws-probe-lease-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = SystemTime::now();
+        let write = |name: &str, age_secs: u64| {
+            let path = dir.join(name);
+            std::fs::write(&path, vec![b'x'; 400]).unwrap();
+            let file = std::fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(now - Duration::from_secs(age_secs)).unwrap();
+            path
+        };
+        let in_use = write("in-use.json", 300); // the oldest: first in line for eviction
+        write("older.json", 200);
+        write("newer.json", 100);
+        let max_age = Duration::from_secs(20 * 60);
+
+        // What run_prepared does: take the entry, then (later) yt-dlp opens it.
+        let lease = lease_fresh(in_use.clone(), max_age).expect("fresh entry");
+        // Lookups finishing meanwhile push the cache over its budget.
+        prune_cache_within(&dir, max_age, 500);
+        assert!(lease.path().exists(), "the file a download was handed is never evicted under it");
+        assert!(!dir.join("older.json").exists() && !dir.join("newer.json").exists());
+        // `forget` (a stale retry of the same link elsewhere) leaves it too.
+        assert!(!remove_unleased(&in_use));
+        assert!(in_use.exists());
+
+        // Once the run ends it is an ordinary entry again.
+        drop(lease);
+        prune_cache_within(&dir, max_age, 0);
+        assert!(!in_use.exists());
+        // A lease on a file that is gone, or too old, is refused (and not left behind).
+        assert!(lease_fresh(in_use.clone(), max_age).is_none());
+        assert!(!leases().contains(&in_use));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn eviction_counts_a_file_another_prune_already_removed_as_gone() {
+        // Two prunes listed the folder together; the other removed the oldest first. This
+        // one must not then evict newer entries to make up for files that are already gone.
+        let now = SystemTime::now();
+        let at = |secs: u64| now - Duration::from_secs(secs);
+        let entries = vec![
+            (at(400), 400, PathBuf::from("a")),
+            (at(300), 400, PathBuf::from("b")),
+            (at(200), 400, PathBuf::from("c")),
+            (at(100), 400, PathBuf::from("d")),
+        ];
+        let mut asked = Vec::new();
+        // "a" is already gone: reported as removed, as remove_unleased does for NotFound.
+        evict_oldest(entries.clone(), 1_000, |p| {
+            asked.push(p.to_path_buf());
+            true
+        });
+        assert_eq!(asked, [PathBuf::from("a"), PathBuf::from("b")], "1600 bytes over a 1000 budget: two go, not more");
+
+        // A file that cannot be removed (held open) is skipped and the next one goes.
+        let mut asked = Vec::new();
+        evict_oldest(entries, 1_000, |p| {
+            asked.push(p.to_path_buf());
+            p != Path::new("a")
+        });
+        assert_eq!(asked, [PathBuf::from("a"), PathBuf::from("b"), PathBuf::from("c")]);
+    }
+
+    #[test]
+    fn remove_unleased_reports_a_missing_file_as_removed() {
+        let path = std::env::temp_dir().join(format!("claws-probe-missing-{}.json", uuid::Uuid::new_v4().simple()));
+        assert!(remove_unleased(&path));
+    }
 
     #[test]
     fn only_http_links_pass() {

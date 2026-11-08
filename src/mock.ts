@@ -1,8 +1,10 @@
 // Development only: lets the interface run in a plain browser (`npm run dev`) without
 // the Rust backend. Every title, number and image below is synthetic sample data.
+import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 
-import type { DownloadOptions, EnqueueItem, HistoryItem, Job, ProbeResult, Settings } from "./api";
+import type { DownloadOptions, EnqueueItem, HistoryItem, Job, JobEvent, JobRemoved, JobsAdded, ProbeResult, Settings } from "./api";
+import { ALREADY_QUEUED } from "./download-input";
 
 function art(hueA: number, hueB: number): string {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
@@ -85,6 +87,25 @@ const history: HistoryItem[] = [
   finishedAt: now - i * 3_600_000 * 7,
 }));
 
+/** A stable number from a link, so each sample link behaves the same every time. */
+function hash(text: string): number {
+  let value = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    value ^= text.charCodeAt(i);
+    value = Math.imul(value, 16777619);
+  }
+  return value >>> 0;
+}
+
+const sampleTitles = [
+  "Sample: Coastal timelapse, from sunrise to the last light",
+  "Sample: Night train through the mountains",
+  "Sample: Ceramics, throwing a tall vase",
+  "Sample: Rain on a tin roof, one hour",
+  "Sample: Street food market tour",
+  "Sample: Lecture on tidal energy",
+];
+
 const probe = (url: string): ProbeResult =>
   url.includes("list")
     ? {
@@ -98,7 +119,7 @@ const probe = (url: string): ProbeResult =>
         heights: [],
         subtitles: [],
         entries: Array.from({ length: 8 }, (_, i) => ({
-          url: `https://example.com/v/${i}`,
+          url: `https://example.com/v/${hash(url) % 1000}-${i}`,
           playlistIndex: null,
           title: `Sample: Travel diary, day ${i + 1}`,
           duration: 420 + i * 61,
@@ -109,10 +130,10 @@ const probe = (url: string): ProbeResult =>
     : {
         kind: "video",
         url,
-        title: "Sample: Coastal timelapse, from sunrise to the last light",
+        title: sampleTitles[hash(url) % sampleTitles.length],
         uploader: "Sample Channel",
-        thumbnail: art(205, 265),
-        duration: 754,
+        thumbnail: art(hash(url) % 360, (hash(url) + 60) % 360),
+        duration: 120 + (hash(url) % 1800),
         site: "Sample Site",
         heights: [2160, 1440, 1080, 720, 480, 360, 144],
         subtitles: [
@@ -122,6 +143,89 @@ const probe = (url: string): ProbeResult =>
         ],
         entries: [],
       };
+
+/**
+ * Lookups take 0.3 to 2.3 seconds, chosen by the link, so a batch answers out of order.
+ * A link containing "fail" fails, "private" fails as a private video, "list" is a playlist.
+ */
+async function probeLink(url: string): Promise<ProbeResult> {
+  // scripts/dev/batch-bench.mjs shortens the delays with window.__clawsMockProbeScale.
+  const scale = (window as unknown as { __clawsMockProbeScale?: number }).__clawsMockProbeScale ?? 1;
+  await new Promise((resolve) => setTimeout(resolve, (300 + (hash(url) % 2000)) * scale));
+  if (url.includes("private")) throw "This video is private. Sign in with cookies to download it.";
+  if (url.includes("fail")) throw "Sample failure: the site did not answer. Try again later.";
+  return probe(url);
+}
+
+// Every job the mock knows, so duplicate checks, cancel and remove behave as the backend's.
+const mockJobs = new Map(jobs.map((j) => [j.id, j]));
+/** The backend keeps a job's playlist position; the interface's Job type does not. */
+const playlistIndexOf = new Map<string, number | null>();
+let mockRevision = 100;
+let mockJobId = 0;
+
+// Keyed like the backend's duplicate check (downloader.rs enqueue).
+const queueKey = (url: string, playlistIndex: number | null | undefined, options: DownloadOptions) =>
+  JSON.stringify([url, playlistIndex && playlistIndex > 0 ? playlistIndex : null, options]);
+
+/** Validates, de-duplicates and announces the batch the way the backend does. */
+function enqueue(items: EnqueueItem[], options: DownloadOptions): JobsAdded<Job> {
+  if (items.length === 0) throw "Nothing to download.";
+  if (items.length > 500) throw "Too many items at once (limit 500).";
+  // Built fresh for each call from jobs not finished, cancelled or failed, as the backend
+  // does; a refused call changes nothing.
+  const pending = new Set(
+    [...mockJobs.values()].filter((j) => !["completed", "cancelled", "failed"].includes(j.status)).map((j) => queueKey(j.url, playlistIndexOf.get(j.id), j.options)),
+  );
+  const seen = new Set<string>();
+  const created: Job[] = [];
+  const createdIndex: (number | null)[] = [];
+  for (const item of items) {
+    if (!/^https?:\/\/[^/\s]+/i.test(item.url)) throw "Only http and https links are supported.";
+    const key = queueKey(item.url, item.playlistIndex, options);
+    if (pending.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    createdIndex.push(item.playlistIndex && item.playlistIndex > 0 ? item.playlistIndex : null);
+    const hue = hash(item.url) % 360;
+    created.push(
+      job(`n${++mockJobId}`, item.title.trim() || "Untitled", [hue, (hue + 50) % 360], {
+        url: item.url,
+        thumbnail: item.thumbnail ?? art(hue, (hue + 50) % 360),
+        uploader: item.uploader,
+        duration: item.duration,
+        options,
+        createdAt: Date.now() + created.length,
+        revision: ++mockRevision,
+      }),
+    );
+  }
+  if (created.length === 0) throw ALREADY_QUEUED;
+  created.forEach((added, i) => {
+    mockJobs.set(added.id, added);
+    playlistIndexOf.set(added.id, createdIndex[i]);
+  });
+  const batch: JobsAdded<Job> = { schemaVersion: 1, jobs: created.map((added) => ({ schemaVersion: 1, jobId: added.id, revision: added.revision, job: added })) };
+  void emit("jobs-added", batch);
+  return batch;
+}
+
+function cancelJob(id: string) {
+  const current = mockJobs.get(id);
+  if (!current || ["completed", "cancelled", "failed"].includes(current.status)) return;
+  const next: Job = { ...current, status: "cancelled", speed: null, eta: null, revision: ++mockRevision };
+  mockJobs.set(id, next);
+  const event: JobEvent<Job> = { schemaVersion: 1, jobId: id, revision: next.revision, job: next };
+  void emit("job-update", event);
+}
+
+function removeJobs(ids: string[]) {
+  for (const id of ids) {
+    if (!mockJobs.delete(id)) continue;
+    playlistIndexOf.delete(id);
+    const event: JobRemoved = { schemaVersion: 1, jobId: id, revision: ++mockRevision };
+    void emit("job-removed", event);
+  }
+}
 
 export function installMock() {
   mockWindows("main");
@@ -141,17 +245,17 @@ export function installMock() {
         case "list_history":
           return history;
         case "probe_url":
-          return probe(String(payload.url));
+          return probeLink(String(payload.url));
         case "cached_link":
           return null;
         case "enqueue":
-          return {
-            schemaVersion: 1,
-            jobs: (payload.items as EnqueueItem[]).map((item, i) => {
-              const added = job(`n${Date.now()}${i}`, item.title, [200, 260], { createdAt: Date.now() + i });
-              return { schemaVersion: 1, jobId: added.id, revision: added.revision, job: added };
-            }),
-          };
+          return enqueue(payload.items as EnqueueItem[], payload.options as DownloadOptions);
+        case "cancel_job":
+          return cancelJob(String(payload.id));
+        case "remove_job":
+          return removeJobs([String(payload.id)]);
+        case "clear_finished":
+          return removeJobs([...mockJobs.values()].filter((j) => j.status === "completed" || j.status === "cancelled").map((j) => j.id));
         case "save_settings":
           return { settings: payload.settings, warning: null };
         default:

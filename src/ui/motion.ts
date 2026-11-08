@@ -103,6 +103,23 @@ export function collapseOut(el: HTMLElement) {
   animation.onfinish = () => el.remove();
 }
 
+/**
+ * New content arriving in place of old, such as a link's details replacing "Reading the
+ * link…": a short rise and fade, transform and opacity only. Returns the animation so a
+ * newer transition can cancel it; null (no movement) when reduced motion is on.
+ */
+export function settleIn(el: Element | null): Animation | null {
+  if (!el || reducedMotion()) return null;
+  const { easing, duration } = spring("smooth");
+  return el.animate(
+    [
+      { opacity: 0, transform: "translateY(6px) scale(0.985)" },
+      { opacity: 1, transform: "none" },
+    ],
+    { duration, easing },
+  );
+}
+
 /** A small spring "pop", used when a count changes. */
 export function pop(el: HTMLElement) {
   if (reducedMotion()) return;
