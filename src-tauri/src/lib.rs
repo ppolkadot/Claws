@@ -150,8 +150,15 @@ pub fn run() {
 
     app.run(|app, event| {
         // Stop yt-dlp and ffmpeg and save the queue before exiting.
-        if let tauri::RunEvent::Exit = event {
-            downloader::shutdown(app);
+        match event {
+            tauri::RunEvent::Exit => downloader::shutdown(app),
+            // Claws does not open or enqueue files dropped on it. A drop is only noted, so a
+            // file drag that began in Claws and ended on it is not mistaken for an export.
+            tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { .. }),
+                ..
+            } => file_drag::note_window_drop(),
+            _ => {}
         }
     });
 }

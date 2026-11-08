@@ -2,11 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { DownloadEstimate } from "./download-estimates";
+import type { DragOutcome } from "./ui/drag-gesture";
 import type { JobEvent, JobRemoved, JobsAdded } from "./queue-events";
 import type { Resolution, VideoPreset } from "./resolution";
 import type { TranscriptFormat } from "./transcript-options";
 
-export type { DownloadEstimate, JobEvent, JobRemoved, JobsAdded, Resolution, TranscriptFormat, VideoPreset };
+export type { DownloadEstimate, DragOutcome, JobEvent, JobRemoved, JobsAdded, Resolution, TranscriptFormat, VideoPreset };
 
 export type Theme = "system" | "light" | "dark";
 export type Backdrop = "glass" | "acrylic" | "mica" | "tabbed" | "none";
@@ -244,7 +245,7 @@ export const api = {
   listHistory: () => invoke<HistoryItem[]>("list_history"),
   openDownload: (id: string) => invoke<void>("open_download", { id }),
   revealDownload: (id: string) => invoke<void>("reveal_download", { id }),
-  dragDownload: (id: string) => invoke<boolean>("drag_download", { id }),
+  dragDownload: (id: string) => invoke<DragOutcome>("drag_download", { id }),
   openOutputDir: () => invoke<void>("open_output_dir"),
   deleteHistory: (id: string, deleteFile: boolean) =>
     invoke<void>("delete_history", { id, deleteFile }),

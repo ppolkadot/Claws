@@ -295,6 +295,9 @@ html[data-backdrop="none"][data-theme="dark"] .glass {
   transition: transform var(--spring-smooth-d) var(--spring-smooth), background-color 0.3s;
 }
 
+.file-drag {
+  cursor: grab;
+}
 .file-drag-active {
   cursor: grabbing;
   outline: 2px solid var(--blue);

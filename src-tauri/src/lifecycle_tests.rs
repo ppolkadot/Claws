@@ -660,6 +660,26 @@ fn an_original_download_saved_as_mkv_reaches_the_folder_and_library() {
     assert_eq!(item.file_path.as_deref(), Some(saved.to_string_lossy().as_ref()));
 }
 
+/// Queue rows offer a drag with the job's id; it resolves through the Library entry the
+/// job recorded (same id), never through a path from the page.
+#[test]
+fn a_completed_queue_job_drags_only_its_recorded_library_file() {
+    let Some(t) = TestApp::new("drag-completed") else { return };
+    let id = t.enqueue("https://fixture.invalid/ok-fast/drag");
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Completed, "the download");
+    let saved = PathBuf::from(job.file_path.expect("a saved file"));
+    let history = { t.state().history.lock().unwrap().clone() };
+    assert_eq!(crate::file_drag::recorded_file(&history, &id).unwrap(), dunce::canonicalize(&saved).unwrap());
+    assert_eq!(std::fs::read(&saved).unwrap(), b"merged", "resolving never touches the file");
+
+    // Removed from the Library, the queue row's id no longer resolves.
+    crate::commands::delete_history(t.handle().clone(), t.state(), id.clone(), false).unwrap();
+    let history = { t.state().history.lock().unwrap().clone() };
+    let error = crate::file_drag::recorded_file(&history, &id).unwrap_err().to_string();
+    assert!(error.contains("no longer in the Library"), "{error}");
+    assert!(saved.is_file(), "removing the entry keeps the file");
+}
+
 #[test]
 fn a_saved_job_with_a_preset_this_version_cannot_make_fails_without_starting() {
     let Some(t) = TestApp::new("preset-unavailable") else { return };

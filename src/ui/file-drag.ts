@@ -1,39 +1,71 @@
 import { api, errorMessage } from "../api";
 import { button, toast } from "./components";
+import { idleGesture, move, outcomeMessage, press, release, revealsOnClick, settle } from "./drag-gesture";
 
-/** Native drag on pointer movement; keyboard activation retains Show in folder. */
+const fail = (e: unknown) => toast(errorMessage(e), { tone: "error" });
+
+/**
+ * A handle that starts Windows' native, copy-only drag of a saved file once the pointer
+ * moves (the backend resolves the file from the id). Enter, Space or a plain click shows
+ * the file in its folder instead, alongside the row's own Open and Show in folder buttons.
+ * Success is never claimed: Windows does not tell Claws what the receiver did.
+ */
 export function fileDragButton(id: string): HTMLButtonElement {
-  const control = button({ label: "Drag file", title: "Drag the saved file into an editor or folder. Press Enter to show it in its folder.",
-    variant: "plain", onClick: (event) => {
-      if (!busy && (event.detail === 0 || !suppressPointerClick)) void api.revealDownload(id).catch(fail);
-    } });
-  const fail = (e: unknown) => toast(errorMessage(e), { tone: "error" });
-  let busy = false;
-  let suppressPointerClick = false;
-  let gesture: AbortController | null = null;
+  let gesture = idleGesture;
+  let listening: AbortController | null = null;
+  const control = button({
+    label: "Drag file",
+    title: "Drag to copy the file into a folder or an editor. Enter, Space or a click shows it in its folder.",
+    variant: "plain",
+    onClick: (event) => {
+      if (revealsOnClick(gesture, event.detail)) void api.revealDownload(id).catch(fail);
+    },
+  });
+  control.classList.add("file-drag");
+  const stopListening = () => {
+    listening?.abort();
+    listening = null;
+  };
+  const end = () => {
+    gesture = release(gesture);
+    stopListening();
+  };
+  // Only the native drag exports the file; never an HTML drag of the page's content.
+  control.addEventListener("dragstart", (event) => event.preventDefault());
   control.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || busy) return;
-    suppressPointerClick = false;
-    gesture?.abort();
-    gesture = new AbortController();
-    const { signal } = gesture;
-    const x = event.clientX, y = event.clientY;
-    const stop = () => gesture?.abort();
-    document.addEventListener("pointerup", stop, { once: true, signal });
-    document.addEventListener("pointercancel", stop, { once: true, signal });
-    window.addEventListener("blur", stop, { once: true, signal });
-    document.addEventListener("pointermove", (move) => {
-      if (!control.isConnected || !(move.buttons & 1)) return stop();
-      if (Math.hypot(move.clientX - x, move.clientY - y) < 5) return;
-      stop();
-      busy = true;
-      suppressPointerClick = true;
-      control.classList.add("file-drag-active");
-      void api.dragDownload(id).catch(fail).finally(() => {
-        control.classList.remove("file-drag-active");
-        busy = false;
-      });
-    }, { signal });
+    gesture = press(gesture, event.button, event.clientX, event.clientY, event.pointerType);
+    if (gesture.phase !== "pressed") return;
+    stopListening();
+    listening = new AbortController();
+    const { signal } = listening;
+    document.addEventListener("pointerup", end, { signal });
+    document.addEventListener("pointercancel", end, { signal });
+    window.addEventListener("blur", end, { signal });
+    document.addEventListener(
+      "pointermove",
+      (moved) => {
+        if (!control.isConnected) return end(); // the view went away mid-press
+        const step = move(gesture, moved.clientX, moved.clientY, moved.buttons);
+        gesture = step.gesture;
+        if (gesture.phase === "idle") return stopListening();
+        if (!step.start) return;
+        stopListening();
+        // Pickup feedback lasts exactly as long as the native operation.
+        control.classList.add("file-drag-active");
+        void api
+          .dragDownload(id)
+          .then((outcome) => {
+            const message = outcomeMessage(outcome);
+            if (message) toast(message);
+          })
+          .catch(fail)
+          .finally(() => {
+            gesture = settle(gesture);
+            control.classList.remove("file-drag-active");
+          });
+      },
+      { signal },
+    );
   });
   return control;
 }
