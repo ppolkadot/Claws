@@ -80,7 +80,7 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 2. Run it. Releases are not code-signed yet, so Windows SmartScreen may warn on first run; choose **More info → Run anyway**.
 3. On first launch Claws downloads yt-dlp into its own folder and verifies it against the checksum yt-dlp publishes. This happens once and takes a few seconds.
 
-The 1.0.5 installer, with the download reliability work, is also [included in this repository](installers/Claws_1.0.5_x64-setup.exe), alongside its [SHA-256 checksum](installers/Claws_1.0.5_x64-setup.exe.sha256). The earlier [1.0.4 installer](installers/Claws_1.0.4_x64-setup.exe) ([checksum](installers/Claws_1.0.4_x64-setup.exe.sha256)) is kept there too. Version 1.1.0 is a source release candidate until its installer has been published; see [`docs/releases/1.1.0.md`](docs/releases/1.1.0.md) for its limits.
+The 1.0.5 installer, with the download reliability work, is also [included in this repository](installers/Claws_1.0.5_x64-setup.exe), alongside its [SHA-256 checksum](installers/Claws_1.0.5_x64-setup.exe.sha256). The earlier [1.0.4 installer](installers/Claws_1.0.4_x64-setup.exe) ([checksum](installers/Claws_1.0.4_x64-setup.exe.sha256)) is kept there too. The 1.1.0 installer ([installers/Claws_1.1.0_x64-setup.exe](installers/Claws_1.1.0_x64-setup.exe), [checksum](installers/Claws_1.1.0_x64-setup.exe.sha256)) is built but unpublished and untested on a clean install or an upgrade; see [`docs/releases/1.1.0.md`](docs/releases/1.1.0.md) for its limits.
 
 ### Requirements
 
