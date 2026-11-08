@@ -7,7 +7,9 @@ import { icon } from "../ui/icons";
 import { fileDragButton } from "../ui/file-drag";
 import { paintJobStatus } from "../ui/job-status";
 import { progressBar, setProgress } from "../ui/layout";
-import { collapseOut, expandIn } from "../ui/motion";
+import { canAnimate, cancelMotion, collapseOut, expandIn } from "../ui/motion";
+import { progressMotion } from "../ui/progress-motion";
+import { orderMoves } from "../ui/row-order";
 import { videoOptionsText } from "../resolution";
 import { transcriptText } from "../transcript-options";
 import type { MountView } from "./shell";
@@ -20,6 +22,14 @@ interface RowRefs {
   bar: HTMLElement;
   actions: HTMLElement;
   thumb: HTMLElement;
+  /** Title of the row's button that had keyboard focus when it was pressed, until the repaint it caused. */
+  refocus: string | null;
+  /** A button was pressed and the repaint it causes has not come yet. */
+  pressed: boolean;
+  /** Until this time (performance.now()), the row's buttons ignore activation. */
+  guardUntil: number;
+  /** Counts the row's presses, so an older press's fallback timer leaves a newer press's state alone. */
+  pressId: number;
 }
 
 /** A percentage only when every stream's size is known; "about" when a size is an estimate. */
@@ -70,11 +80,35 @@ function modeIcon(mode: Job["options"]["mode"]) {
 
 /** New rows built per frame during a large addition: about a frame's worth of work. */
 const ROWS_PER_FRAME = 40;
+/** At most this many rows arrive or leave with movement at once; more (a playlist, Clear Finished) simply appear or go. */
+const ANIMATED_ROWS = 12;
+/** Buttons focus never jumps to on its own: a stray Enter must not cancel or remove. */
+const DESTRUCTIVE = new Set(["Cancel download", "Remove from list"]);
+/**
+ * After a press repaints a row's buttons (Pause becomes Resume, Cancel becomes Try again)
+ * or removes the row, the buttons now under the pointer or holding focus ignore activation
+ * this long, so a double click or a quick second Enter cannot undo the first.
+ */
+const PRESS_GUARD_MS = 600;
+
+/** Arms a row's guard: its buttons ignore activation for PRESS_GUARD_MS. */
+function guard(refs: RowRefs) {
+  refs.guardUntil = performance.now() + PRESS_GUARD_MS;
+}
+
+/** Where focus may land by itself: the same action if offered and not destructive, else the first that is not. */
+function focusable(buttons: HTMLElement[], title: string | null): HTMLElement | undefined {
+  return buttons.find((b) => b.title === title && !DESTRUCTIVE.has(b.title)) ?? buttons.find((b) => !DESTRUCTIVE.has(b.title));
+}
 
 function buildRow(job: Job): RowRefs {
   const status = h("span", { class: "job-status" });
   const bar = progressBar(0);
   const actions = h("div", { class: "job-actions" });
+  // A held Enter repeats keydown, and every repeat would click whatever button has focus by then.
+  actions.addEventListener("keydown", (event) => {
+    if (event.repeat && event.key === "Enter") event.preventDefault();
+  });
   const thumb = job.thumbnail
     ? h("img", { class: "job-thumb", attrs: { src: job.thumbnail, alt: "", decoding: "async", referrerpolicy: "no-referrer", draggable: false } })
     : h("div", { class: "job-thumb thumb-fallback" }, icon(modeIcon(job.options.mode), 18));
@@ -92,19 +126,45 @@ function buildRow(job: Job): RowRefs {
     ),
     actions,
   );
-  return { el, status, bar, actions, thumb };
+  return { el, status, bar, actions, thumb, refocus: null, pressed: false, guardUntil: 0, pressId: 0 };
 }
 
 function paintActions(refs: RowRefs, job: Job) {
-  const items: Node[] = [];
+  // Keyboard focus survives the buttons being replaced by the new status's: the same action
+  // when it is still offered, otherwise the first one that cannot cancel or remove.
+  const active = document.activeElement;
+  const nowhere = !active || active === document.body;
+  const focused = active instanceof HTMLElement && refs.actions.contains(active) ? active.title : nowhere ? refs.refocus : null;
+  refs.refocus = null;
+  // This repaint answers a press: the new buttons (now under the pointer or the focus) wait
+  // out the guard, so a second click or Enter cannot resume what was just paused or retry
+  // what was just cancelled.
+  if (refs.pressed) guard(refs);
+  refs.pressed = false;
+  const items: HTMLElement[] = [];
   // Disabled until the new status repaints them, so a double click cannot act on a job
   // that is already pausing or cancelling. Re-enabled if nothing changes.
   const act = (run: () => Promise<unknown>) => () => {
+    if (performance.now() < refs.guardUntil) return;
+    const press = ++refs.pressId;
+    const pressed = document.activeElement;
+    refs.refocus = pressed instanceof HTMLElement && refs.actions.contains(pressed) ? pressed.title : null;
+    refs.pressed = true;
     const buttons = [...refs.actions.querySelectorAll<HTMLButtonElement>("button")];
     buttons.forEach((b) => (b.disabled = true));
     void run()
       .catch(fail)
-      .finally(() => window.setTimeout(() => buttons.forEach((b) => (b.disabled = false)), 1500));
+      .finally(() =>
+        window.setTimeout(() => {
+          buttons.forEach((b) => (b.disabled = false));
+          // Only this press's own state: a newer press on the row (its status change may
+          // still be on the way, as when a running download is paused) keeps its focus
+          // target and its guard.
+          if (refs.pressId !== press) return;
+          refs.refocus = null;
+          refs.pressed = false;
+        }, 1500),
+      );
   };
   switch (job.status) {
     case "downloading":
@@ -134,6 +194,9 @@ function paintActions(refs: RowRefs, job: Job) {
       break;
   }
   replace(refs.actions, ...items);
+  if (focused === null) return;
+  const next = items.find((b) => b.title === focused) ?? items.find((b) => !DESTRUCTIVE.has(b.title));
+  next?.focus({ preventScroll: true });
 }
 
 function paintRow(refs: RowRefs, job: Job, previous: Job | undefined) {
@@ -142,7 +205,8 @@ function paintRow(refs: RowRefs, job: Job, previous: Job | undefined) {
   paintJobStatus(refs.status, statusText(job), job.status === "completed", changed, () => icon("check", 12));
   refs.status.title = job.status === "failed" ? job.error ?? "" : "";
   const unknown = job.status === "processing" || (job.status === "downloading" && !job.progressKnown);
-  setProgress(refs.bar, unknown ? null : job.status === "completed" ? 1 : job.progress);
+  // The fill glides only forwards within one download; completion, retry and the rest snap.
+  setProgress(refs.bar, unknown ? null : job.status === "completed" ? 1 : job.progress, progressMotion(previous, job, document.hidden));
   if (!previous || previous.status !== job.status) paintActions(refs, job);
 }
 
@@ -168,7 +232,46 @@ export const mountQueue: MountView = (container, ctx) => {
 
   const rows = new Map<string, RowRefs>();
   const known = new Map<string, Job>();
-  let mounted = false; // rows already there when the page opens appear without animating
+  // Each row element's refs, for finding a neighbour when focus has to move.
+  const refsOf = new Map<Element, RowRefs>();
+  // Removed rows still collapsing out: no longer in `rows`, but leaving the view stops them.
+  const collapsing = new Set<HTMLElement>();
+  const emptyAction = empty.querySelector<HTMLElement>("button");
+
+  /**
+   * Where keyboard focus goes when the row holding it is removed. Called before the rows
+   * go; the returned step runs once the list (or the empty state) is in place. The
+   * neighbour's buttons are guarded, so the Enter that removed one row cannot also act on
+   * the next.
+   */
+  const focusAfterRemoval = (going: RowRefs[]): (() => void) | null => {
+    const active = document.activeElement;
+    // A pressed button is disabled at once and loses focus to <body>; its row remembers it.
+    const nowhere = !active || active === document.body;
+    const from = going.find((refs) => (active ? refs.el.contains(active) : false)) ?? (nowhere ? going.find((refs) => refs.refocus !== null) : undefined);
+    if (!from) return null;
+    const title = from.refocus ?? (active instanceof HTMLElement ? active.title : null);
+    const leaving = new Set<Element>(going.map((refs) => refs.el));
+    const children = [...list.children];
+    const at = children.indexOf(from.el);
+    const staying = (el: Element) => !leaving.has(el) && refsOf.has(el);
+    const neighbour = children.slice(at + 1).find(staying) ?? children.slice(0, at).reverse().find(staying);
+    const refs = neighbour ? refsOf.get(neighbour) : undefined;
+    return () => {
+      if (refs) {
+        guard(refs);
+        const target = focusable([...refs.actions.querySelectorAll<HTMLElement>("button")], title);
+        if (target) return target.focus({ preventScroll: true });
+        // Only destructive buttons there (a job being processed): the list itself, never "Cancel".
+        list.tabIndex = -1;
+        return list.focus({ preventScroll: true });
+      }
+      if (!empty.hidden) emptyAction?.focus({ preventScroll: true });
+    };
+  };
+  // True while a large addition (or the rows already there when the page opens) is still
+  // being built: none of its rows animate, including the last frame's few.
+  let filling = true;
   let frame = 0;
   let leaveTimer = 0;
   // Dev builds expose counters for scripts/dev/queue-bench.mjs.
@@ -185,40 +288,62 @@ export const mountQueue: MountView = (container, ctx) => {
     clearBtn.disabled = store.finishedCount() === 0;
   };
 
-  // Adding or removing jobs, at most once per frame. Only rows that are out of place move,
-  // so a row mid-animation is never re-inserted. A large addition is built ROWS_PER_FRAME
-  // rows per frame so no single frame blocks the window.
+  // Adding or removing jobs, at most once per frame. A large addition is built
+  // ROWS_PER_FRAME rows per frame so no single frame blocks the window. Rows that animate
+  // are measured together (one layout read before the changes, one after), never per row.
   const sync = () => {
     frame = 0;
     stats.structuralSyncs += 1;
     const jobs = store.jobList();
     const ids = new Set(jobs.map((j) => j.id));
-    for (const [id, refs] of rows) {
-      if (!ids.has(id)) {
-        collapseOut(refs.el);
-        rows.delete(id);
-        known.delete(id);
+    const gone = [...rows].filter(([id]) => !ids.has(id));
+    // Focus inside a row that is going moves to the neighbouring row (the next, else the
+    // previous), or to the empty state's action once the list is empty.
+    const refocus = focusAfterRemoval(gone.map(([, refs]) => refs));
+    // Clear Finished on a long list would be dozens of height animations: those just go.
+    const animateOut = gone.length <= ANIMATED_ROWS && canAnimate();
+    const heightsOut = animateOut ? gone.map(([, refs]) => refs.el.getBoundingClientRect().height) : [];
+    gone.forEach(([id, refs], i) => {
+      cancelMotion(refs.status);
+      if (animateOut) {
+        // A row on its way out can no longer be focused or pressed, nor is it read out.
+        refs.el.inert = true;
+        refs.el.setAttribute("aria-hidden", "true");
+        const collapse = collapseOut(refs.el, heightsOut[i]);
+        if (collapse) {
+          collapsing.add(refs.el);
+          collapse.addEventListener("finish", () => collapsing.delete(refs.el));
+        }
+      } else {
+        cancelMotion(refs.el);
+        refs.el.remove();
       }
-    }
+      rows.delete(id);
+      refsOf.delete(refs.el);
+      known.delete(id);
+    });
     const fresh = jobs.filter((job) => !rows.has(job.id));
     // A playlist's worth of rows at once would be hundreds of springs: only small additions animate.
-    const animate = mounted && fresh.length <= 12;
+    const animateIn = !filling && fresh.length <= ANIMATED_ROWS && canAnimate();
     const batch = fresh.slice(0, ROWS_PER_FRAME);
+    const entering: HTMLElement[] = [];
     for (const job of batch) {
       const refs = buildRow(job);
       rows.set(job.id, refs);
+      refsOf.set(refs.el, refs);
       paint(refs, job);
       list.appendChild(refs.el);
-      if (animate) expandIn(refs.el);
+      if (animateIn) entering.push(refs.el);
     }
-    if (batch.length < fresh.length) scheduleSync();
-    jobs
-      .filter((job) => rows.has(job.id))
-      .forEach((job, index) => {
-        const el = rows.get(job.id)!.el;
-        const at = list.children[index];
-        if (at !== el) list.insertBefore(el, at ?? null);
-      });
+    filling = batch.length < fresh.length;
+    if (filling) scheduleSync();
+    // Jobs keep their creation order, so this normally moves nothing. Rows collapsing out
+    // are skipped and stay where they were.
+    const desired = jobs.flatMap((job) => rows.get(job.id)?.el ?? []);
+    const placed = new Set<Element>(desired);
+    const children = [...list.children];
+    const leavingRows = new Set(children.filter((el) => !placed.has(el)));
+    for (const { key, before } of orderMoves<Element>(children, desired, leavingRows)) list.insertBefore(key, before);
     // Rows collapsing out still occupy the list for a moment.
     const leaving = list.children.length - jobs.length;
     list.hidden = jobs.length === 0 && leaving <= 0;
@@ -226,6 +351,10 @@ export const mountQueue: MountView = (container, ctx) => {
     window.clearTimeout(leaveTimer);
     if (jobs.length === 0 && leaving > 0) leaveTimer = window.setTimeout(scheduleSync, 360);
     paintClear();
+    refocus?.();
+    // Measured once the list is shown: a first row into an empty Queue has its real height.
+    const heightsIn = entering.map((el) => el.getBoundingClientRect().height);
+    entering.forEach((el, i) => expandIn(el, heightsIn[i]));
   };
 
   const scheduleSync = () => {
@@ -242,7 +371,6 @@ export const mountQueue: MountView = (container, ctx) => {
   const offJobs = store.on("jobs", scheduleSync);
   const offStatus = store.on("jobStatus", paintClear);
   sync();
-  mounted = true;
 
   return () => {
     offJob();
@@ -250,5 +378,12 @@ export const mountQueue: MountView = (container, ctx) => {
     offStatus();
     cancelAnimationFrame(frame);
     window.clearTimeout(leaveTimer);
+    for (const refs of rows.values()) cancelMotion(refs.el, refs.status);
+    // Rows still collapsing out are no longer in `rows`: stop them and take them out now.
+    for (const el of collapsing) {
+      cancelMotion(el);
+      el.remove();
+    }
+    collapsing.clear();
   };
 };

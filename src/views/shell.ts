@@ -5,7 +5,7 @@ import { store, type Route } from "../store";
 import { h, clear } from "../ui/dom";
 import { icon, type IconName } from "../ui/icons";
 import { progressBar, setProgress } from "../ui/layout";
-import { pop } from "../ui/motion";
+import { canAnimate, pop } from "../ui/motion";
 
 export interface ViewContext {
   setActions(nodes: Node[]): void;
@@ -173,7 +173,7 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
   };
   const renderRoute = () => {
     placeIndicator(); // moves on its own spring, outside the snapshot
-    const animate = !first && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const animate = !first && canAnimate();
     first = false;
     if (animate && "startViewTransition" in document) {
       (document as Document & { startViewTransition(run: () => void): unknown }).startViewTransition(swap);
@@ -195,6 +195,7 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
   store.on("jobStatus", paintBadge);
   paintBadge();
 
+  let lastTool: "ytdlp" | "ffmpeg" | null = null;
   const paintTools = () => {
     const busy = store.toolBusy.ytdlp || store.toolBusy.ffmpeg;
     const tool = store.toolBusy.ytdlp ? "ytdlp" : "ffmpeg";
@@ -208,7 +209,9 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
         progress?.stage === "extract"
           ? `Unpacking ${name}…`
           : `Setting up ${name}${pct !== null ? ` ${Math.round(pct * 100)}%` : "…"}`;
-      setProgress(toolBar, pct);
+      // The next tool's download starts on the same bar: it jumps back to its start.
+      setProgress(toolBar, pct, tool !== lastTool ? "snap" : "smooth");
+      lastTool = tool;
     } else if (!store.toolsKnown) {
       toolText.textContent = "Checking yt-dlp…";
     } else if (store.toolError.ytdlp) {

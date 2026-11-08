@@ -324,7 +324,7 @@ The large title belongs to the page; the toolbar title belongs to the window. As
 12px red, yellow and green circles with 8px glyphs revealed on group hover or keyboard focus, a 0.5px dark inset edge, and a brightness press; grey when the window is inactive.
 
 ### Progress and activity
-4px rounded bar on fill-2; the blue fill scales by `--p` on `--spring-smooth`, turning green, orange or red with job status. Indeterminate fill is a 34% segment sliding at 1.4s. The activity indicator is Apple's eight-spoke spinner, fading each spoke over 0.8s.
+4px rounded bar on fill-2; the blue fill scales by `--p` (transform `scaleX`) and glides forward on `--spring-smooth`, turning green, orange or red with job status. Jumps snap instead of gliding (see Motion). Indeterminate fill is a 34% segment crossing the track by transform at 1.4s. The activity indicator is Apple's eight-spoke spinner, fading each spoke over 0.8s.
 
 Download rows only show a number they can stand behind:
 - **Known size.** A percentage weighted by bytes across the video and audio streams.
@@ -338,10 +338,42 @@ Download rows only show a number they can stand behind:
 - **Sheet:** a 300px chrome alert, 20px radius, centred title and message, full-width stacked 30px buttons, springing in from 0.88 scale over a 20% dim scrim with a 6px blur.
 
 ### Rows, entries, tiles
-Grouped rows follow Layout. Playlist entries and recent items use 64x36 thumbnails at 6px; queue jobs use 88px 16:9 thumbnails at 7px with 600-weight titles and 12px tabular status lines coloured by status. Entry checks are 20px circles that compress while pressed and fill blue-fill when checked. Library tiles are glass panels with a 16:9 artwork that scales to 1.03 on hover, a blurred dark duration badge at top-right, and a gradient action bar of small translucent white buttons revealed on hover or focus. New queue rows expand in from zero height on the smooth spring and collapse out when removed; new stage content settles in from 0.985 scale and 6px below.
+Grouped rows follow Layout. Playlist entries and recent items use 64x36 thumbnails at 6px; queue jobs use 88px 16:9 thumbnails at 7px with 600-weight titles and 12px tabular status lines coloured by status. Entry checks are 20px circles that compress while pressed and fill blue-fill when checked. Library tiles are glass panels with a 16:9 artwork that scales to 1.03 on hover, a blurred dark duration badge at top-right, and a gradient action bar of small translucent white buttons revealed on hover or focus. Small additions of queue rows expand in from zero height and removed rows collapse out in place; new stage content settles in from 0.985 scale and 6px below (see Motion).
 
 ### Empty states
 Apple's content-unavailable layout: one 46px symbol in secondary ink, a 19px / 700 title, a line of 13px secondary help (max 44ch), and optionally one action. No tile, card or illustration behind the symbol.
+
+## Motion
+
+Motion says what just happened, a little faster than reading would. It never stands in for real state: a status, a percentage, a check or a file only appears when the backend reports it, and an animation never delays it, adds to it or fakes it.
+
+**Springs.** `src/ui/motion.ts` samples three springs into CSS `linear()` easings, published as `--spring-<name>` and `--spring-<name>-d`: smooth (critically damped, about 660ms) for layout and progress, snappy (about 440ms, a hint of overshoot) for small controls and selection, bouncy (about 700ms) for things that arrive and press release. Scripted effects call `spring(name)` and animate with `Element.animate`.
+
+**Effects in use.**
+
+| Effect | Where | Movement | Rules |
+| --- | --- | --- | --- |
+| Lookup settles into its details | Download stage | Opacity 0 → 1, 6px rise, 0.985 → 1 scale, smooth spring | A newer lookup cancels the older settle. Focus stays in the link field. Errors appear at once. |
+| Type selection | Video / Audio / Transcript segmented control | The one thumb slides by `translateX` on snappy | No second selection system. Arrow keys move selection and focus together. |
+| Page selection | Sidebar | One indicator travels by `translateY` on snappy; the page swap cross-fades in 0.2s | — |
+| New queue rows | Queue | Height 0 → measured, opacity and 0.98 scale, smooth spring | Only additions of 12 rows or fewer. Rows already there when the Queue opens never animate, and neither do any of a larger addition's rows, built 40 per frame. All the new rows of a frame are measured in one read. |
+| Removed queue rows | Queue | Collapse to zero height in place, up to 320ms; the rows below follow | A row still arriving has its arrival cancelled. More than 12 rows leaving at once (Clear Finished) go without movement. A leaving row is never moved in the list. |
+| Row order | Queue | None | Jobs keep their creation order: nothing in the queue reorders, so there is no reorder animation. Rows are only moved if somehow out of order, without movement. |
+| Progress | Queue rows and the sidebar's tool-setup bar | The fill glides forward on smooth (transform only, no layout reads) | These bars snap, with the transition off for one frame, on a value lower than the one shown (a retry, the next tool's download), on leaving the indeterminate sheen and while the window is hidden; the tool bar also snaps when it moves on to the next tool. The Download view's setup banner and the bars in Settings are redrawn on every progress event, so they show each new value at once without gliding. A queue row also snaps on its first paint, any status change (completion, pause, failure, retry, resume) and a size becoming known or unknown. The fill never passes 100% and never slides backwards. Unknown sizes, processing and transcripts keep the indeterminate sheen. |
+| Completion | Queue status line | The static check and "Saved to …" appear in the same frame as the event; the line then rises 3px from 45% opacity in 220ms | Only on the change to completed, never per progress event. Leaving completed (retry, removal) cancels it. |
+| File drag pickup | Drag handles in the Queue and Library | Blue outline and grabbing cursor | Shown exactly as long as the native drag runs; the outcome comes from the native operation. |
+| Badge | Queue item in the sidebar | Scale 0.6 → 1 on bouncy | When the active count rises. |
+| Controls | Buttons, chips, switch, slider | Press compresses quickly; release springs back | — |
+
+**Cancellation.** `expandIn`, `collapseOut` and the completion movement track the one movement each element runs, so a newer one, a retry, a removal or leaving the view (`cancelMotion`) cancels it instead of stacking another. Leaving the Queue cancels the rows' movements and takes rows that are still collapsing out of the page at once, so nothing keeps running on detached rows.
+
+**Focus and repeated presses.** A row's buttons are replaced when its status changes; keyboard focus moves to the same action, or else to the first one that cannot cancel or remove. After a press, the buttons that replace the pressed one ignore activation for 600ms (each press's 1.5s fallback, for a command that changes nothing, clears only that press's focus target and guard, never a newer press's) and a held Enter does not repeat, so a double click or a second Enter cannot resume what was just paused or retry what was just cancelled. Removing the row that holds focus moves focus to the neighbouring row's first button that cannot cancel or remove (or to the empty state's action), guarded the same way. A row collapsing out is `inert` and hidden from assistive technology.
+
+**Reduced motion and hidden windows.** With Reduce motion on, every CSS transition and animation clamps to 0.01ms and scripted effects do not start: rows appear and go at once, the bar jumps, the thumb and indicator move instantly. Static indicators stay: the check, the status colours, the indeterminate fill's colour and the drag outline. While the window is hidden, no scripted effect starts (rows, completion, lookup settle, badge pop, sheet departure, page transition) and progress snaps.
+
+**Cost.** Movement uses transform and opacity wherever practical. Only row arrival and removal animate height, capped at 12 rows and measured in one read per frame. Nothing reads layout per progress event; progress repaints only its own row. `scripts/dev/motion-bench.mjs` measures each effect, and `scripts/dev/queue-bench.mjs` measures 500 rows with 8 active transfers. Both run in headless Edge against the dev mock; results are in `docs/performance/queue-ui.md`.
+
+No decorative or looping animation in the working downloader; the indeterminate sheen and the spinner loop only while work of unknown length is actually running.
 
 ## Do's and Don'ts
 
@@ -353,13 +385,16 @@ Apple's content-unavailable layout: one 46px symbol in secondary ink, a 19px / 7
 - **Do** compress pressed controls quickly (0.1s ease-out, scale 0.94-0.95) and let them spring back on release.
 - **Do** use inset-grouped rows with hairlines that start at the text inset for settings and lists.
 - **Do** put white text only on blue-fill or danger-fill, and coloured text through the `-text` variants.
-- **Do** honour reduced motion (transitions and animations clamp to 0.01ms; JS springs become instant).
+- **Do** honour reduced motion (transitions and animations clamp to 0.01ms; scripted effects do not start) and keep the static indicator that motion would have drawn attention to.
+- **Do** return an animation's handle, so a retry, removal or newer change can cancel it.
 
 ### Don't:
 - **Don't** paint a background behind the UI: no colour orbs, gradients or images; the desktop is the backdrop.
 - **Don't** add backdrop-filter to panels or the sidebar; the desktop is already blurred behind them.
 - **Don't** animate opacity or filter on an ancestor of a blurring element.
 - **Don't** use fixed cubic-bezier curves for movement where a spring variable fits.
+- **Don't** let motion stand in for state: no fabricated progress, no delayed completion, no optimistic drag success, no bar sliding backwards.
+- **Don't** animate hundreds of rows, read layout per progress event, or add decorative looping animation.
 - **Don't** put a tile, card or illustration behind an empty-state symbol.
 - **Don't** add hard offset shadows, stroked borders or flat saturated panel fills.
 - **Use** the bundled Polaris web fonts for interface text and include their license.

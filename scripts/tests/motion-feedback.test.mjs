@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { completionFeedback } from "../../.test-build/ui/motion.js";
+import { cancelMotion, collapseOut, completionFeedback, expandIn, pop, settleIn } from "../../.test-build/ui/motion.js";
 import { paintJobStatus } from "../../.test-build/ui/job-status.js";
 
 test("completion cancels superseded animation and respects reduced motion and hidden windows", () => {
@@ -73,4 +73,96 @@ test("with reduced motion the check is static", () => {
   paintJobStatus(el, "Saved to Videos", true, true, check);
   assert.equal(checks(el), 1, "the static indicator stays");
   assert.equal(el.animations, 0);
+});
+
+/** Just enough of a row for expandIn and collapseOut. */
+function rowElement() {
+  const el = {
+    style: {},
+    removed: false,
+    running: [],
+    getBoundingClientRect: () => ({ height: 62 }),
+    remove() { el.removed = true; },
+    animate(frames, options) {
+      const animation = { frames, options, cancelled: false, onfinish: null, cancel() { this.cancelled = true; } };
+      el.running.push(animation);
+      return animation;
+    },
+  };
+  return el;
+}
+
+test("a row's entry returns its animation, and is skipped with reduced motion or a hidden window", () => {
+  globalThis.matchMedia = () => ({ matches: false });
+  globalThis.document = { hidden: false };
+  const el = rowElement();
+  assert.ok(expandIn(el));
+  globalThis.matchMedia = () => ({ matches: true });
+  assert.equal(expandIn(rowElement()), null);
+  globalThis.matchMedia = () => ({ matches: false });
+  globalThis.document = { hidden: true };
+  assert.equal(expandIn(rowElement()), null);
+});
+
+test("removing a row that is still arriving cancels the arrival instead of stacking a second animation", () => {
+  globalThis.matchMedia = () => ({ matches: false });
+  globalThis.document = { hidden: false };
+  const el = rowElement();
+  const entry = expandIn(el);
+  collapseOut(el);
+  assert.equal(entry.cancelled, true);
+  assert.equal(el.running.length, 2);
+  el.running[1].onfinish();
+  assert.equal(el.removed, true);
+});
+
+test("a hidden window removes a row at once instead of animating it out", () => {
+  globalThis.matchMedia = () => ({ matches: false });
+  globalThis.document = { hidden: true };
+  const el = rowElement();
+  collapseOut(el);
+  assert.equal(el.removed, true);
+  assert.equal(el.running.length, 0);
+});
+
+test("view disposal cancels the arrival and completion movements it knows about", () => {
+  globalThis.matchMedia = () => ({ matches: false });
+  globalThis.document = { hidden: false };
+  const row = rowElement();
+  const status = rowElement();
+  const entry = expandIn(row);
+  completionFeedback(status, true);
+  cancelMotion(row, status);
+  assert.equal(entry.cancelled, true);
+  assert.equal(status.running[0].cancelled, true);
+  cancelMotion(row, status); // nothing left: no error
+});
+
+test("a row's departure returns its animation so leaving the view can cancel it; none in a hidden window", () => {
+  globalThis.matchMedia = () => ({ matches: false });
+  globalThis.document = { hidden: false };
+  const el = rowElement();
+  const leaving = collapseOut(el);
+  assert.ok(leaving, "the collapse is returned");
+  cancelMotion(el);
+  assert.equal(leaving.cancelled, true, "cancelMotion reaches a row that is collapsing out");
+  globalThis.document = { hidden: true };
+  assert.equal(collapseOut(rowElement()), null);
+});
+
+test("settleIn and pop start nothing with reduced motion or in a hidden window", () => {
+  globalThis.matchMedia = () => ({ matches: false });
+  globalThis.document = { hidden: false };
+  const shown = rowElement();
+  assert.ok(settleIn(shown));
+  pop(shown);
+  assert.equal(shown.running.length, 2);
+  for (const [reduced, hidden] of [[true, false], [false, true]]) {
+    globalThis.matchMedia = () => ({ matches: reduced });
+    globalThis.document = { hidden };
+    const el = rowElement();
+    assert.equal(settleIn(el), null);
+    pop(el);
+    assert.equal(el.running.length, 0, `reduced=${reduced} hidden=${hidden}`);
+  }
 });

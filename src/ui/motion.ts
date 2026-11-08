@@ -73,43 +73,87 @@ export function spring(name: keyof typeof springs): SampledSpring {
   return reducedMotion() ? { easing: "linear", duration: 1 } : sampled[name];
 }
 
-/** Grows an element from zero height into place, as a new row arriving in a list. */
-export function expandIn(el: HTMLElement) {
-  if (reducedMotion()) return;
-  const height = el.getBoundingClientRect().height;
+/** Movement is worth starting: motion is allowed and someone can see the window. */
+export const canAnimate = () => !reducedMotion() && !document.hidden;
+
+// The one movement each element is running (arrival, departure or completion), so a newer
+// one, a retry, a removal or the view closing can cancel it instead of stacking another.
+const running = new WeakMap<Element, Animation>();
+
+function own(el: Element, animation: Animation): Animation {
+  running.set(el, animation);
+  animation.addEventListener?.("finish", () => {
+    if (running.get(el) === animation) running.delete(el);
+  });
+  return animation;
+}
+
+/** Cancels whatever movement these elements are running; they show their final state. */
+export function cancelMotion(...els: Element[]) {
+  for (const el of els) {
+    running.get(el)?.cancel();
+    running.delete(el);
+  }
+}
+
+/**
+ * Grows an element from zero height into place, as a new row arriving in a list. Pass
+ * `height` when the caller has measured a batch of rows in one read. Returns the
+ * animation, or null (no movement) with reduced motion or in a hidden window.
+ */
+export function expandIn(el: HTMLElement, height?: number): Animation | null {
+  if (!canAnimate()) return null;
+  const to = height ?? el.getBoundingClientRect().height;
   const { easing, duration } = spring("smooth");
-  el.animate(
-    [
-      { height: "0px", opacity: 0, transform: "scale(0.98)" },
-      { height: `${height}px`, opacity: 1, transform: "none" },
-    ],
-    { duration, easing },
+  cancelMotion(el);
+  return own(
+    el,
+    el.animate(
+      [
+        { height: "0px", opacity: 0, transform: "scale(0.98)" },
+        { height: `${to}px`, opacity: 1, transform: "none" },
+      ],
+      { duration, easing },
+    ),
   );
 }
 
-/** Collapses an element to zero height, then removes it. */
-export function collapseOut(el: HTMLElement) {
-  if (reducedMotion()) return el.remove();
-  const height = el.getBoundingClientRect().height;
+/**
+ * Collapses an element to zero height, then removes it; at once with reduced motion or in
+ * a hidden window. A row still arriving has its arrival cancelled first, so the two never
+ * stack. Pass `height` when the caller has measured a batch of rows in one read. Returns
+ * the collapse, so a caller leaving the view can cancel it (`cancelMotion`) and remove the
+ * element itself; null when the element went at once.
+ */
+export function collapseOut(el: HTMLElement, height?: number): Animation | null {
+  if (!canAnimate()) {
+    cancelMotion(el);
+    el.remove();
+    return null;
+  }
+  const from = height ?? el.getBoundingClientRect().height;
+  cancelMotion(el);
   el.style.overflow = "hidden";
   const { duration } = spring("smooth");
   const animation = el.animate(
     [
-      { height: `${height}px`, opacity: 1 },
+      { height: `${from}px`, opacity: 1 },
       { height: "0px", opacity: 0, paddingTop: "0px", paddingBottom: "0px" },
     ],
     { duration: Math.min(duration, 320), easing: "cubic-bezier(0.32, 0.72, 0, 1)", fill: "forwards" },
   );
+  own(el, animation);
   animation.onfinish = () => el.remove();
+  return animation;
 }
 
 /**
  * New content arriving in place of old, such as a link's details replacing "Reading the
  * link…": a short rise and fade, transform and opacity only. Returns the animation so a
- * newer transition can cancel it; null (no movement) when reduced motion is on.
+ * newer transition can cancel it; null (no movement) with reduced motion or in a hidden window.
  */
 export function settleIn(el: Element | null): Animation | null {
-  if (!el || reducedMotion()) return null;
+  if (!el || !canAnimate()) return null;
   const { easing, duration } = spring("smooth");
   return el.animate(
     [
@@ -120,26 +164,16 @@ export function settleIn(el: Element | null): Animation | null {
   );
 }
 
-/** A small spring "pop", used when a count changes. */
+/** A small spring "pop", used when a count changes; none with reduced motion or in a hidden window. */
 export function pop(el: HTMLElement) {
-  if (reducedMotion()) return;
+  if (!canAnimate()) return;
   const { easing, duration } = spring("bouncy");
   el.animate([{ transform: "scale(0.6)" }, { transform: "scale(1)" }], { duration, easing });
 }
 
-const completionAnimations = new WeakMap<HTMLElement, Animation>();
-
 /** One short success acknowledgment, never a looping effect or a delayed status. */
 export function completionFeedback(el: HTMLElement, completed: boolean) {
-  completionAnimations.get(el)?.cancel();
-  completionAnimations.delete(el);
-  if (!completed || reducedMotion() || document.hidden) return;
-  const animation = el.animate(
-    [{ opacity: 0.45, transform: "translateY(3px)" }, { opacity: 1, transform: "none" }],
-    { duration: 220, easing: "ease-out" },
-  );
-  completionAnimations.set(el, animation);
-  animation.onfinish = () => {
-    if (completionAnimations.get(el) === animation) completionAnimations.delete(el);
-  };
+  cancelMotion(el);
+  if (!completed || !canAnimate()) return;
+  own(el, el.animate([{ opacity: 0.45, transform: "translateY(3px)" }, { opacity: 1, transform: "none" }], { duration: 220, easing: "ease-out" }));
 }

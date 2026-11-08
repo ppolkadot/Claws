@@ -12,7 +12,7 @@
     "tauri": "tauri",
     "test:queue": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .test-build src/queue-events.ts && node --test scripts/tests/queue-events.test.mjs",
     "test:logic": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .test-build src/download-input.ts src/download-estimates.ts src/resolution.ts src/transcript-options.ts && node --test scripts/tests/download-input.test.mjs scripts/tests/download-estimates.test.mjs scripts/tests/resolution.test.mjs scripts/tests/transcript-options.test.mjs",
-    "test:motion": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --rootDir src --outDir .test-build src/ui/motion.ts src/ui/drag-gesture.ts src/ui/job-status.ts src/ui/dom.ts && node --test scripts/tests/motion-feedback.test.mjs scripts/tests/file-drag-gesture.test.mjs scripts/tests/dom-attributes.test.mjs"
+    "test:motion": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --rootDir src --outDir .test-build src/ui/motion.ts src/ui/drag-gesture.ts src/ui/job-status.ts src/ui/dom.ts src/ui/layout.ts src/ui/progress-motion.ts src/ui/row-order.ts && node --test scripts/tests/motion-feedback.test.mjs scripts/tests/file-drag-gesture.test.mjs scripts/tests/dom-attributes.test.mjs scripts/tests/progress-motion.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
