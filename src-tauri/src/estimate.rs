@@ -226,6 +226,10 @@ fn estimate_args(common: Vec<String>, options: &DownloadOptions, audio_selection
 pub async fn estimate(app: &AppHandle, raw_url: &str, playlist_index: Option<u32>, mut options: DownloadOptions) -> Result<DownloadEstimate> {
     let url = probe::validate_url(raw_url)?;
     options.validate()?;
+    if options.mode == "transcript" {
+        // Only the captions are fetched; there is no media size to preview.
+        return Ok(unknown("Text only: the video is not downloaded."));
+    }
     let playlist_index = playlist_index.filter(|i| *i > 0);
     let state = app.state::<AppState>();
     let settings = state.settings.lock().unwrap().clone();

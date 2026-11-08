@@ -1,6 +1,6 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 
-import { api, errorMessage, type DownloadOptions, type ProbeResult, type VideoPreset } from "../api";
+import { api, errorMessage, type DownloadMode, type DownloadOptions, type ProbeResult, type TranscriptFormat, type VideoPreset } from "../api";
 import { CallLimit, EstimateRun, PreviewEstimator, aggregate, describeRun, describeSingle } from "../download-estimates";
 import {
   MAX_LINKS,
@@ -15,9 +15,18 @@ import {
 } from "../download-input";
 import { formatDate, formatDuration, folderName } from "../format";
 import { VIDEO_PRESETS, capChoices, hasExactSizes, keptQuality, qualityChoices } from "../resolution";
+import {
+  TRANSCRIPT_FORMATS,
+  captionChoices,
+  captionKey,
+  defaultCaption,
+  keptCaption,
+  transcriptOptions,
+  type CaptionChoices,
+} from "../transcript-options";
 import { store, type BatchChoices, type BatchSession } from "../store";
 import { button, chipCheck, chipRadio, segmented, toast, toggle } from "../ui/components";
-import { clear, h, replace } from "../ui/dom";
+import { append, clear, h, replace } from "../ui/dom";
 import { icon } from "../ui/icons";
 import { group, progressBar, row, sectionTitle, setProgress, spinner } from "../ui/layout";
 import { settleIn } from "../ui/motion";
@@ -58,6 +67,28 @@ function presetRow(value: VideoPreset, onChange: (next: VideoPreset) => void): H
   return row("Format", control.el, hint);
 }
 
+/** Why the Transcript type cannot be chosen for this video. */
+const NO_CAPTIONS = "No captions available for this video";
+/** Shown where a size estimate would be: a transcript downloads no media. */
+const TEXT_ONLY = "Text only — the video is not downloaded";
+
+/** The caption track for a transcript, human and automatic tracks in their own groups. */
+function captionSelect(choices: CaptionChoices, value: string | null, onChange: (key: string) => void): HTMLSelectElement {
+  const optgroup = (label: string, tracks: CaptionChoices["human"]) =>
+    tracks.length === 0
+      ? null
+      : h("optgroup", { attrs: { label } }, ...tracks.map((t) => h("option", { attrs: { value: captionKey(t) }, text: t.name })));
+  const select = h(
+    "select",
+    { class: "select-input", attrs: { "aria-label": "Caption language" } },
+    optgroup("Human captions", choices.human),
+    optgroup("Automatic captions", choices.automatic),
+  );
+  if (value) select.value = value;
+  select.addEventListener("change", () => onChange(select.value));
+  return select;
+}
+
 /** The Quality chips: Best, then each choice with its cap as the hint. */
 function qualityChips(choices: { value: number; label: string; hint: string }[], value: number | null, onChange: (next: number | null) => void): HTMLElement {
   return chipRadio<number>("Quality", [{ value: 0, label: "Best" }, ...choices], value ?? 0, (next) => onChange(next === 0 ? null : next));
@@ -90,6 +121,7 @@ function batchOptions(choices: BatchChoices): DownloadOptions {
     autoSubs: false,
     embedSubs: false,
     fastSave: false,
+    transcriptFormat: "txt",
   };
 }
 
@@ -228,13 +260,18 @@ export const mountDownload: MountView = (container, ctx) => {
   let stageAnimation: Animation | null = null;
   let batchView: { paintRow(row: BatchRow<ProbeResult>): void; refresh(): void; dispose(): void } | null = null;
 
-  let mode: DownloadOptions["mode"] = "video";
+  let mode: DownloadMode = "video";
   let height: number | null = null;
   let videoPreset: VideoPreset = "compatible";
   let audioFormat = "mp3";
   let subs = new Set<string>();
   let embedSubs = false;
   let fastSave = false;
+  /** The caption track a transcript is made from (transcript-options.ts captionKey). */
+  let caption: string | null = null;
+  let transcriptFormat: TranscriptFormat = "txt";
+  /** Names the Download button after the type (a transcript is saved, not downloaded). */
+  let paintActionLabel: (() => void) | null = null;
   let selected = new Set<number>();
   /** True while an enqueue is in flight or its confirmation is showing. */
   let enqueuing = false;
@@ -378,6 +415,8 @@ export const mountDownload: MountView = (container, ctx) => {
     subs = new Set();
     embedSubs = false;
     fastSave = false;
+    caption = defaultCaption(captionChoices(next), navigator.languages ?? []);
+    transcriptFormat = "txt";
     selected = new Set(next.entries.map((_, i) => i));
     phase = "result";
     preview.cancel();
@@ -386,7 +425,17 @@ export const mountDownload: MountView = (container, ctx) => {
 
   /** When this is unchanged, a refresh redraws nothing. */
   const shape = (r: ProbeResult) =>
-    JSON.stringify([r.title, r.thumbnail, r.duration, r.uploader, r.heights, r.resolutions ?? null, r.subtitles.map((s) => s.code), r.entries.map((e) => e.url + e.title)]);
+    JSON.stringify([
+      r.title,
+      r.thumbnail,
+      r.duration,
+      r.uploader,
+      r.heights,
+      r.resolutions ?? null,
+      r.subtitles.map((s) => s.code),
+      r.captions?.map(captionKey) ?? null,
+      r.entries.map((e) => e.url + e.title),
+    ]);
 
   /** Takes refreshed details while keeping the choices already made. */
   function adoptRefresh(next: ProbeResult) {
@@ -397,6 +446,11 @@ export const mountDownload: MountView = (container, ctx) => {
     // sizes, which for portrait video were the longer side) goes back to Best, so the cap
     // sent is always the chip shown as chosen.
     height = keptQuality(height, qualityChoices(next, next.kind === "playlist"));
+    // A caption track the refresh no longer offers goes back to the default; with no
+    // captions left, a transcript is no longer possible.
+    const captions = captionChoices(next);
+    caption = keptCaption(caption, captions, navigator.languages ?? []);
+    if (mode === "transcript" && !captions.available) mode = "video";
     if (!before || before.entries.length !== next.entries.length) selected = new Set(next.entries.map((_, i) => i));
     // Sizes estimated for other videos do not describe these.
     const urls = (r: ProbeResult) => JSON.stringify(r.entries.map((e) => [e.url, e.playlistIndex]));
@@ -525,17 +579,21 @@ export const mountDownload: MountView = (container, ctx) => {
   }
 
   function currentOptions(): DownloadOptions {
+    const transcript = mode === "transcript" ? transcriptOptions(caption, transcriptFormat) : null;
+    if (transcript) return transcript;
+    const media = mode === "audio" ? "audio" : "video";
     const chosenSubs = [...subs];
     const hasAuto = result?.subtitles.some((s) => s.auto && subs.has(s.code)) ?? false;
     return {
-      mode,
-      maxHeight: mode === "video" ? height : null,
-      videoPreset: mode === "video" ? videoPreset : "compatible",
+      mode: media,
+      maxHeight: media === "video" ? height : null,
+      videoPreset: media === "video" ? videoPreset : "compatible",
       audioFormat,
-      subtitleLangs: mode === "video" ? chosenSubs : [],
+      subtitleLangs: media === "video" ? chosenSubs : [],
       autoSubs: hasAuto,
       embedSubs,
       fastSave,
+      transcriptFormat: "txt",
     };
   }
 
@@ -547,6 +605,12 @@ export const mountDownload: MountView = (container, ctx) => {
    */
   function scheduleEstimate() {
     paintListEstimate?.();
+    if (mode === "transcript") {
+      // Only captions are fetched: there is no media size to estimate.
+      preview.cancel();
+      paintPreviewEstimate();
+      return;
+    }
     if (!result || result.kind !== "video" || freshness === "checking") return;
     // The settings the backend reads are part of the key, so a change of them asks again.
     preview.request(JSON.stringify([result.url, currentOptions(), ...estimateSettings()]));
@@ -554,6 +618,7 @@ export const mountDownload: MountView = (container, ctx) => {
 
   function paintPreviewEstimate() {
     if (!previewLine) return;
+    if (mode === "transcript") return paintLine(previewLine, TEXT_ONLY, "");
     const { size, detail } = describeSingle(preview.state);
     paintLine(previewLine, size, detail, preview.state.status === "loading");
   }
@@ -666,9 +731,11 @@ export const mountDownload: MountView = (container, ctx) => {
   function paintFreshness() {
     if (!freshnessEl || !result) return;
     const r = result;
-    const previous = store.history.find((item) => item.url === r.url || item.url === lastUrl);
+    const same = store.history.filter((item) => item.url === r.url || item.url === lastUrl);
+    // A saved transcript is not a downloaded video: say which it was, preferring the media.
+    const previous = same.find((item) => item.mode !== "transcript") ?? same[0];
     const parts = [
-      previous ? `Downloaded ${formatDate(previous.finishedAt)}` : null,
+      previous ? `${previous.mode === "transcript" ? "Transcript saved" : "Downloaded"} ${formatDate(previous.finishedAt)}` : null,
       freshness === "checking" ? "Checking for changes…" : null,
       freshness === "stale" ? `Couldn't check for changes: ${staleReason}` : null,
     ].filter(Boolean) as string[];
@@ -756,25 +823,69 @@ export const mountDownload: MountView = (container, ctx) => {
   function renderOptions(r: ProbeResult): HTMLElement {
     const playlist = r.kind === "playlist";
     const qualities = qualityChoices(r, playlist);
-    const body = h("div", { class: "options-body" });
+    const captions = captionChoices(r);
+
+    // The Type control is built once and stays while the rows below it change, so its
+    // thumb slides to the new choice (a CSS spring; still with reduced motion) and the
+    // keyboard stays on it. Transcripts are made one video at a time.
+    const typeHint = h("span");
+    const typeSeg = segmented<DownloadMode>(
+      "Type",
+      [
+        { value: "video", label: "Video", icon: "video" },
+        { value: "audio", label: "Audio Only", icon: "music" },
+        ...(playlist
+          ? []
+          : [
+              {
+                value: "transcript" as const,
+                label: "Transcript",
+                icon: "captions" as const,
+                disabled: !captions.available,
+                title: captions.available ? "Text from the site's captions" : NO_CAPTIONS,
+              },
+            ]),
+      ],
+      mode,
+      (next) => {
+        mode = next;
+        paint();
+      },
+    );
+    const typeRow = row("Type", typeSeg.el, typeHint);
+    const panel = group(typeRow);
+    const body = h("div", { class: "options-body" }, panel);
 
     const paint = () => {
       const rows: (Node | null)[] = [];
-      const typeSeg = segmented<"video" | "audio">(
-        "Type",
-        [
-          { value: "video", label: "Video", icon: "video" },
-          { value: "audio", label: "Audio Only", icon: "music" },
-        ],
-        mode,
-        (next) => {
-          mode = next;
-          paint();
-        },
-      );
-      rows.push(row("Type", typeSeg.el));
+      const hint = playlist
+        ? "Transcripts are made one video at a time: open a video's own link to save its captions."
+        : captions.available
+          ? ""
+          : `${NO_CAPTIONS}, so there is no transcript to save.`;
+      typeHint.textContent = hint;
+      typeHint.hidden = !hint;
 
-      if (mode === "video") {
+      if (mode === "transcript") {
+        const formatHint = h("span", { text: TRANSCRIPT_FORMATS.find((f) => f.value === transcriptFormat)?.hint ?? "" });
+        rows.push(
+          row(
+            "Captions",
+            captionSelect(captions, caption, (key) => {
+              caption = key;
+            }),
+            "Made from the site's own captions; Claws does not recognise speech. Automatic captions are generated by the site and can contain errors.",
+          ),
+          row(
+            "Save as",
+            chipRadio<TranscriptFormat>("Transcript format", TRANSCRIPT_FORMATS, transcriptFormat, (value) => {
+              transcriptFormat = value;
+              formatHint.textContent = TRANSCRIPT_FORMATS.find((f) => f.value === value)?.hint ?? "";
+            }),
+            formatHint,
+          ),
+        );
+      } else if (mode === "video") {
         rows.push(
           row(
             "Quality",
@@ -832,8 +943,11 @@ export const mountDownload: MountView = (container, ctx) => {
           ),
         );
       }
-      rows.push(fastSaveRow());
-      replace(body, group(...rows));
+      if (mode !== "transcript") rows.push(fastSaveRow());
+      // Everything after the Type row is replaced; the Type row itself stays.
+      while (typeRow.nextSibling) typeRow.nextSibling.remove();
+      append(panel, rows);
+      paintActionLabel?.();
       scheduleEstimate();
     };
 
@@ -883,6 +997,13 @@ export const mountDownload: MountView = (container, ctx) => {
           h("span", { class: "save-to", text: `Saves to ${folderName(store.settings.outputDir)}` }),
           (() => {
             const btn: HTMLButtonElement = button({ label: "Download", icon: "download", variant: "primary", onClick: () => void startDownload(btn) });
+            paintActionLabel = () => {
+              // The "Added" confirmation stays as it is until the view resets.
+              if (btn.classList.contains("confirmed")) return;
+              const transcript = mode === "transcript";
+              replace(btn, icon(transcript ? "captions" : "download", 16), h("span", { text: transcript ? "Save Transcript" : "Download" }));
+            };
+            paintActionLabel();
             return btn;
           })(),
         ),
@@ -1222,7 +1343,7 @@ export const mountDownload: MountView = (container, ctx) => {
       renderIssues(session.parsed),
       sectionTitle("Options"),
       group(
-        row("Type", typeSeg.el, "Applies to every link here. Subtitles can be chosen when a link is read on its own."),
+        row("Type", typeSeg.el, "Applies to every link here. Subtitles and transcripts can be chosen when a link is read on its own."),
         qualityRow,
         presetChoice,
         formatRow,
@@ -1309,6 +1430,7 @@ export const mountDownload: MountView = (container, ctx) => {
     previewLine = null;
     paintListEstimate = null;
     paintBatchEstimate = null;
+    paintActionLabel = null;
     if (phase !== "result") {
       preview.cancel();
       listRun.reset();

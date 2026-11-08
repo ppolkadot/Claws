@@ -681,3 +681,149 @@ fn a_saved_job_with_a_preset_this_version_cannot_make_fails_without_starting() {
     assert!(job.error.unwrap_or_default().contains("editing preset"));
     assert_eq!(t.starts().len(), 1, "yt-dlp was never started for it");
 }
+
+// ---- Transcripts ----------------------------------------------------------------------------
+
+fn transcript(code: &str, auto: bool, format: crate::transcript::TranscriptFormat) -> DownloadOptions {
+    DownloadOptions { mode: "transcript".into(), subtitle_langs: vec![code.into()], auto_subs: auto, transcript_format: format, ..DownloadOptions::default() }
+}
+
+/// Files in the output folder, apart from the fixture's log and Claws' work folders.
+fn published(t: &TestApp) -> Vec<String> {
+    if !t.out.is_dir() {
+        return Vec::new();
+    }
+    crate::download_tests::names(&t.out)
+        .into_iter()
+        .filter(|n| n != "fixture-starts.log" && n != crate::download_files::WORK_DIR)
+        .collect()
+}
+
+#[test]
+fn a_transcript_is_saved_to_the_folder_and_library_without_any_media() {
+    use crate::transcript::TranscriptFormat::Txt;
+    let Some(t) = TestApp::new("transcript-ok") else { return };
+    let id = t.enqueue_with("https://fixture.invalid/captions/papa", transcript("en", false, Txt));
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Completed, "the transcript");
+    let saved = t.out.join("papa [en].txt");
+    assert_eq!(job.file_path.as_deref(), Some(saved.to_string_lossy().as_ref()));
+    let text = std::fs::read_to_string(&saved).unwrap();
+    assert_eq!(text, "Ana: Hello & welcome\r\nこれは字幕です 🎬\r\n");
+    assert_eq!(published(&t), ["papa [en].txt"], "only the transcript is published, not the raw captions");
+    // No media bytes were ever reported.
+    assert_eq!((job.downloaded_bytes, job.total_bytes), (None, None));
+    let starts = t.starts();
+    assert_eq!(starts.len(), 1);
+    assert!(starts[0].contains("skip=yes subs=en kind=human sort=- merge=-"), "{starts:?}");
+    let history = { t.state().history.lock().unwrap().clone() };
+    let item = history.iter().find(|h| h.id == id).expect("in the Library");
+    assert_eq!(item.mode, "transcript");
+    assert_eq!(item.quality, "Transcript · English · TXT");
+    assert_eq!(item.file_size, Some(text.len() as u64));
+    let workspace = job.workspace.unwrap().path;
+    wait_until("the work folder to go", || !workspace.exists());
+}
+
+#[test]
+fn automatic_captions_are_named_as_automatic_and_lose_their_rolling_repeats() {
+    use crate::transcript::TranscriptFormat::TxtTimestamps;
+    let Some(t) = TestApp::new("transcript-auto") else { return };
+    let id = t.enqueue_with("https://fixture.invalid/captions/quebec", transcript("en", true, TxtTimestamps));
+    t.wait_job(&id, |j| j.status == JobStatus::Completed, "the transcript");
+    let text = std::fs::read_to_string(t.out.join("quebec [en auto, timestamps].txt")).unwrap();
+    assert_eq!(text, "[00:00:00] hello everyone\r\n[00:00:02] and welcome back\r\n");
+    assert!(t.starts()[0].contains("subs=en kind=auto"), "{:?}", t.starts());
+    let history = { t.state().history.lock().unwrap().clone() };
+    assert_eq!(history.iter().find(|h| h.id == id).unwrap().quality, "Transcript · English (auto-generated) · TXT with timestamps");
+}
+
+#[test]
+fn a_taken_transcript_name_is_never_overwritten_and_try_again_publishes_it() {
+    use crate::transcript::TranscriptFormat::Srt;
+    let Some(t) = TestApp::new("transcript-conflict") else { return };
+    std::fs::create_dir_all(&t.out).unwrap();
+    std::fs::write(t.out.join("romeo [en].srt"), b"the user's own").unwrap();
+    let id = t.enqueue_with("https://fixture.invalid/captions/romeo", transcript("en", false, Srt));
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Failed, "the conflict");
+    assert!(job.error.unwrap_or_default().contains("already exists"));
+    assert_eq!(std::fs::read(t.out.join("romeo [en].srt")).unwrap(), b"the user's own");
+    std::fs::rename(t.out.join("romeo [en].srt"), t.out.join("mine.srt")).unwrap();
+    downloader::resume(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Completed, "the publication");
+    let srt = std::fs::read_to_string(t.out.join("romeo [en].srt")).unwrap();
+    assert!(srt.starts_with("1\r\n00:00:01,000 --> 00:00:02,000\r\nAna: Hello & welcome\r\n"), "{srt}");
+    assert_eq!(std::fs::read(t.out.join("mine.srt")).unwrap(), b"the user's own");
+    assert_eq!(t.starts().len(), 1, "Try Again only published");
+}
+
+#[test]
+fn a_cancelled_transcript_removes_its_work_folder_and_publishes_nothing() {
+    use crate::transcript::TranscriptFormat::Txt;
+    let Some(t) = TestApp::new("transcript-cancel") else { return };
+    let id = t.enqueue_with("https://fixture.invalid/captions-hang/sierra", transcript("en", false, Txt));
+    let job = t.wait_job(
+        &id,
+        |j| j.status == JobStatus::Processing && j.workspace.as_ref().is_some_and(|w| w.path.join("sierra.en.vtt").is_file()),
+        "the captions to arrive",
+    );
+    assert!(!job.progress_known && job.downloaded_bytes.is_none(), "no made-up byte progress");
+    let workspace = job.workspace.unwrap().path;
+    downloader::cancel(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Cancelled, "the cancel");
+    wait_until("the work folder to go", || !workspace.exists());
+    assert!(published(&t).is_empty(), "{:?}", published(&t));
+}
+
+#[test]
+fn a_transcript_whose_library_save_fails_is_finished_by_try_again() {
+    use crate::transcript::TranscriptFormat::Vtt;
+    let Some(t) = TestApp::new("transcript-library") else { return };
+    t.block("history.json");
+    let id = t.enqueue_with("https://fixture.invalid/captions/tango", transcript("de", false, Vtt));
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Failed, "the Library save to fail");
+    let error = job.error.clone().unwrap_or_default();
+    assert!(error.contains("could not add it to your Library") && error.contains("Try Again"), "{error}");
+    let saved = t.out.join("tango [de].vtt");
+    assert!(std::fs::read_to_string(&saved).unwrap().starts_with("WEBVTT\r\n\r\n00:00:01.000 --> 00:00:02.000\r\nAna: Hello &amp; welcome\r\n"));
+    let workspace = job.workspace.unwrap().path;
+    let manifest = crate::download_files::read_manifest(&workspace).expect("the manifest is kept");
+    assert_eq!(manifest.state, crate::download_files::Publication::Published);
+    assert_eq!(manifest.outputs, ["tango [de].vtt"], "the raw captions are not an output");
+    t.unblock("history.json");
+    downloader::resume(t.handle(), &id);
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Completed, "the completion");
+    assert_eq!(job.file_path.as_deref(), Some(saved.to_string_lossy().as_ref()));
+    assert_eq!(library_entries(&t, &id), 1);
+    assert_eq!(t.starts().len(), 1, "Try Again fetched the captions again");
+    wait_until("the work folder to go", || !workspace.exists());
+}
+
+#[test]
+fn empty_or_missing_captions_fail_clearly_and_publish_nothing() {
+    use crate::transcript::TranscriptFormat::Txt;
+    let Some(t) = TestApp::new("transcript-empty") else { return };
+    let empty = t.enqueue_with("https://fixture.invalid/captions-empty/uniform", transcript("en", false, Txt));
+    let job = t.wait_job(&empty, |j| j.status == JobStatus::Failed, "the empty captions");
+    assert_eq!(job.error.as_deref(), Some(crate::transcript::EMPTY));
+    let none = t.enqueue_with("https://fixture.invalid/captions-none/victor", transcript("fr", true, Txt));
+    let job = t.wait_job(&none, |j| j.status == JobStatus::Failed, "the missing captions");
+    let error = job.error.unwrap_or_default();
+    assert!(error.contains("automatic captions") && error.contains("fr"), "{error}");
+    assert!(published(&t).is_empty(), "{:?}", published(&t));
+}
+
+#[test]
+fn a_transcript_job_resumes_with_its_choices_after_a_restart() {
+    use crate::transcript::TranscriptFormat::Srt;
+    let Some(t) = TestApp::new("transcript-restart") else { return };
+    let id = t.enqueue_with("https://fixture.invalid/captions-hang/whiskey", transcript("en", true, Srt));
+    t.wait_job(&id, |j| j.status == JobStatus::Processing, "the first start");
+    let t = t.restart();
+    let job = t.job(&id).expect("still queued");
+    assert_eq!(job.status, JobStatus::Paused);
+    assert_eq!(job.options.transcript_format, Srt);
+    assert!(job.options.auto_subs);
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(t.dir.join("queue.json")).unwrap()).unwrap();
+    assert_eq!(saved["jobs"][0]["options"]["mode"], "transcript");
+    assert_eq!(saved["jobs"][0]["options"]["transcriptFormat"], "srt");
+}

@@ -7,6 +7,7 @@ import { icon } from "../ui/icons";
 import { progressBar, setProgress } from "../ui/layout";
 import { collapseOut, expandIn } from "../ui/motion";
 import { videoOptionsText } from "../resolution";
+import { transcriptText } from "../transcript-options";
 import type { MountView } from "./shell";
 
 const fail = (error: unknown) => toast(errorMessage(error), { tone: "error" });
@@ -27,6 +28,8 @@ function percent(job: Job): string | null {
 }
 
 function statusText(job: Job): string {
+  // A transcript fetches captions only: no bytes to count, so no percentage either.
+  if (job.options.mode === "transcript" && (job.status === "downloading" || job.status === "processing")) return "Getting captions…";
   switch (job.status) {
     case "queued":
       return "Waiting for a free slot";
@@ -53,8 +56,14 @@ function statusText(job: Job): string {
 
 function optionsText(job: Job): string {
   const o = job.options;
+  if (o.mode === "transcript") return transcriptText(o);
   if (o.mode === "audio") return o.audioFormat === "best" ? "Audio" : o.audioFormat.toUpperCase();
   return videoOptionsText(o.maxHeight, o.videoPreset);
+}
+
+/** The symbol shown in place of a missing thumbnail. */
+function modeIcon(mode: Job["options"]["mode"]) {
+  return mode === "audio" ? "music" : mode === "transcript" ? "captions" : "video";
 }
 
 /** New rows built per frame during a large addition: about a frame's worth of work. */
@@ -66,8 +75,8 @@ function buildRow(job: Job): RowRefs {
   const actions = h("div", { class: "job-actions" });
   const thumb = job.thumbnail
     ? h("img", { class: "job-thumb", attrs: { src: job.thumbnail, alt: "", decoding: "async", referrerpolicy: "no-referrer", draggable: false } })
-    : h("div", { class: "job-thumb thumb-fallback" }, icon(job.options.mode === "audio" ? "music" : "video", 18));
-  thumb.addEventListener("error", () => thumb.replaceWith(h("div", { class: "job-thumb thumb-fallback" }, icon("video", 18))));
+    : h("div", { class: "job-thumb thumb-fallback" }, icon(modeIcon(job.options.mode), 18));
+  thumb.addEventListener("error", () => thumb.replaceWith(h("div", { class: "job-thumb thumb-fallback" }, icon(modeIcon(job.options.mode), 18))));
   const el = h(
     "li",
     { class: "job" },

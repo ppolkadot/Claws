@@ -166,6 +166,12 @@ html[data-backdrop="none"][data-theme="dark"] .glass {
 .seg-item[aria-checked="false"]:hover {
   color: var(--text);
 }
+.seg-item[aria-disabled="true"],
+.seg-item[aria-disabled="true"]:hover {
+  color: var(--text-2);
+  opacity: 0.55;
+  cursor: default;
+}
 
 .chips {
   display: flex;

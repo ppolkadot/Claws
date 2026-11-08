@@ -127,6 +127,9 @@ pub const POSTPROCESS_TEMPLATE: &str = "postprocess:CLAWSPP|%(progress.status)s|
 /// two groups for a merged download, then the single format of an unmerged one.
 pub const FORMATS_PRINT: &str = "before_dl:CLAWSFMT|%(requested_formats.0.format_id)s|%(requested_formats.0.filesize)s|%(requested_formats.0.filesize_approx)s|%(requested_formats.1.format_id)s|%(requested_formats.1.filesize)s|%(requested_formats.1.filesize_approx)s|%(format_id)s|%(filesize)s|%(filesize_approx)s";
 pub const DONE_PRINT: &str = "after_move:CLAWSDONE|%(filepath)s";
+/// A transcript run downloads no media, so nothing reaches `after_move`: the caption files
+/// written are named once the video is processed, as a JSON list of paths.
+pub const CAPTIONS_PRINT: &str = "after_video:CLAWSCAPTIONS|%(requested_subtitles.:.filepath)j";
 
 /// The format selection for an audio-only download. Codecs are matched on the stream's
 /// codec field, not its extension (except M4A, whose container implies AAC). Every
@@ -178,6 +181,15 @@ pub fn selection_args(options: &DownloadOptions, audio_selection: AudioSelection
     ["-f", "bv*+ba/b", "-S", &sort, "--merge-output-format", merge].map(String::from).to_vec()
 }
 
+/// Caption formats in order of preference. yt-dlp only picks among what the site offers
+/// (`best` is the last listed, which can be srv3 or json3); with FFmpeg, `--convert-subs vtt`
+/// then turns the pick into WebVTT, so the transcript is made from WebVTT.
+pub const CAPTION_FORMATS: &str = "vtt/srt/ttml/best";
+/// Without FFmpeg nothing can be converted (yt-dlp refuses to start a conversion at all),
+/// so the formats Claws reads itself come first. Anything else arrives as it is and the
+/// job explains that FFmpeg is needed (transcript.rs `write_artifact`).
+pub const CAPTION_FORMATS_NO_FFMPEG: &str = "vtt/srt/best";
+
 pub fn download_args(
     common: Vec<String>,
     options: &DownloadOptions,
@@ -185,29 +197,61 @@ pub fn download_args(
     workspace: &Path,
     source: Source<'_>,
 ) -> Vec<String> {
+    // tools::common_args names FFmpeg's folder whenever Claws found FFmpeg.
+    let ffmpeg = common.iter().any(|a| a == "--ffmpeg-location");
     let mut args = common;
     let mut push = |items: &[&str]| args.extend(items.iter().map(|s| s.to_string()));
+    let transcript = options.mode == "transcript";
 
     push(&["--newline", "--no-warnings", "--progress", "--no-simulate", "--windows-filenames"]);
     push(RETRY_ARGS);
     push(&["--progress-delta", PROGRESS_DELTA]);
-    let fragments = execution.fragment_concurrency.max(1).to_string();
-    push(&["--concurrent-fragments", &fragments]);
+    if !transcript {
+        let fragments = execution.fragment_concurrency.max(1).to_string();
+        push(&["--concurrent-fragments", &fragments]);
+    }
     match &source {
         Source::PlaylistItem { index, .. } => push(&["--yes-playlist", "--playlist-items", &index.to_string()]),
         _ => push(&["--no-playlist"]),
     }
-    push(&[
-        "--progress-template",
-        PROGRESS_TEMPLATE,
-        "--progress-template",
-        POSTPROCESS_TEMPLATE,
-        "--print",
-        FORMATS_PRINT,
-        "--print",
-        DONE_PRINT,
-    ]);
+    push(&["--progress-template", PROGRESS_TEMPLATE, "--progress-template", POSTPROCESS_TEMPLATE]);
 
+    if transcript {
+        // One caption track and no media: no format is downloaded (a video whose formats
+        // are unavailable still has its captions), nothing is embedded or rewritten.
+        let code = options.subtitle_langs.first().map(String::as_str).unwrap_or_default();
+        let kind = if options.auto_subs { "--write-auto-subs" } else { "--write-subs" };
+        push(&[
+            "--print",
+            CAPTIONS_PRINT,
+            "--skip-download",
+            "--ignore-no-formats-error",
+            kind,
+            "--sub-langs",
+            &crate::transcript::sub_langs(code),
+        ]);
+        if ffmpeg {
+            push(&["--sub-format", CAPTION_FORMATS, "--convert-subs", "vtt"]);
+        } else {
+            push(&["--sub-format", CAPTION_FORMATS_NO_FFMPEG]);
+        }
+    } else {
+        push(&["--print", FORMATS_PRINT, "--print", DONE_PRINT]);
+        media_args(&mut push, options, execution);
+    }
+
+    // Everything, including the finished file, is written inside the work folder.
+    let workspace = workspace.to_string_lossy();
+    push(&["-P", &workspace, "-o", &execution.filename_template]);
+    match source {
+        Source::InfoJson(path) => push(&["--load-info-json", &path.to_string_lossy()]),
+        Source::Url(url) | Source::PlaylistItem { url, .. } => push(&["--", url]),
+    }
+    args
+}
+
+/// The streams, conversions, subtitles and metadata of a video or audio download.
+fn media_args(push: &mut impl FnMut(&[&str]), options: &DownloadOptions, execution: &JobExecution) {
     // Which streams, and what they become: shared with the size preview.
     let selection = selection_args(options, execution.audio_selection);
     push(&selection.iter().map(String::as_str).collect::<Vec<_>>());
@@ -230,15 +274,6 @@ pub fn download_args(
     if execution.embed_metadata {
         push(&["--embed-metadata"]);
     }
-
-    // Everything, including the finished file, is written inside the work folder.
-    let workspace = workspace.to_string_lossy();
-    push(&["-P", &workspace, "-o", &execution.filename_template]);
-    match source {
-        Source::InfoJson(path) => push(&["--load-info-json", &path.to_string_lossy()]),
-        Source::Url(url) | Source::PlaylistItem { url, .. } => push(&["--", url]),
-    }
-    args
 }
 
 // ---------------------------------------------------------------------------------------
@@ -494,6 +529,53 @@ mod tests {
         assert_eq!(first_args, retry_args);
         assert_eq!(value_after(&retry_args, "-S"), ["res:2880"]);
         assert_eq!(value_after(&retry_args, "--merge-output-format"), ["mp4/mkv"]);
+    }
+
+    fn transcript(code: &str, auto: bool) -> DownloadOptions {
+        DownloadOptions { mode: "transcript".into(), subtitle_langs: vec![code.into()], auto_subs: auto, ..DownloadOptions::default() }
+    }
+
+    #[test]
+    fn a_transcript_fetches_one_caption_track_and_no_media() {
+        let mut execution = execution();
+        execution.embed_metadata = true;
+        let common = vec!["--cookies".into(), "c".into(), "--ffmpeg-location".into(), "C:/ff".into()];
+        let args = download_args(common, &transcript("en", false), &execution, Path::new("W"), Source::Url("https://e.com/v"));
+        for flag in ["--skip-download", "--write-subs", "--ignore-no-formats-error"] {
+            assert!(args.iter().any(|a| a == flag), "{flag}: {args:?}");
+        }
+        assert!(!args.contains(&"--write-auto-subs".to_string()), "only the kind chosen");
+        assert_eq!(value_after(&args, "--sub-langs"), ["en"]);
+        assert_eq!(value_after(&args, "--sub-format"), ["vtt/srt/ttml/best"]);
+        assert_eq!(value_after(&args, "--convert-subs"), ["vtt"]);
+        for flag in ["-f", "-S", "--merge-output-format", "-x", "--embed-subs", "--embed-metadata", "--embed-thumbnail", "--concurrent-fragments"] {
+            assert!(!args.iter().any(|a| a == flag), "{flag} has nothing to do in a transcript: {args:?}");
+        }
+        // No media plan or media file is announced; the captions file is.
+        assert_eq!(value_after(&args, "--print"), [CAPTIONS_PRINT]);
+        assert!(!args.iter().any(|a| a == FORMATS_PRINT || a == DONE_PRINT));
+        assert_eq!(value_after(&args, "-o"), [execution.filename_template.as_str()]);
+        assert_eq!(value_after(&args, "-P"), ["W"]);
+        assert_eq!(&args[args.len() - 2..], ["--", "https://e.com/v"]);
+        assert_eq!(&args[..2], ["--cookies", "c"]);
+        assert!(args.contains(&"--no-playlist".to_string()));
+
+        let auto = download_args(vec![], &transcript("zh-Hans", true), &execution, Path::new("W"), Source::InfoJson(Path::new("C:/cache/a.json")));
+        assert!(auto.contains(&"--write-auto-subs".to_string()));
+        assert!(!auto.contains(&"--write-subs".to_string()), "human captions of the same language are not taken instead");
+        assert_eq!(value_after(&auto, "--sub-langs"), ["zh\\-Hans"], "matched literally, not as a pattern");
+        assert_eq!(&auto[auto.len() - 2..], ["--load-info-json", "C:/cache/a.json"]);
+        let item = download_args(vec![], &transcript("en", false), &execution, Path::new("W"), Source::PlaylistItem { url: "https://e.com/l", index: 3 });
+        assert_eq!(value_after(&item, "--playlist-items"), ["3"]);
+    }
+
+    #[test]
+    fn without_ffmpeg_a_transcript_asks_for_formats_claws_reads_and_converts_nothing() {
+        // yt-dlp stops before writing anything when asked to convert without FFmpeg.
+        let args = download_args(vec!["--no-colors".into()], &transcript("de", false), &execution(), Path::new("W"), Source::Url("https://e.com/v"));
+        assert_eq!(value_after(&args, "--sub-format"), ["vtt/srt/best"]);
+        assert!(!args.iter().any(|a| a == "--convert-subs"), "{args:?}");
+        assert!(args.iter().any(|a| a == "--skip-download"));
     }
 
     #[test]

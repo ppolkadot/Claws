@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test:queue": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .test-build src/queue-events.ts && node --test scripts/tests/queue-events.test.mjs",
-    "test:logic": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .test-build src/download-input.ts src/download-estimates.ts src/resolution.ts && node --test scripts/tests/download-input.test.mjs scripts/tests/download-estimates.test.mjs scripts/tests/resolution.test.mjs"
+    "test:logic": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .test-build src/download-input.ts src/download-estimates.ts src/resolution.ts src/transcript-options.ts && node --test scripts/tests/download-input.test.mjs scripts/tests/download-estimates.test.mjs scripts/tests/resolution.test.mjs scripts/tests/transcript-options.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

@@ -58,7 +58,8 @@ const MAX_ETA: f64 = 7.0 * 24.0 * 3600.0;
 #[derive(Debug, Default)]
 pub struct TransferProgress {
     streams: Vec<Stream>,
-    /// Streams expected before the selection is known: 2 for video, 1 for audio.
+    /// Streams expected before the selection is known: 2 for video, 1 for audio, none for
+    /// a transcript.
     expected_streams: usize,
     planned: bool,
 }
@@ -93,7 +94,12 @@ impl TransferProgress {
     pub fn new(mode: &str) -> Self {
         Self {
             streams: Vec::new(),
-            expected_streams: if mode == "audio" { 1 } else { 2 },
+            // A transcript downloads captions only: no media stream, so no byte progress.
+            expected_streams: match mode {
+                "audio" => 1,
+                "transcript" => 0,
+                _ => 2,
+            },
             planned: false,
         }
     }
@@ -130,7 +136,7 @@ impl TransferProgress {
     /// One progress line: `status|downloaded|total|estimate|speed|eta|fragment|fragments|format_id|filename`.
     /// `None` for side files (subtitles, thumbnails).
     pub fn update(&mut self, fields: &[&str]) -> Option<Snapshot> {
-        if fields.len() < 10 {
+        if fields.len() < 10 || (self.expected_streams == 0 && !self.planned) {
             return None;
         }
         let filename = fields[9].trim();
@@ -289,6 +295,16 @@ mod tests {
         assert_eq!(update(&mut p, line("downloading", 10, "10", "NA", "NA", "NA", "v.en.vtt.part")), None);
         let s = update(&mut p, line("downloading", 50, "100", "NA", "NA", "137", "v.f137.mp4")).unwrap();
         assert_eq!(s.fraction, Some(0.25));
+    }
+
+    #[test]
+    fn a_transcript_has_no_media_streams_and_no_byte_progress() {
+        let mut p = TransferProgress::new("transcript");
+        assert_eq!(p.expected_streams, 0);
+        assert_eq!(update(&mut p, line("downloading", 10, "100", "NA", "50", "NA", "t.en.vtt")), None);
+        // Even a line that does not look like captions never becomes a media percentage.
+        assert_eq!(update(&mut p, line("downloading", 10, "100", "NA", "50", "NA", "t.en.srv9")), None);
+        assert_eq!(p.planned_sizes(), None);
     }
 
     #[test]
