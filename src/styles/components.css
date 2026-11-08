@@ -294,6 +294,12 @@ html[data-backdrop="none"][data-theme="dark"] .glass {
   transform: scaleX(var(--p, 0));
   transition: transform var(--spring-smooth-d) var(--spring-smooth), background-color 0.3s;
 }
+
+.file-drag-active {
+  cursor: grabbing;
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
 .bar.indeterminate .bar-fill {
   width: 34%;
   transform: none;

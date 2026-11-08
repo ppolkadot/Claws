@@ -2,6 +2,14 @@
 
 Everything a new session (human or AI) needs to pick this project up. Lives at `docs/HANDOFF.md`. Last updated 2026-11-05.
 
+## Feature scope update (2026-11-08)
+
+The owner removed macOS support, vocal removal, ProRes presets and clip sections from the feature plan. Claws remains Windows-only. Keep Compatible/Original output, batch downloads, size previews, higher resolutions, transcript export, native file dragging and animation improvements. Replay metadata and optional speech recognition remain deferred; they must not implicitly reintroduce the removed features. See `docs/superpowers/plans/2026-11-07-feature-expansion-and-motion.md`. This is a planning change only.
+
+## Current development audit (2026-11-08)
+
+See `docs/CURRENT_DEVELOPMENT_STATUS.md` for committed features, pre-existing transcript work, new native file dragging/completion feedback and outstanding native acceptance checks. The owner selected core features only; optional speech recognition/replay metadata remain deferred. These working changes are not packaged in release 1.0.5.
+
 ## Current state: 1.0.5 (2026-11-05)
 
 This section supersedes the historical font, packaging and publication instructions below. Sections 1–17 record earlier work and observations, including the previous font setup; they are not the current build instructions.

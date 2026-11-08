@@ -244,6 +244,7 @@ export const api = {
   listHistory: () => invoke<HistoryItem[]>("list_history"),
   openDownload: (id: string) => invoke<void>("open_download", { id }),
   revealDownload: (id: string) => invoke<void>("reveal_download", { id }),
+  dragDownload: (id: string) => invoke<boolean>("drag_download", { id }),
   openOutputDir: () => invoke<void>("open_output_dir"),
   deleteHistory: (id: string, deleteFile: boolean) =>
     invoke<void>("delete_history", { id, deleteFile }),

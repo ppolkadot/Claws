@@ -126,3 +126,20 @@ export function pop(el: HTMLElement) {
   const { easing, duration } = spring("bouncy");
   el.animate([{ transform: "scale(0.6)" }, { transform: "scale(1)" }], { duration, easing });
 }
+
+const completionAnimations = new WeakMap<HTMLElement, Animation>();
+
+/** One short success acknowledgment, never a looping effect or a delayed status. */
+export function completionFeedback(el: HTMLElement, completed: boolean) {
+  completionAnimations.get(el)?.cancel();
+  completionAnimations.delete(el);
+  if (!completed || reducedMotion() || document.hidden) return;
+  const animation = el.animate(
+    [{ opacity: 0.45, transform: "translateY(3px)" }, { opacity: 1, transform: "none" }],
+    { duration: 220, easing: "ease-out" },
+  );
+  completionAnimations.set(el, animation);
+  animation.onfinish = () => {
+    if (completionAnimations.get(el) === animation) completionAnimations.delete(el);
+  };
+}

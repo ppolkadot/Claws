@@ -4,6 +4,8 @@ import { store } from "../store";
 import { button, toast } from "../ui/components";
 import { h, replace } from "../ui/dom";
 import { icon } from "../ui/icons";
+import { fileDragButton } from "../ui/file-drag";
+import { completionFeedback } from "../ui/motion";
 import { progressBar, setProgress } from "../ui/layout";
 import { collapseOut, expandIn } from "../ui/motion";
 import { videoOptionsText } from "../resolution";
@@ -127,6 +129,7 @@ function paintActions(refs: RowRefs, job: Job) {
       break;
     case "completed":
       items.push(button({ icon: "folder", title: "Show in folder", variant: "plain", onClick: act(() => api.revealDownload(job.id)) }));
+      if (job.filePath) items.push(fileDragButton(job.id));
       items.push(button({ icon: "x", title: "Remove from list", variant: "plain", onClick: act(() => api.remove(job.id)) }));
       break;
   }
@@ -136,6 +139,8 @@ function paintActions(refs: RowRefs, job: Job) {
 function paintRow(refs: RowRefs, job: Job, previous: Job | undefined) {
   refs.el.dataset.status = job.status;
   refs.status.textContent = statusText(job);
+  if (job.status === "completed") refs.status.prepend(icon("check", 12), " ");
+  if (previous && previous.status !== job.status) completionFeedback(refs.status, job.status === "completed");
   refs.status.title = job.status === "failed" ? job.error ?? "" : "";
   const unknown = job.status === "processing" || (job.status === "downloading" && !job.progressKnown);
   setProgress(refs.bar, unknown ? null : job.status === "completed" ? 1 : job.progress);

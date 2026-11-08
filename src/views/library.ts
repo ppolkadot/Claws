@@ -6,6 +6,7 @@ import { store } from "../store";
 import { button, confirmSheet, toast } from "../ui/components";
 import { h, replace } from "../ui/dom";
 import { icon } from "../ui/icons";
+import { fileDragButton } from "../ui/file-drag";
 import type { MountView } from "./shell";
 
 const fail = (error: unknown) => toast(errorMessage(error), { tone: "error" });
@@ -55,6 +56,7 @@ function tile(item: HistoryItem): HTMLElement {
       h(
         "div",
         { class: "tile-actions" },
+        item.filePath ? fileDragButton(item.id) : null,
         button({ icon: "play", title: "Open file", variant: "plain", onClick: () => void api.openDownload(item.id).catch(fail) }),
         button({ icon: "folder", title: "Show in folder", variant: "plain", onClick: () => void api.revealDownload(item.id).catch(fail) }),
         button({ icon: "trash", title: "Remove…", variant: "plain", onClick: () => void confirmRemove(item) }),
