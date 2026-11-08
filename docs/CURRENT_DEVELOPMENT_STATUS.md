@@ -1,21 +1,20 @@
 # Current development status
 
-Reviewed 2026-11-08 against commit `6794e41` and the working tree. “Implemented” describes source behavior, not a newly published installer.
+Reviewed 2026-11-08 against branch `feature-expansion-and-motion` (version 1.1.0 source). "Implemented" describes source behaviour verified by automated tests and headless-browser measurements, not a published installer. The published release is still 1.0.5.
 
-| Feature | Status | Evidence / next action |
+| Feature | Status | Evidence / limits |
 | --- | --- | --- |
-| Font safeguards | Committed: `99e2235` | Source and packaged integrity checks; preserve them. |
-| Independent-link batches | Committed: `d9cc1bb` | Do not reimplement. |
-| Download/temporary-space previews | Committed: `88f5f02` | Estimates remain distinct from admission checks. |
-| Higher resolutions / Original format | Committed: `6794e41` | Source-driven choices; no upscaling. |
-| Transcript export | Existing work in progress, uncommitted | Parser, output modes, publication, captions UI and tests already being developed. Leave this implementation intact. Review round 1 fixed repeated speech in human captions (roll-up removal only for rolling tracks), per-voice speaker attribution, literal `<` text, distinct file names per track/format, and SRT captions without FFmpeg. |
-| Preview transitions / segmented selection / queue entry and exit / smooth progress | Already implemented | Reuse existing spring and reduced-motion paths. No replacement motion system needed. |
-| Native outgoing drag | Working implementation, hardened 2026-11-08 | `drag` 2.1.1, Windows copy-only OLE drag on the UI thread. Library ids (equal to job ids) resolve the recorded regular file in Rust; frontend paths are never accepted. Locations the crate would crash on (paths over 260 characters, reserved names, files on a network share, a file that vanished) are refused with a message; links are refused, cloud-file placeholders are not. Drops on Claws itself (detected from Claws' own drop target, not the cursor position) and drags whose button was already released are reported as such. Mouse only: touch and pen taps show the file in its folder. Native/editor interoperability remains unverified (manual checklist below). |
-| Completion feedback | New working implementation | Static completion check plus short cancellable animation on status transition only. Reduced motion and hidden windows skip it; progress ticks do not restart it. |
-| Drag feedback | Working implementation | Grab cursor on the handle; active outline only while the native operation runs. No dropped/success notification: drag 2.1.1 discards the receiver's drop effect, so Claws cannot know whether a copy or import happened. A drop on Claws itself explains where to drop instead. Browser mock reports native dragging unavailable. |
-| Speed diagnosis | Pending affected-source evidence | No new acceleration or throughput claim. |
-| Replay metadata / speech recognition / lyrics discovery | Deferred by owner's core-only selection | No model downloads or source integrations added. |
-| macOS / vocal removal / ProRes / clip sections | Excluded by owner | Do not implement. |
+| Font safeguards | Committed `99e2235` | Source and packaged integrity checks, now also rejecting orphaned or legacy packaged fonts and running correctly through junctions. |
+| Independent-link batches | Committed `d9cc1bb` | Up to 500 links, three lookups at a time, per-row retry, bounded rendering. The probe cache has a size budget with leases so a prune never deletes a file a download is using. |
+| Size and temporary-space previews | Committed `88f5f02` | Computed by re-running the download's own selection through `yt-dlp --simulate`; peak sized by the formula admission uses. Display only. |
+| Higher resolutions, Compatible / Original | Committed `6794e41` | Source-driven choices up to 8K, exact labels, shorter-side handling for portrait video, no upscaling. Original verified with ffprobe and packet hashes on synthetic media (codec, HDR tags, dimensions, audio). Queue schema is now 3. `editingProRes` is rejected. |
+| Transcript export | Committed `9501fa6` | Caption-derived TXT, timestamped TXT, SRT, VTT; no speech recognition. Verified with a real yt-dlp against local caption files; not against real sites. |
+| Native outgoing drag | Committed `4b07877`, hardened `c8603b9` | See the review below. Real Explorer and editor drags are unverified. |
+| Completion feedback, motion pass | Committed `4b07877`, `c8603b9`, `a686590` | Progress glides forward only and snaps on any state change; the indeterminate sheen uses transform; rows ease in and out in place; large additions and Clear Finished do not animate; focus survives status changes. Measured in headless Edge against the dev mock (500 rows, 8 active: 0 long tasks). |
+| Speed diagnosis | Pending affected-source evidence | No acceleration or throughput claim. |
+| Replay metadata, speech recognition, lyrics | Deferred | No model downloads or source integrations. |
+| Clip sections | Deferred to a future version | Not implemented; the plan keeps the design notes. |
+| ProRes / editing presets, vocal removal, macOS | Excluded by the owner | Do not implement for this release. |
 
 ## Native drag review (2026-11-08)
 
@@ -52,17 +51,12 @@ Use a test output folder, not the owner's Library. After each step the Library f
 13. Thumbnails: drag a Library thumbnail and a queue thumbnail into Explorer and an editor; nothing is exported or dropped.
 14. Touch or pen (if available): a tap on "Drag file" shows the file in its folder; swiping on it does not start a drag.
 
-## Remaining core acceptance work
+## Remaining acceptance work
 
-- Test real outgoing drag into Explorer and a target editor on Windows. Record editor version and codec compatibility separately from successful native file dropping. A build or fixture test does not prove timeline import.
-- Run the manual drag checklist above; original media must stay intact.
-- Before release, re-check `drag` upstream (issues #72, #76, #94) and test the drag on Windows 10; neither is covered by the review above.
-- Re-run the existing 500-row / 8-active queue benchmark and visually verify completion/drag feedback with Reduce motion on and off. Existing large-batch animation limits remain in place.
-- Finish the existing transcript work separately (review round 1 fixes are in the working tree, uncommitted).
-- Package a fresh version only after integration acceptance; the published 1.0.5 installer does not contain the current working features.
+See section 1 of `docs/superpowers/plans/2026-11-07-feature-expansion-and-motion.md`: the manual drag checklist above, Windows 10 and upstream re-checks for the `drag` crate, a fresh install and an upgrade from 1.0.5, one real-site run of each download kind, a visual check of Reduce motion in the real window, and publication only with the owner's authorization.
 
 ## Checks
 
-`npm run build`, `npm run test:logic`, `npm run test:queue`, `npm run test:fonts`, `npm run test:motion`, `python scripts/test_font_metrics.py`, fixture-tool build, backend tests, feature-enabled Clippy and `git diff --check`.
+`npm ci`, `npm run test:fonts`, `npm run test:queue`, `npm run test:logic`, `npm run test:motion`, `python scripts/test_font_metrics.py`, `npm run build`, the fixture-tool build, `cargo test --locked`, feature-enabled Clippy with warnings denied, and `git diff --check`. At 1.1.0: 7, 11, 69, 37 and 2 tests in the five script suites and 227 backend tests, all passing.
 
 Native integration uses https://github.com/crabnebula-dev/drag-rs, pinned to 2.1.1. It calls the Rust API behind an application command, rather than exposing arbitrary file paths through a frontend plugin permission.

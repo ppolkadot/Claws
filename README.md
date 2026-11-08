@@ -38,7 +38,12 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 **Downloading**
 - **Paste and go.** Paste a link, or press <kbd>Ctrl</kbd>+<kbd>V</kbd> anywhere in the window, and Claws reads the title, artwork, duration and the qualities on offer.
 - **Many sites.** Claws runs on [yt-dlp](https://github.com/yt-dlp/yt-dlp), so it works with any site yt-dlp supports, which is well over a thousand. It has been tested against YouTube; other sites rely on yt-dlp's support for them.
-- **Format picker.** Best quality or a height cap from 144p to 4K, saved as MP4 when possible. Audio only in MP3, M4A, Opus, FLAC, WAV or the original stream. Subtitles as separate `.srt` files or embedded.
+- **Format picker.** Best quality or a cap at any resolution the source actually offers, from 144p up to 8K when a site provides it. Choices come from the source's own formats, are labelled with their exact size (for example `4320p · 7680×4320 · 8K`), and portrait video is handled by its shorter side. Claws never upscales. Audio only in MP3, M4A, Opus, FLAC, WAV or the original stream. Subtitles as separate `.srt` files or embedded.
+- **Compatible or Original.** *Compatible* prefers H.264 video and AAC audio in MP4 when the site offers them, and otherwise uses another codec. *Original* keeps the site's best streams without re-encoding, as MP4 when the container can hold them and MKV otherwise. Some editors cannot open every codec, and Claws does not claim otherwise.
+- **Size preview.** Before you download, Claws shows the expected download size and, separately, the free space it will need while working. It sizes the same streams that will be downloaded. An unknown size is shown as unknown, never as zero, and approximate sizes say "about". The check made when a download starts is unchanged; a preview never replaces it.
+- **Paste many links.** Put one link per line (up to 500) and Claws looks them up three at a time, with a status for each row. A link that fails can be retried on its own without losing the others. Nothing starts until you press Download, and links already in the queue are reported rather than added twice.
+- **Transcripts.** Choose *Transcript* to save a video's own captions as text (plain, or with timestamps), SRT or VTT, without downloading the video. Human and automatic captions are listed separately. Claws does no speech recognition: automatic captions are the site's and can contain errors, and a video with no captions simply has no transcript.
+- **Drag into an editor.** A finished download in the Library or the Queue has a *Drag file* handle that starts a real Windows file drag (copy only), so you can drop the file into Explorer or an editor's media bin. The file stays in your Library. Press Enter on the handle to show the file in its folder instead.
 - **Fast Save.** An optional per-download switch. It skips writing metadata into the file and keeps subtitles as separate `.srt` files, so a large file is not rewritten after it downloads. The video and audio are the same either way.
 - **Audio without needless conversion.** With *Prefer matching source audio* on, an audio stream already in the chosen format is saved by copying it instead of converting it.
 - **Playlists and channels.** Pick exactly which videos to download.
@@ -64,7 +69,7 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 **Interface**
 - **Desktop glass.** The desktop shows through the window, blurred by Windows itself. Apple-style materials sit on top, with no painted background.
 - **Apple conventions.** A floating sidebar you can collapse, a toolbar that turns to frosted glass as content scrolls under it, macOS window controls, and inset grouped settings.
-- **Spring motion.** Controls compress and spring back, switches stretch while held, the sidebar selection glides between items, and sheets and toasts arrive on a spring. All of it respects *Reduce motion*.
+- **Spring motion.** Controls compress and spring back, switches stretch while held, the sidebar selection glides between items, and sheets and toasts arrive on a spring. A looked-up link settles into its preview, the Video / Audio / Transcript control slides, new and removed queue rows ease in and out, progress glides forward and snaps whenever the state changes, and a finished download gets a short check. None of it stands in for real state, large batches are not animated, and all of it respects *Reduce motion*.
 - **Light and dark.** Follows Windows or set either one, with adjustable transparency and an opaque Solid mode.
 
 ## Installation
@@ -75,7 +80,7 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 2. Run it. Releases are not code-signed yet, so Windows SmartScreen may warn on first run; choose **More info → Run anyway**.
 3. On first launch Claws downloads yt-dlp into its own folder and verifies it against the checksum yt-dlp publishes. This happens once and takes a few seconds.
 
-The 1.0.5 installer, with the download reliability work, is also [included in this repository](installers/Claws_1.0.5_x64-setup.exe), alongside its [SHA-256 checksum](installers/Claws_1.0.5_x64-setup.exe.sha256). The earlier [1.0.4 installer](installers/Claws_1.0.4_x64-setup.exe) ([checksum](installers/Claws_1.0.4_x64-setup.exe.sha256)) is kept there too.
+The 1.0.5 installer, with the download reliability work, is also [included in this repository](installers/Claws_1.0.5_x64-setup.exe), alongside its [SHA-256 checksum](installers/Claws_1.0.5_x64-setup.exe.sha256). The earlier [1.0.4 installer](installers/Claws_1.0.4_x64-setup.exe) ([checksum](installers/Claws_1.0.4_x64-setup.exe.sha256)) is kept there too. Version 1.1.0 is a source release candidate until its installer has been published; see [`docs/releases/1.1.0.md`](docs/releases/1.1.0.md) for its limits.
 
 ### Requirements
 
@@ -88,9 +93,9 @@ The 1.0.5 installer, with the download reliability work, is also [included in th
 
 ## Using Claws
 
-1. **Paste a link** into the field on the Download page and press **Get Info**, or just press <kbd>Ctrl</kbd>+<kbd>V</kbd> anywhere.
-2. **Choose** Video or Audio Only, a quality or format, and optionally subtitles. For a playlist, tick the videos you want.
-3. **Press Download.** The job joins the queue and starts immediately. Finished files appear in the Library.
+1. **Paste a link** into the field on the Download page and press **Get Info**, or just press <kbd>Ctrl</kbd>+<kbd>V</kbd> anywhere. To download several unrelated links, paste them one per line and press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> (or **Look Up**).
+2. **Choose** Video, Audio Only or Transcript; a quality and Compatible or Original; and optionally subtitles. For a playlist or a batch, tick the items you want. **Estimate Sizes** adds up the selected items on request.
+3. **Press Download.** The job joins the queue and starts immediately. Finished files appear in the Library, where the *Drag file* handle drops them into Explorer or an editor.
 
 ### Keyboard shortcuts
 
@@ -102,6 +107,7 @@ The 1.0.5 installer, with the download reliability work, is also [included in th
 | <kbd>Ctrl</kbd>+<kbd>1</kbd> … <kbd>4</kbd> | Download, Queue, Library, Settings |
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>S</kbd> | Show or hide the sidebar |
 | <kbd>Enter</kbd> | Look up the link in the URL field |
+| <kbd>Ctrl</kbd>+<kbd>Enter</kbd> | Look up every link in a multi-line field |
 | <kbd>Esc</kbd> | Close a confirmation sheet |
 
 ## Settings
@@ -145,7 +151,9 @@ Claws is a [Tauri 2](https://tauri.app) app. The backend is written in Rust and 
     └───────────────────┘        └──────────────┘
 ```
 
-- **Reading a link** runs `yt-dlp --dump-single-json --flat-playlist` and turns the result into a preview, the available qualities, subtitles and playlist entries.
+- **Reading a link** runs `yt-dlp --dump-single-json --flat-playlist` and turns the result into a preview, the available resolutions (kept per shorter side, because that is what yt-dlp's resolution cap limits), subtitle and caption tracks, and playlist entries. A pasted list is looked up three links at a time, and the lookup cache has a size budget.
+- **Size previews** re-run Claws' own format selection (the one the download uses) against the cached lookup with `yt-dlp --simulate`, and size the peak with the same formula the disk-space check uses. They are display only.
+- **Transcripts** run yt-dlp with `--skip-download` and exactly one caption track. Claws then parses the VTT or SRT file itself (`transcript.rs`), removes markup and the repeats that rolling automatic captions carry from line to line while keeping genuinely repeated speech, and publishes the text through the same work folder and journal as a video.
 - **Downloading** runs yt-dlp with progress markers that the backend parses live. Download progress arrives on stdout and post-processing progress on stderr. Each job runs in its own process tree, so pause and cancel stop yt-dlp and its ffmpeg children together.
 - **Work folders.** yt-dlp writes only inside the job's own folder, `<output folder>\.claws-work\<id>\`.
   - When the download succeeds, Claws moves the finished file, and any separate subtitles, into the output folder. The move never replaces an existing file.
@@ -218,11 +226,13 @@ npm run tauri build     # produce the installer in src-tauri/target/release/bund
 | `cargo clippy` (in `src-tauri/`) | Lints the backend. |
 | `cargo test` (in `src-tauri/`) | Runs the backend's tests. Tests that drive the real yt-dlp against local fixtures need Python and yt-dlp (`CLAWS_TEST_YTDLP`, or the copy Claws installed), and skip without them. |
 | `npm run test:queue` | Runs the queue event tests with Node's test runner. |
+| `npm run test:logic` | Runs the pure frontend logic tests: link parsing and lookup scheduling, size estimates, resolution choices and caption options. |
+| `npm run test:motion` | Runs the motion tests: progress gliding and snapping, row ordering, completion feedback and the file-drag gesture. |
 | `python scripts/build-fonts.py` | Regenerates the committed Polaris web fonts (optional, see [Fonts](#fonts)). |
 
 `scripts/dev/` has the tools used to test the real app:
 - `download-fixtures.py`, a localhost server with controlled faults: a missing HLS segment, servers with and without Range support, 503s, a dropped connection, an expired link, and a slow link;
-- `download-bench.mjs` and `queue-bench.mjs`, which measure transfers and the Queue view;
+- `download-bench.mjs`, `queue-bench.mjs`, `batch-bench.mjs` and `motion-bench.mjs`, which measure transfers, the Queue view, a 500-link batch and each animation (the last three drive headless Edge against the dev mock);
 - a DevTools driver for the WebView;
 - a capture script that verifies the desktop glass against a test pattern, and refuses to capture if another window overlaps Claws;
 - a download-phase timer.
@@ -235,7 +245,12 @@ See [`docs/HANDOFF.md`](docs/HANDOFF.md) for how to use them.
 claws/
 ├── src/                      Frontend (TypeScript + CSS, no framework)
 │   ├── views/                Download, Queue, Library, Settings, and the window shell
-│   ├── ui/                   Controls, layout helpers, icons, spring motion
+│   ├── ui/                   Controls, layout helpers, icons, spring motion, progress and
+│   │                         row-order logic, the file-drag gesture
+│   ├── download-input.ts     Link parsing and the three-at-a-time lookup scheduler
+│   ├── download-estimates.ts Size and free-space wording, estimate runs
+│   ├── resolution.ts         Resolution choices and size classes
+│   ├── transcript-options.ts Caption language and format choices
 │   └── styles/               Materials and tokens, components, screens, fonts
 ├── src-tauri/                Backend (Rust)
 │   └── src/
@@ -243,7 +258,10 @@ claws/
 │       ├── download_policy.rs  Frozen job settings, the yt-dlp command line, failure kinds
 │       ├── download_files.rs Work folders, safe publication and cleanup
 │       ├── transfer_progress.rs  Byte-weighted progress and time left
-│       ├── disk_budget.rs    Free-space estimates
+│       ├── disk_budget.rs    Free-space estimates (one formula for admission and previews)
+│       ├── estimate.rs       The size preview command
+│       ├── transcript.rs     Caption parsing and text/SRT/VTT output
+│       ├── file_drag.rs      Resolving a Library file for a native drag
 │       ├── queue_writer.rs   Ordered background saves of the queue
 │       ├── probe.rs          Reading links, and the 20-minute probe cache
 │       ├── links.rs          Saved details of downloaded links, for instant lookups
