@@ -11,6 +11,7 @@ mod download_files;
 mod download_policy;
 mod downloader;
 mod error;
+mod estimate;
 mod history;
 #[cfg(test)]
 mod lifecycle_tests;
@@ -119,6 +120,7 @@ pub fn run() {
             commands::app_ready,
             commands::quit_app,
             commands::probe_url,
+            commands::estimate_download,
             commands::cached_link,
             commands::enqueue,
             commands::pause_job,

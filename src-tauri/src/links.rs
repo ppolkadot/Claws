@@ -148,6 +148,22 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_saved_by_1_0_5_still_loads() {
+        // The exact shape 1.0.5 wrote, playlist entries included. A field added to
+        // ProbeResult later must be optional, or every saved link is discarded on read.
+        let dir = std::env::temp_dir().join(format!("claws-links-legacy-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = path_for(&dir, "https://example.com/list");
+        let saved = r#"{"savedAt":1762500000000,"result":{"kind":"playlist","url":"https://example.com/list","title":"L","uploader":"U","thumbnail":null,"duration":null,"site":"Example","heights":[],"subtitles":[{"code":"en","name":"English","auto":false}],"entries":[{"url":"https://example.com/list","playlistIndex":2,"title":"B","duration":61.0,"thumbnail":null,"uploader":null}]}}"#;
+        std::fs::write(&path, saved).unwrap();
+        let entry = read(&path).expect("an old entry loads");
+        assert!(path.exists(), "and is not discarded");
+        assert_eq!(entry.result.entries[0].playlist_index, Some(2));
+        assert_eq!(entry.result.subtitles[0].code, "en");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn damaged_entry_is_dropped() {
         let dir = std::env::temp_dir().join(format!("claws-links-bad-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();

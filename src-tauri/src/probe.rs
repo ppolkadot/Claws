@@ -230,8 +230,6 @@ impl Drop for ProbeSlot<'_> {
 const PROBE_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub async fn probe(app: &AppHandle, raw_url: &str) -> Result<ProbeResult> {
-    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
     let url = validate_url(raw_url)?;
     let state = app.state::<AppState>();
     let settings = state.settings.lock().unwrap().clone();
@@ -255,9 +253,29 @@ pub async fn probe(app: &AppHandle, raw_url: &str) -> Result<ProbeResult> {
     );
     args.push(url.clone());
 
-    let mut command = tools::command(&ytdlp);
+    let stdout = run_lookup(app, &ytdlp, &args).await?;
+    let value: Value = serde_json::from_slice(&stdout)
+        .map_err(|_| AppError::msg("yt-dlp returned something that could not be read."))?;
+    let result = parse(&url, &value);
+    if result.kind == "video" {
+        remember(app, &result.url, &stdout).await;
+    }
+    remember_recent(&state, &url, &result);
+    // A link the user downloaded before keeps its saved details current.
+    links::refresh(app, &[url.as_str(), result.url.as_str()], &result);
+    Ok(result)
+}
+
+/// Runs one yt-dlp lookup (a probe or a size preview) and returns what it printed. The
+/// process is registered under `AppState::probes`, so shutdown stops it; its output is
+/// capped and it is stopped after PROBE_TIMEOUT. The caller holds the engine lock.
+pub(crate) async fn run_lookup(app: &AppHandle, ytdlp: &Path, args: &[String]) -> Result<Vec<u8>> {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    let state = app.state::<AppState>();
+
+    let mut command = tools::command(ytdlp);
     command
-        .args(&args)
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -331,16 +349,7 @@ pub async fn probe(app: &AppHandle, raw_url: &str) -> Result<ProbeResult> {
     if !status.success() {
         return Err(AppError::msg(error_text(&String::from_utf8_lossy(&stderr))));
     }
-    let value: Value = serde_json::from_slice(&stdout)
-        .map_err(|_| AppError::msg("yt-dlp returned something that could not be read."))?;
-    let result = parse(&url, &value);
-    if result.kind == "video" {
-        remember(app, &result.url, &stdout).await;
-    }
-    remember_recent(&state, &url, &result);
-    // A link the user downloaded before keeps its saved details current.
-    links::refresh(app, &[url.as_str(), result.url.as_str()], &result);
-    Ok(result)
+    Ok(stdout)
 }
 
 /// Kept briefly so `enqueue` can save them in the link cache without another lookup.

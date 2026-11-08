@@ -3,7 +3,7 @@
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 
-import type { DownloadOptions, EnqueueItem, HistoryItem, Job, JobEvent, JobRemoved, JobsAdded, ProbeResult, Settings } from "./api";
+import type { DownloadEstimate, DownloadOptions, EnqueueItem, HistoryItem, Job, JobEvent, JobRemoved, JobsAdded, ProbeResult, Settings } from "./api";
 import { ALREADY_QUEUED } from "./download-input";
 
 function art(hueA: number, hueB: number): string {
@@ -157,6 +157,75 @@ async function probeLink(url: string): Promise<ProbeResult> {
   return probe(url);
 }
 
+/**
+ * A size preview like estimate.rs gives: sizes from the link (so each sample link answers
+ * the same every time) and the choices, with the backend's free-space formula. About one
+ * link in six has an unknown size; a link containing "fail" cannot be estimated at all.
+ */
+async function estimateLink(url: string, playlistIndex: number | null, options: DownloadOptions): Promise<DownloadEstimate> {
+  const key = hash(`${url}#${playlistIndex ?? ""}`);
+  await new Promise((resolve) => setTimeout(resolve, 150 + (key % 500)));
+  if (url.includes("fail")) throw "Sample failure: the site did not answer.";
+  const unknown = (reason: string): DownloadEstimate => ({
+    downloadBytes: null,
+    confidence: "unknown",
+    parts: [],
+    container: null,
+    peakTempBytes: null,
+    requiredFreeBytes: null,
+    outputBytes: null,
+    converted: false,
+    unknownReason: reason,
+  });
+  // disk_budget.rs `required`: the peak plus a margin of at least 512 MiB.
+  const required = (peak: number) => peak + Math.max(512 * 1024 * 1024, Math.floor(peak / 10));
+  if (key % 6 === 0) return unknown("The site does not say how large this download is.");
+  const seconds = 120 + (hash(url) % 1800);
+  const bytesAt = (kbps: number) => Math.round((kbps * 1000) / 8 * seconds);
+  const rewrite = settings.embedMetadata && !options.fastSave;
+  if (options.mode === "audio") {
+    const matching = settings.audioSelection === "preferMatching" && options.audioFormat === "m4a";
+    const source = matching
+      ? { formatId: "a140", acodec: "mp4a.40.2", ext: "m4a", kbps: 128 }
+      : { formatId: "a251", acodec: "opus", ext: "webm", kbps: 160 };
+    const bytes = bytesAt(source.kbps);
+    const converts = options.audioFormat !== "best";
+    const output = options.audioFormat === "wav" ? seconds * 192_000 : options.audioFormat === "flac" ? Math.round(seconds * 192_000 * 0.65) : bytes;
+    const peak = converts ? bytes + output : rewrite ? bytes * 2 : bytes;
+    return {
+      downloadBytes: bytes,
+      confidence: "approximate",
+      parts: [{ formatId: source.formatId, vcodec: null, acodec: source.acodec, ext: source.ext, width: null, height: null, bytes, exact: false }],
+      container: converts ? options.audioFormat : null,
+      peakTempBytes: peak,
+      requiredFreeBytes: required(peak),
+      outputBytes: output,
+      converted: converts,
+      unknownReason: null,
+    };
+  }
+  const ladder: [number, number, number][] = [[2160, 3840, 16000], [1440, 2560, 8000], [1080, 1920, 4000], [720, 1280, 2000], [480, 854, 900], [360, 640, 500], [240, 426, 250], [144, 256, 100]];
+  const [height, width, kbps] = ladder.find(([h]) => h <= (options.maxHeight ?? 2160)) ?? ladder[ladder.length - 1];
+  const video = bytesAt(kbps);
+  const audio = bytesAt(128);
+  const exact = key % 3 === 0;
+  return {
+    downloadBytes: video + audio,
+    confidence: "approximate",
+    parts: [
+      { formatId: `v${height}`, vcodec: height > 1080 ? "vp09.00.50.08" : "avc1.640028", acodec: null, ext: height > 1080 ? "webm" : "mp4", width, height, bytes: video, exact },
+      { formatId: "a140", vcodec: null, acodec: "mp4a.40.2", ext: "m4a", width: null, height: null, bytes: audio, exact: false },
+    ],
+    container: "mp4",
+    // Merged: one extra copy of both streams (disk_budget.rs).
+    peakTempBytes: 2 * (video + audio),
+    requiredFreeBytes: required(2 * (video + audio)),
+    outputBytes: video + audio,
+    converted: false,
+    unknownReason: null,
+  };
+}
+
 // Every job the mock knows, so duplicate checks, cancel and remove behave as the backend's.
 const mockJobs = new Map(jobs.map((j) => [j.id, j]));
 /** The backend keeps a job's playlist position; the interface's Job type does not. */
@@ -248,6 +317,8 @@ export function installMock() {
           return probeLink(String(payload.url));
         case "cached_link":
           return null;
+        case "estimate_download":
+          return estimateLink(String(payload.url), (payload.playlistIndex as number | null) ?? null, payload.options as DownloadOptions);
         case "enqueue":
           return enqueue(payload.items as EnqueueItem[], payload.options as DownloadOptions);
         case "cancel_job":

@@ -87,7 +87,7 @@ fn kill_tree_stops_the_whole_process_tree() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-fn ytdlp() -> Option<PathBuf> {
+pub(crate) fn ytdlp() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("CLAWS_TEST_YTDLP") {
         return Some(PathBuf::from(path));
     }

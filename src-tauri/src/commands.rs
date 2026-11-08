@@ -8,6 +8,7 @@ use crate::desktop;
 use crate::downloader::{self, DownloadOptions, EnqueueItem, Job, JobsAdded};
 use crate::links::{self, CachedLink};
 use crate::error::{AppError, Result};
+use crate::estimate::{self, DownloadEstimate};
 use crate::history::{self, HistoryItem};
 use crate::probe::{self, ProbeResult};
 use crate::settings::Settings;
@@ -55,6 +56,18 @@ pub fn app_ready(window: WebviewWindow, state: State<'_, AppState>) {
 #[tauri::command]
 pub async fn probe_url(app: AppHandle, url: String) -> Result<ProbeResult> {
     probe::probe(&app, &url).await
+}
+
+/// A size and free-space preview for one item with these options. Display only: the
+/// download still checks the actual free space when it starts.
+#[tauri::command]
+pub async fn estimate_download(
+    app: AppHandle,
+    url: String,
+    playlist_index: Option<u32>,
+    options: DownloadOptions,
+) -> Result<DownloadEstimate> {
+    estimate::estimate(&app, &url, playlist_index, options).await
 }
 
 #[tauri::command]
