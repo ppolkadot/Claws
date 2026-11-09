@@ -62,6 +62,16 @@ pub async fn probe_url(app: AppHandle, url: String) -> Result<ProbeResult> {
     probe::probe(&app, &url).await
 }
 
+#[tauri::command]
+pub async fn resolve_spotify_track(app: AppHandle, url: String) -> Result<crate::spotify::SpotifyResolution> {
+    crate::spotify::resolve(&app, &url).await
+}
+
+#[tauri::command]
+pub async fn search_spotify_matches(app: AppHandle, track: crate::spotify::SpotifyTrack, query: String) -> Result<Vec<crate::spotify_match::YouTubeCandidate>> {
+    crate::spotify_match::search(&app, track, &query).await
+}
+
 /// A size and free-space preview for one item with these options. Display only: the
 /// download still checks the actual free space when it starts.
 #[tauri::command]

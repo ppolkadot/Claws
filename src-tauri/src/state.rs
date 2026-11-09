@@ -28,6 +28,8 @@ pub struct AppState {
     pub jobs: Mutex<Vec<Job>>,
     pub running: Mutex<HashMap<String, Running>>,
     pub http: reqwest::Client,
+    /// Public Spotify metadata only, with automatic redirects disabled.
+    pub spotify_http: reqwest::Client,
     /// Read by every yt-dlp run, written by tool installs, so a tool is never replaced
     /// while in use.
     pub engine: tokio::sync::RwLock<()>,
@@ -89,6 +91,7 @@ impl AppState {
                 .connect_timeout(std::time::Duration::from_secs(15))
                 .build()
                 .unwrap_or_default(),
+            spotify_http: crate::spotify::http_client(),
             engine: tokio::sync::RwLock::new(()),
             tool_install: tokio::sync::Mutex::new(()),
             notices: Mutex::new(Vec::new()),

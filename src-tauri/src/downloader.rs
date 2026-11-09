@@ -162,6 +162,8 @@ impl DownloadOptions {
 pub struct Job {
     pub id: String,
     pub url: String,
+    #[serde(default)]
+    pub match_origin: Option<crate::spotify_match::MatchOrigin>,
     /// Set when the playlist entry had no link of its own: the job then downloads item
     /// `playlist_index` of the playlist at `url`.
     #[serde(default)]
@@ -265,6 +267,8 @@ fn emit_removed(app: &AppHandle, id: &str) {
 #[serde(rename_all = "camelCase")]
 pub struct EnqueueItem {
     pub url: String,
+    #[serde(default)]
+    pub match_origin: Option<crate::spotify_match::MatchOrigin>,
     #[serde(default)]
     pub playlist_index: Option<u32>,
     pub title: String,
@@ -539,6 +543,9 @@ pub fn enqueue(app: &AppHandle, items: Vec<EnqueueItem>, mut options: DownloadOp
     let mut created = Vec::with_capacity(items.len());
     for item in items {
         let url = validate_url(&item.url)?;
+        if let Some(origin) = &item.match_origin {
+            crate::spotify_match::validate_match_origin(origin, &item.url, item.playlist_index, &options)?;
+        }
         let key = (url.clone(), item.playlist_index.filter(|i| *i > 0), options_key(&options));
         if pending.contains(&key) || !seen.insert(key) {
             continue;
@@ -546,6 +553,7 @@ pub fn enqueue(app: &AppHandle, items: Vec<EnqueueItem>, mut options: DownloadOp
         created.push(Job {
             id: uuid::Uuid::new_v4().to_string(),
             url,
+            match_origin: item.match_origin,
             playlist_index: item.playlist_index.filter(|i| *i > 0),
             title: if item.title.trim().is_empty() {
                 "Untitled".into()

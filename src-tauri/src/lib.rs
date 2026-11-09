@@ -21,6 +21,8 @@ mod links;
 mod probe;
 mod queue_writer;
 mod settings;
+mod spotify;
+mod spotify_match;
 mod state;
 mod store;
 mod tools;
@@ -140,6 +142,8 @@ pub fn run() {
             commands::app_ready,
             commands::quit_app,
             commands::probe_url,
+            commands::resolve_spotify_track,
+            commands::search_spotify_matches,
             commands::estimate_download,
             commands::cached_link,
             commands::enqueue,

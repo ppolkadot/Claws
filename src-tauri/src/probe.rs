@@ -65,6 +65,8 @@ pub struct ProbeResult {
     pub thumbnail: Option<String>,
     pub duration: Option<f64>,
     pub site: Option<String>,
+    #[serde(default)]
+    pub audio_available: Option<bool>,
     /// The shorter sides of `resolutions`, largest first. Kept for saved links and older
     /// readers; `resolutions` has the detail.
     pub heights: Vec<u32>,
@@ -312,6 +314,11 @@ fn parse(url: &str, value: &Value) -> ProbeResult {
         thumbnail: pick_thumbnail(value),
         duration: value["duration"].as_f64(),
         site: str_field(value, "extractor_key").or_else(|| str_field(value, "extractor")),
+        audio_available: if is_playlist { None } else { value["formats"].as_array().map(|formats| formats.iter().any(|f| {
+            f["acodec"].as_str().is_some_and(|s| !s.trim().is_empty() && s != "none")
+                && (f.get("has_drm").is_none() || f["has_drm"].as_bool() == Some(false))
+                && f["url"].as_str().and_then(|s| url::Url::parse(s).ok()).is_some_and(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
+        })) },
         heights: resolutions.iter().map(|r| r.short_side).collect(),
         resolutions,
         subtitles: collect_subtitles(value),
@@ -335,7 +342,15 @@ impl Drop for ProbeSlot<'_> {
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(90);
 
+fn guard_spotify(raw: &str) -> Result<()> {
+    if crate::spotify::classify_spotify_url(raw).is_some() {
+        return Err(AppError::msg("Open a single Spotify track individually to review YouTube matches. Spotify albums and playlists aren't supported yet. Paste a single track link."));
+    }
+    Ok(())
+}
+
 pub async fn probe(app: &AppHandle, raw_url: &str) -> Result<ProbeResult> {
+    guard_spotify(raw_url)?;
     let url = validate_url(raw_url)?;
     let state = app.state::<AppState>();
     let settings = state.settings.lock().unwrap().clone();
@@ -647,6 +662,35 @@ pub fn error_text(stderr: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn spotify_guard_explains_individual_review_before_discovery() {
+        let app = tauri::test::mock_builder().build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
+        for input in ["https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT", "https://open.spotify.com/album/4cOdK2wGLETKBW3PvgPWqT", "https://open.spotify.com/playlist/4cOdK2wGLETKBW3PvgPWqT", "spotify:track:4cOdK2wGLETKBW3PvgPWqT", "https://spotify.link/abc"] {
+            let error = guard_spotify(input).unwrap_err().to_string();
+            assert!(error.contains("individually"));
+            assert!(error.contains("Spotify"));
+            // No AppState is installed: reaching engine discovery would panic.
+            let error = tauri::async_runtime::block_on(probe(app.handle(), input)).unwrap_err().to_string();
+            assert!(error.contains("individually"));
+        }
+        assert!(guard_spotify("https://www.youtube.com/watch?v=abcdefghijk").is_ok());
+    }
+
+    #[test]
+    fn audio_availability_requires_usable_non_drm_audio() {
+        use serde_json::json;
+        for format in [json!({"acodec":"opus","vcodec":"none","url":"https://media.test/a"}), json!({"acodec":"aac","vcodec":"h264","url":"http://media.test/a","has_drm":false})] {
+            assert_eq!(parse("https://example.test", &json!({"formats":[format]})).audio_available, Some(true));
+        }
+        for formats in [json!([]),json!([{"acodec":"none","url":"https://media.test/a"}]),json!([{"acodec":"aac","url":"https://media.test/a","has_drm":true}]),json!([{"acodec":"aac","url":"file:///a"}]),json!([{"acodec":"","url":"https://media.test/a"}])] {
+            assert_eq!(parse("https://example.test", &json!({"formats":formats})).audio_available, Some(false));
+        }
+        assert_eq!(parse("https://example.test", &json!({})).audio_available, None);
+        assert_eq!(parse("https://example.test", &json!({"_type":"playlist","formats":[]})).audio_available, None);
+        let mut old = serde_json::to_value(parse("https://example.test", &json!({}))).unwrap();
+        old.as_object_mut().unwrap().remove("audioAvailable");
+        assert_eq!(serde_json::from_value::<ProbeResult>(old).unwrap().audio_available, None);
+    }
     use super::*;
     use serde_json::json;
 
