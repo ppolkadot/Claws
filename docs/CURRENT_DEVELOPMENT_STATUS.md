@@ -1,10 +1,10 @@
 # Current development status
 
-Current release target: **1.0.0**, requested by the owner on 2026-11-09. It includes the expanded feature set and consolidated review fixes, despite its lower version number. The latest published GitHub release remains 1.0.5. The current repository installer and fresh validation are recorded in [1.0.0 release notes](releases/1.0.0.md); the old 1.1.0 installer is a historical artifact.
+Current version: **1.0.6**, requested by the owner on 2026-11-09. This is the approved 1.0.0 Beta feature set repackaged under a version newer than 1.0.5. Current artifact and validation details are in [1.0.6 release notes](releases/1.0.6.md); the 1.0.0 and 1.1.0 installers are historical artifacts. GitHub release target: `v1.0.6` (Latest, standard release).
 
-Startup recovery's suppressed kept-file save failure is fixed and has a red/green lifecycle regression. New code and tests belong in the final source commit. Application identifier and queue schema remain unchanged; installer downgrades are explicitly allowed. Live native drag/editor, real-site speed and clean-install/upgrade acceptance remain pending.
+Startup recovery's suppressed kept-file save failure is fixed and has a red/green lifecycle regression. The implementation and regression tests were committed in `356569d` and published as 1.0.0 Beta. Application identifier and queue schema remain unchanged; installer downgrades are explicitly allowed. Live native drag/editor, real-site speed and clean-install/upgrade acceptance remain pending.
 
-Verified for the current build: 409 Rust tests, 241 Node tests, 2 Python tests, clean-export dependency install/build, Clippy, production NSIS build, archive integrity, embedded executable version and exact decompressed font/CSS/JS/license bytes. Native editor drag and live installation/upgrade are still unverified. No publication or commit was performed.
+Verified for the current build: 409 Rust tests, 241 Node tests, 2 Python tests, clean-export dependency install/build, Clippy, production NSIS build, archive integrity, embedded executable version and exact decompressed font/CSS/JS/license bytes. Native editor drag and live installation/upgrade are still unverified. The 1.0.6 packaging commit and standard release supersede that beta.
 
 | Feature | Status | Evidence / limits |
 | --- | --- | --- |
@@ -20,15 +20,15 @@ Verified for the current build: 409 Rust tests, 241 Node tests, 2 Python tests, 
 | Clip sections | Deferred to a future version | Not implemented; the plan keeps the design notes. |
 | ProRes / editing presets, vocal removal, macOS | Excluded by the owner | Do not implement for this release. |
 
-## Consolidated review fixes (2026-11-09, uncommitted source)
+## Consolidated review fixes (2026-11-09, historical implementation pass)
 
-Implemented packages W1-W4, W5-W9, W10 and W11/R07 of the 2026-11-09 consolidated plan; see `docs/HANDOFF.md` for the per-package summary. Not implemented on purpose: C01, C02, C03, M4 and F6; **R20 deferred** because `core:window:allow-destroy` is still used by the close handler. This paragraph records the pre-rebuild implementation pass; the current 1.0.0 artifact includes these fixes.
+Implemented packages W1-W4, W5-W9, W10 and W11/R07 of the 2026-11-09 consolidated plan; see `docs/HANDOFF.md` for the per-package summary. Not implemented on purpose: C01, C02, C03, M4 and F6; **R20 deferred** because `core:window:allow-destroy` is still used by the close handler. This paragraph records the pre-rebuild implementation pass; the current 1.0.6 artifact includes these fixes.
 
 Checks run 2026-11-09: **408 Rust tests**; Node tests fonts 7, queue 19, logic 152, motion 63; 2 Python font tests; production build; feature-enabled Clippy (warnings denied); `git diff --check`. Speed work (W0) is evidence-blocked: no affected source URL, so no speed improvement is claimed. Native drag, installed-app, real-site and upgrade acceptance remain manual and unexercised.
 
 ## Current source fixes (2026-11-08, after the candidate installer)
 
-The historical 1.1.0 installer predates these fixes. The current 1.0.0 installer includes them; native acceptance remains outstanding.
+The historical 1.1.0 installer predates these fixes. The current 1.0.6 installer includes them; native acceptance remains outstanding.
 
 - **Drag isolation.** Removed `drag` 2.1.1 and its additional Windows dependency stack. Claws creates the Shell data object and calls copy-only `DoDragDrop` on a dedicated OLE STA thread. A receiver stalled inside a COM call cannot block Claws' window thread. Only one drag worker is allowed; a receiver that never returns prevents further drags until it finishes or Claws restarts, rather than creating unlimited threads. Cooperative cancellation runs after 60 seconds; the command reports a stalled receiver after 65 seconds. An in-flight receiver call cannot safely be forcibly terminated.
 - **Paths and results.** Fallible Shell parsing accepts normal long and UNC paths after removing filesystem-only prefixes. Missing files, symbolic links, reserved names and trailing dots/spaces are refused. OneDrive placeholders remain supported. A drop is reported only when OLE returns the copy effect; this still does not prove that an editor imported or finished copying a file. The physical primary mouse button respects swapped buttons.
