@@ -1,10 +1,10 @@
 # Current development status
 
-Current version: **1.0.6**, requested by the owner on 2026-11-09. This is the approved 1.0.0 Beta feature set repackaged under a version newer than 1.0.5. Current artifact and validation details are in [1.0.6 release notes](releases/1.0.6.md); the 1.0.0 and 1.1.0 installers are historical artifacts. GitHub release target: `v1.0.6` (Latest, standard release).
+Current version: **1.0.7**, requested by the owner on 2026-11-09. This includes the approved feature set and fixes Windows yt-dlp reporting corrupted Unicode finished paths. Current artifact and validation details are in [1.0.7 release notes](releases/1.0.7.md); the 1.0.0 and 1.1.0 installers are historical artifacts. GitHub release target: `v1.0.7` (Latest, standard release).
 
 Startup recovery's suppressed kept-file save failure is fixed and has a red/green lifecycle regression. The implementation and regression tests were committed in `356569d` and published as 1.0.0 Beta. Application identifier and queue schema remain unchanged; installer downgrades are explicitly allowed. Live native drag/editor, real-site speed and clean-install/upgrade acceptance remain pending.
 
-Verified for the current build: 409 Rust tests, 241 Node tests, 2 Python tests, clean-export dependency install/build, Clippy, production NSIS build, archive integrity, embedded executable version and exact decompressed font/CSS/JS/license bytes. Native editor drag and live installation/upgrade are still unverified. The 1.0.6 packaging commit and standard release supersede that beta.
+Fresh verification for 1.0.7: 410 Rust tests, feature-enabled Clippy with warnings denied, production frontend/font checks, production NSIS build, archive integrity, embedded executable version and exact decompressed font/CSS/JS/license bytes. The unchanged frontend previously passed 241 Node tests, 2 Python tests and a clean-export build for 1.0.6. Native editor drag and live installation/upgrade are still unverified. The 1.0.7 correction follows the 1.0.6 standard release.
 
 | Feature | Status | Evidence / limits |
 | --- | --- | --- |
