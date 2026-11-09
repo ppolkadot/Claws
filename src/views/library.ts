@@ -94,6 +94,7 @@ function tile(item: HistoryItem): HTMLElement {
       { class: "tile-text" },
       h("span", { class: "tile-title", text: item.title, attrs: { title: item.title } }),
       item.uploader ? h("span", { class: "tile-sub", text: item.uploader }) : null,
+      item.matchOrigin ? h("span", { class: "tile-sub", text: "Source: YouTube match", attrs: { title: [item.matchOrigin.spotifyTitle, ...item.matchOrigin.spotifyArtists].filter(Boolean).join(" · ") } }) : null,
       h("span", { class: "tile-sub", text: meta }),
       h("span", { class: "tile-date", text: formatDate(item.finishedAt) }),
       // Always visible (the hover actions are not): a kept file must stay findable.

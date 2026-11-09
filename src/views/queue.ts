@@ -131,7 +131,7 @@ function buildRow(job: Job): RowRefs {
     h(
       "div",
       { class: "job-main" },
-      h("div", { class: "job-head" }, h("span", { class: "job-title", text: job.title, attrs: { title: job.title } }), h("span", { class: "job-kind", text: optionsText(job) })),
+      h("div", { class: "job-head" }, h("span", { class: "job-title", text: job.title, attrs: { title: job.title } }), h("span", { class: "job-kind", text: job.matchOrigin ? `${optionsText(job)} · Source: YouTube match` : optionsText(job) })),
       status,
       bar,
     ),

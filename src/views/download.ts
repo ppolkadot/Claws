@@ -36,8 +36,10 @@ import { group, progressBar, row, sectionTitle, setProgress, spinner } from "../
 import { settleIn } from "../ui/motion";
 import { subtitleChips } from "../ui/subtitle-chips";
 import type { MountView } from "./shell";
+import { SpotifyMatchController, isSpotifyInput } from "../spotify-match";
+import { renderSpotifyMatch } from "./spotify-match";
 
-type Phase = "idle" | "loading" | "result" | "error" | "batch";
+type Phase = "idle" | "loading" | "result" | "error" | "batch" | "spotify";
 
 /** Batch rows built per frame, as in the Queue view: about a frame's worth of work. */
 const ROWS_PER_FRAME = 40;
@@ -298,6 +300,7 @@ export const mountDownload: MountView = (container, ctx) => {
   let selected = new Set<number>();
   /** True while an enqueue is in flight or its confirmation is showing. */
   let enqueuing = false;
+  let activeEnqueue: symbol | null = null;
   /** Saved details shown while a fresh lookup runs ("checking"), or after it failed ("stale"). */
   let freshness: "fresh" | "checking" | "stale" = "fresh";
   let staleReason = "";
@@ -306,6 +309,8 @@ export const mountDownload: MountView = (container, ctx) => {
   let freshnessEl: HTMLElement | null = null;
   /** The link the queue has accepted; its details are never kept for a return to this view. */
   let enqueuedResult: ProbeResult | null = null;
+  let spotify: SpotifyMatchController | null = null;
+  let matchingSessionId = "";
 
   // ---- Size previews (display only; the download checks free space when it starts) ----
   /** One link: follows the choices, debounced, latest answer only. */
@@ -461,6 +466,52 @@ export const mountDownload: MountView = (container, ctx) => {
     listRun.reset();
   }
 
+  function clearSpotify() {
+    spotify?.dispose();
+    spotify = null;
+    store.spotifyMatch = null;
+  }
+
+  function createSpotify() {
+    matchingSessionId = crypto.randomUUID();
+    const controller = new SpotifyMatchController({
+      resolve: api.resolveSpotify,
+      search: api.searchSpotify,
+      probe: api.probe,
+    }, (state) => {
+      if (spotify !== controller) return;
+      ticket += 1;
+      if (state.stage === "confirmed" && state.confirmed) {
+        if (result?.url !== state.confirmed.url) showResult(controller.snapshot().confirmed!);
+        mode = "audio";
+        freshness = "fresh";
+        staleReason = "";
+        phase = "result";
+      } else {
+        result = null;
+        phase = "spotify";
+        preview.cancel();
+        store.previews.clear();
+      }
+      render();
+    });
+    spotify = controller;
+    return controller;
+  }
+
+  function renderMatching(): HTMLElement {
+    const controller = spotify!;
+    const panel = renderSpotifyMatch(controller.state, {
+      setQuery: (query) => { if (!enqueuing) controller.setQuery(query); },
+      search: () => { if (!enqueuing) void controller.search(); },
+      select: (id) => { if (!enqueuing) controller.select(id); },
+      confirm: () => { if (!enqueuing) void controller.confirm(); },
+      retry: () => { if (!enqueuing) void controller.open(lastUrl); },
+    });
+    if (enqueuing) panel.querySelectorAll<HTMLInputElement | HTMLButtonElement>("input, button").forEach((el) => { el.disabled = true; });
+    return panel;
+  }
+
   /** Takes refreshed details while keeping the choices already made. */
   function adoptRefresh(next: ProbeResult) {
     const before = result;
@@ -513,7 +564,21 @@ export const mountDownload: MountView = (container, ctx) => {
   // that is actually looked up, or adding every row ends it.
   async function lookUp(url: string, issues: ParsedInput | null = null) {
     const mine = ++ticket;
+    activeEnqueue = null;
+    enqueuing = false;
+    clearSpotify();
     skipped = issues;
+    if (isSpotifyInput(url)) {
+      lastUrl = url;
+      result = null;
+      freshness = "fresh";
+      staleReason = "";
+      store.previews.clear();
+      phase = "spotify";
+      const controller = createSpotify();
+      await controller.open(url);
+      return;
+    }
     if (!looksLikeUrl(url)) {
       lastUrl = "";
       return showError("Couldn't read that link", "That does not look like a link. Paste the full address, starting with https://");
@@ -578,6 +643,9 @@ export const mountDownload: MountView = (container, ctx) => {
   /** Several links: each is looked up (three at a time); nothing downloads until asked. */
   async function submitBatch(parsed: ParsedInput) {
     const mine = ++ticket;
+    activeEnqueue = null;
+    enqueuing = false;
+    clearSpotify();
     lastUrl = "";
     skipped = null;
     if (parsed.overLimit) {
@@ -675,9 +743,22 @@ export const mountDownload: MountView = (container, ctx) => {
   async function startDownload(trigger?: HTMLButtonElement) {
     // A double click, or a click during the confirmation, would queue it twice.
     if (!result || enqueuing) return;
+    const match = spotify?.state;
+    if (spotify && (match?.stage !== "confirmed" || match.confirmed?.url !== result.url || result.audioAvailable !== true)) return;
     enqueuing = true;
+    const enqueueToken = Symbol();
+    activeEnqueue = enqueueToken;
     const mine = ticket;
     const sent = result;
+    const sentSessionId = spotify ? matchingSessionId : null;
+    const settleMatch = (accepted: boolean) => {
+      if (!sentSessionId) return;
+      if (store.spotifyMatch?.sessionId === sentSessionId) {
+        if (accepted) store.spotifyMatch = null;
+        else store.spotifyMatch.enqueuePending = false;
+      }
+      store.emit("spotifyMatch", { sessionId: sentSessionId, accepted });
+    };
     if (trigger) trigger.disabled = true;
     const items =
       result.kind === "playlist"
@@ -703,10 +784,13 @@ export const mountDownload: MountView = (container, ctx) => {
     try {
       // The looked-up link, so its details are saved in the link cache.
       store.previews.adding(sent.url); // a view left from here is not shown as new on a return
-      const added = await api.enqueue(items, currentOptions(), lastUrl || result.url);
+      const origin = match?.track ? { kind: "spotifyYouTube" as const, spotifyUrl: match.track.url, spotifyTitle: match.track.title, spotifyArtists: [...match.track.artists] } : null;
+      const added = await api.enqueue(items.map((item) => ({ ...item, matchOrigin: origin })), currentOptions(), spotify ? sent.url : lastUrl || sent.url);
       // Usually already applied from the jobs-added event; the revisions make this a no-op.
       store.addJobs(added);
       enqueuedResult = sent;
+      // The mounted view handles its own success below; a replacement view receives this.
+      if (mine !== ticket) settleMatch(true);
       store.previews.clearFor(sent.url); // added to the queue: its details and estimates are done with
       const jobs = added.jobs;
       if (trigger) {
@@ -718,6 +802,7 @@ export const mountDownload: MountView = (container, ctx) => {
         action: { label: "View Queue", run: () => store.go("queue") },
       });
       if (mine !== ticket) return; // another link was submitted meanwhile
+      clearSpotify();
       input.value = "";
       fitInput();
       lastUrl = "";
@@ -726,11 +811,16 @@ export const mountDownload: MountView = (container, ctx) => {
       phase = store.batch ? "batch" : "idle";
       render();
     } catch (error) {
+      settleMatch(false);
       store.previews.addFailed(sent.url);
       toast(errorMessage(error), { tone: "error" });
       if (trigger) trigger.disabled = false;
     } finally {
-      enqueuing = false;
+      if (activeEnqueue === enqueueToken) {
+        enqueuing = false;
+        activeEnqueue = null;
+        if (spotify) render();
+      }
     }
   }
 
@@ -899,6 +989,7 @@ export const mountDownload: MountView = (container, ctx) => {
       },
     );
     const typeRow = row("Type", typeSeg.el, typeHint);
+    typeRow.hidden = spotify !== null;
     const panel = group(typeRow);
     const body = h("div", { class: "options-body" }, panel);
 
@@ -979,7 +1070,7 @@ export const mountDownload: MountView = (container, ctx) => {
               audioFormat = value;
               scheduleEstimate();
             }),
-            audioHint(),
+            spotify ? `${audioHint()} FLAC and WAV conversion cannot improve the YouTube source quality.` : audioHint(),
           ),
         );
       }
@@ -1034,6 +1125,7 @@ export const mountDownload: MountView = (container, ctx) => {
           h("span", { class: "save-to", text: `Saves to ${folderName(store.settings.outputDir)}` }),
           (() => {
             const btn: HTMLButtonElement = button({ label: "Download", icon: "download", variant: "primary", onClick: () => void startDownload(btn) });
+            btn.disabled = enqueuing;
             paintActionLabel = () => {
               // The "Added" confirmation stays as it is until the view resets.
               if (btn.classList.contains("confirmed")) return;
@@ -1442,6 +1534,7 @@ export const mountDownload: MountView = (container, ctx) => {
         variant: "secondary",
         size: "small",
         onClick: () => {
+          clearSpotify();
           ticket += 1; // a single lookup still running is dropped
           lastUrl = "";
           result = null;
@@ -1458,6 +1551,9 @@ export const mountDownload: MountView = (container, ctx) => {
   let shownKey = "";
 
   function render() {
+    const focusedQuery = document.activeElement instanceof HTMLInputElement && document.activeElement.id === "spotify-query"
+      ? { start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
+    const focusedRadio = document.activeElement instanceof HTMLInputElement && document.activeElement.name === "spotify-match" ? document.activeElement.value : null;
     goButton.disabled = phase === "loading";
     // A newer transition replaces one still running; errors and loading never wait for one.
     stageAnimation?.cancel();
@@ -1501,10 +1597,13 @@ export const mountDownload: MountView = (container, ctx) => {
         break;
       case "result": {
         const shown = renderResult(result!);
-        replace(stage, back, issues, shown);
+        replace(stage, back, issues, spotify ? h("div", { class: "spotify-review" }, renderMatching(), shown) : shown);
         if (changed) stageAnimation = settleIn(shown);
         break;
       }
+      case "spotify":
+        replace(stage, back, issues, renderMatching());
+        break;
       case "batch":
         if (!store.batch) {
           phase = "idle";
@@ -1531,7 +1630,11 @@ export const mountDownload: MountView = (container, ctx) => {
         );
     }
     // The focused control was replaced: keep the keyboard in the link field, not lost.
-    if (hadFocus && !stage.contains(document.activeElement)) input.focus({ preventScroll: true });
+    const query = stage.querySelector<HTMLInputElement>("#spotify-query");
+    const radio = focusedRadio ? Array.from(stage.querySelectorAll<HTMLInputElement>('input[name="spotify-match"]')).find((el) => el.value === focusedRadio) : null;
+    if (focusedQuery && query) { query.focus({ preventScroll: true }); query.setSelectionRange(focusedQuery.start, focusedQuery.end); }
+    else if (radio) radio.focus({ preventScroll: true });
+    else if (hadFocus && !stage.contains(document.activeElement)) input.focus({ preventScroll: true });
   }
 
   // Ctrl+V anywhere in the window lands here (routed by main.ts).
@@ -1541,7 +1644,7 @@ export const mountDownload: MountView = (container, ctx) => {
     if (!pasted) return;
     input.value = pasted;
     fitInput();
-    if (looksLikeUrl(pasted)) void submit();
+    if (looksLikeUrl(pasted) || isSpotifyInput(pasted)) void submit();
     else input.focus();
   };
   const offPaste = store.on("paste", takePaste);
@@ -1554,10 +1657,34 @@ export const mountDownload: MountView = (container, ctx) => {
     render();
   });
   const offBatchRow = store.on("batchRow", (detail) => batchView?.paintRow(detail as BatchRow<ProbeResult>));
+  const offSpotify = store.on("spotifyMatch", (detail) => {
+    const outcome = detail as { sessionId: string; accepted: boolean };
+    if (!spotify || matchingSessionId !== outcome.sessionId) return;
+    enqueuing = false;
+    if (outcome.accepted) {
+      clearSpotify();
+      result = null;
+      lastUrl = "";
+      input.value = "";
+      phase = store.batch ? "batch" : "idle";
+    }
+    render();
+  });
 
   // Back from another view: the link's details, the choices made over them and the estimates
   // already read come back as they were left. Nothing that was still running is revived.
-  const returning = store.previews.take();
+  const matchingReturn = store.spotifyMatch;
+  const returning = matchingReturn ? null : store.previews.take();
+  if (matchingReturn) {
+    lastUrl = matchingReturn.snapshot.url;
+    input.value = lastUrl;
+    fitInput();
+    createSpotify().restore(matchingReturn.snapshot);
+    matchingSessionId = matchingReturn.sessionId;
+    enqueuing = matchingReturn.enqueuePending;
+    audioFormat = matchingReturn.audioFormat;
+    fastSave = matchingReturn.fastSave;
+  }
   if (returning) {
     result = returning.result;
     lastUrl = returning.typedUrl;
@@ -1581,6 +1708,11 @@ export const mountDownload: MountView = (container, ctx) => {
 
   /** Leaving the view: keeps what a return needs, as plain data, and stops what is running. */
   function saveSession() {
+    if (spotify) {
+      store.spotifyMatch = enqueuedResult !== null && result === enqueuedResult ? null : { snapshot: spotify.snapshot(), audioFormat, fastSave, sessionId: matchingSessionId, enqueuePending: enqueuing };
+      store.previews.clear();
+      return;
+    }
     if (phase === "result" && result && result !== enqueuedResult) {
       listRun.cancel(); // what it read stays; the calls still on their way are ignored
       const checking = freshness === "checking";
@@ -1611,12 +1743,15 @@ export const mountDownload: MountView = (container, ctx) => {
 
   return () => {
     saveSession();
+    spotify?.dispose();
+    spotify = null;
     offPaste();
     offFocus();
     offTools.forEach((off) => off());
     offHistory();
     offBatch();
     offBatchRow();
+    offSpotify();
     batchView?.dispose();
     batchView = null;
     stageAnimation?.cancel();
