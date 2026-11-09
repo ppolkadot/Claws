@@ -9,6 +9,7 @@ import { button, confirmSheet, toast } from "../ui/components";
 import { h, replace } from "../ui/dom";
 import { icon } from "../ui/icons";
 import { fileDragButton } from "../ui/file-drag";
+import { matchesLibrarySearch } from "../library-search";
 import type { MountView } from "./shell";
 
 const fail = (error: unknown) => toast(errorMessage(error), { tone: "error" });
@@ -171,7 +172,7 @@ export const mountLibrary: MountView = (container, ctx) => {
   const render = () => {
     const query = search.value.trim().toLowerCase();
     const items = store.history.filter(
-      (i) => !query || i.title.toLowerCase().includes(query) || (i.uploader ?? "").toLowerCase().includes(query),
+      (i) => matchesLibrarySearch(i, query),
     );
     tiles.prune(new Set(store.history.map((i) => i.id)));
     clearAll.disabled = store.history.length === 0;

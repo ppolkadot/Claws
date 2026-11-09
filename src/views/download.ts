@@ -37,7 +37,7 @@ import { settleIn } from "../ui/motion";
 import { subtitleChips } from "../ui/subtitle-chips";
 import type { MountView } from "./shell";
 import { SpotifyMatchController, isSpotifyInput } from "../spotify-match";
-import { renderSpotifyMatch } from "./spotify-match";
+import { mountSpotifyMatch, type SpotifyMatchView } from "./spotify-match";
 
 type Phase = "idle" | "loading" | "result" | "error" | "batch" | "spotify";
 
@@ -310,6 +310,10 @@ export const mountDownload: MountView = (container, ctx) => {
   /** The link the queue has accepted; its details are never kept for a return to this view. */
   let enqueuedResult: ProbeResult | null = null;
   let spotify: SpotifyMatchController | null = null;
+  /** The matching panel and what holds it with the confirmed recording's details. */
+  let matchView: SpotifyMatchView | null = null;
+  let reviewHost: HTMLElement | null = null;
+  let resultSlot: HTMLElement | null = null;
   let matchingSessionId = "";
 
   // ---- Size previews (display only; the download checks free space when it starts) ----
@@ -466,9 +470,18 @@ export const mountDownload: MountView = (container, ctx) => {
     listRun.reset();
   }
 
-  function clearSpotify() {
+  /** Drops the matching session and its panel; what a return would restore is left alone. */
+  function clearSpotifyView() {
     spotify?.dispose();
     spotify = null;
+    matchView?.dispose();
+    matchView = null;
+    reviewHost = null;
+    resultSlot = null;
+  }
+
+  function clearSpotify() {
+    clearSpotifyView();
     store.spotifyMatch = null;
   }
 
@@ -481,6 +494,7 @@ export const mountDownload: MountView = (container, ctx) => {
     }, (state) => {
       if (spotify !== controller) return;
       ticket += 1;
+      const before = phase;
       if (state.stage === "confirmed" && state.confirmed) {
         if (result?.url !== state.confirmed.url) showResult(controller.snapshot().confirmed!);
         mode = "audio";
@@ -493,23 +507,38 @@ export const mountDownload: MountView = (container, ctx) => {
         preview.cancel();
         store.previews.clear();
       }
-      render();
+      // While the user types or the results change, only the panel itself is updated in
+      // place: rebuilding the stage would drop the query field and an IME composition.
+      if (phase !== before || phase === "result" || !matchView || !stage.contains(matchView.el)) render();
+      else paintMatching();
     });
     spotify = controller;
-    return controller;
-  }
-
-  function renderMatching(): HTMLElement {
-    const controller = spotify!;
-    const panel = renderSpotifyMatch(controller.state, {
+    matchView = mountSpotifyMatch({
       setQuery: (query) => { if (!enqueuing) controller.setQuery(query); },
       search: () => { if (!enqueuing) void controller.search(); },
       select: (id) => { if (!enqueuing) controller.select(id); },
       confirm: () => { if (!enqueuing) void controller.confirm(); },
       retry: () => { if (!enqueuing) void controller.open(lastUrl); },
     });
-    if (enqueuing) panel.querySelectorAll<HTMLInputElement | HTMLButtonElement>("input, button").forEach((el) => { el.disabled = true; });
-    return panel;
+    resultSlot = h("div", { class: "spotify-result" });
+    reviewHost = h("div", { class: "spotify-review" }, matchView.el, resultSlot);
+    return controller;
+  }
+
+  /** Brings the panel up to date; its controls stay frozen while a download is being added. */
+  function paintMatching() {
+    if (!spotify || !matchView) return;
+    matchView.update(spotify.state);
+    if (enqueuing) matchView.el.querySelectorAll<HTMLInputElement | HTMLButtonElement>("input, button").forEach((el) => { el.disabled = true; });
+  }
+
+  /** Makes the stage hold exactly these nodes, without moving (and so unfocusing) any that stay. */
+  function syncStage(wanted: (HTMLElement | null)[]) {
+    const nodes = wanted.filter((node): node is HTMLElement => node !== null);
+    for (const child of Array.from(stage.children)) if (!nodes.includes(child as HTMLElement)) stage.removeChild(child);
+    nodes.forEach((node, index) => {
+      if (stage.children[index] !== node) stage.insertBefore(node, stage.children[index] ?? null);
+    });
   }
 
   /** Takes refreshed details while keeping the choices already made. */
@@ -1551,9 +1580,6 @@ export const mountDownload: MountView = (container, ctx) => {
   let shownKey = "";
 
   function render() {
-    const focusedQuery = document.activeElement instanceof HTMLInputElement && document.activeElement.id === "spotify-query"
-      ? { start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
-    const focusedRadio = document.activeElement instanceof HTMLInputElement && document.activeElement.name === "spotify-match" ? document.activeElement.value : null;
     goButton.disabled = phase === "loading";
     // A newer transition replaces one still running; errors and loading never wait for one.
     stageAnimation?.cancel();
@@ -1597,12 +1623,18 @@ export const mountDownload: MountView = (container, ctx) => {
         break;
       case "result": {
         const shown = renderResult(result!);
-        replace(stage, back, issues, spotify ? h("div", { class: "spotify-review" }, renderMatching(), shown) : shown);
+        if (spotify && reviewHost && resultSlot) {
+          replace(resultSlot, shown);
+          syncStage([back, issues, reviewHost]);
+          paintMatching();
+        } else replace(stage, back, issues, shown);
         if (changed) stageAnimation = settleIn(shown);
         break;
       }
       case "spotify":
-        replace(stage, back, issues, renderMatching());
+        if (resultSlot) clear(resultSlot);
+        syncStage([back, issues, reviewHost]);
+        paintMatching();
         break;
       case "batch":
         if (!store.batch) {
@@ -1630,11 +1662,7 @@ export const mountDownload: MountView = (container, ctx) => {
         );
     }
     // The focused control was replaced: keep the keyboard in the link field, not lost.
-    const query = stage.querySelector<HTMLInputElement>("#spotify-query");
-    const radio = focusedRadio ? Array.from(stage.querySelectorAll<HTMLInputElement>('input[name="spotify-match"]')).find((el) => el.value === focusedRadio) : null;
-    if (focusedQuery && query) { query.focus({ preventScroll: true }); query.setSelectionRange(focusedQuery.start, focusedQuery.end); }
-    else if (radio) radio.focus({ preventScroll: true });
-    else if (hadFocus && !stage.contains(document.activeElement)) input.focus({ preventScroll: true });
+    if (hadFocus && !stage.contains(document.activeElement)) input.focus({ preventScroll: true });
   }
 
   // Ctrl+V anywhere in the window lands here (routed by main.ts).
@@ -1743,8 +1771,7 @@ export const mountDownload: MountView = (container, ctx) => {
 
   return () => {
     saveSession();
-    spotify?.dispose();
-    spotify = null;
+    clearSpotifyView();
     offPaste();
     offFocus();
     offTools.forEach((off) => off());

@@ -453,7 +453,7 @@ export function installMock() {
         case "resolve_spotify_track": {
           const input = String(payload.url);
           const id = /\/track\/([A-Za-z0-9]{22})(?:[/?#]|$)/.exec(input)?.[1];
-          if (!id) throw new Error("Sample mode supports full Spotify track links only. Paste the full Spotify track link.");
+          if (!id) throw { code: "invalidTrackUrl", message: "Sample mode supports full Spotify track links only. Paste the full Spotify track link.", retryable: false };
           return { track: { id, url: `https://open.spotify.com/track/${id}`, title: "Sample: Midnight tide", artists: ["Sample Artist"], duration: 213.573, artwork: null }, warnings: [] };
         }
         case "search_spotify_matches":
@@ -461,7 +461,7 @@ export function installMock() {
             videoId, url: `https://www.youtube.com/watch?v=${videoId}`,
             title: index === 0 ? "Sample: Midnight tide — studio recording" : index === 1 ? "Sample: Midnight tide — live" : "Sample: Midnight tide — cover",
             uploader: index === 2 ? "Sample Cover Artist" : "Sample Artist", duration: 214 + index * 25,
-            thumbnail: null, score: 0.94 - index * 0.2, warnings: index === 0 ? ["Similar title"] : [index === 1 ? "May be a live recording" : "May be a cover recording"],
+            thumbnail: null, score: 0.94 - index * 0.2, warnings: index === 0 ? [] : [index === 1 ? "May be a live recording" : "May be a cover recording"],
           }));
         case "cached_link":
           return null;

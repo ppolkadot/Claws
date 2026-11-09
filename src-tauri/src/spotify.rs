@@ -16,11 +16,71 @@ pub struct SpotifyResolution {
     pub track: SpotifyTrack,
     pub warnings: Vec<String>,
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum UnsupportedReason {
+    Collection,
+    Uri,
+    Embed,
+    InvalidTrackUrl,
+    InsecureUrl,
+}
+impl UnsupportedReason {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Collection => "unsupportedCollection",
+            Self::Uri => "unsupportedUri",
+            Self::Embed => "unsupportedEmbed",
+            Self::InvalidTrackUrl => "invalidTrackUrl",
+            Self::InsecureUrl => "insecureUrl",
+        }
+    }
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Collection => "Spotify albums, playlists and other pages aren't supported yet. Paste a single track link.",
+            Self::Uri => "Spotify URIs aren't supported. Paste the full https://open.spotify.com/track/… link.",
+            Self::Embed => "Spotify embed links aren't supported. Paste the regular track link from Spotify's Share menu.",
+            Self::InvalidTrackUrl => "That isn't a valid Spotify track link. Paste the full track link.",
+            Self::InsecureUrl => "Spotify links must use https://open.spotify.com without a port or login. Paste the full track link.",
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub enum SpotifyInput {
     Track { id: String },
     Short { url: String },
-    Unsupported,
+    Unsupported(UnsupportedReason),
+}
+/// The failure `resolve_spotify_track` reports: a stable `code` the UI branches on, a
+/// readable `message`, and whether trying the same input again can help.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpotifyLookupError {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+}
+impl SpotifyLookupError {
+    fn unsupported(reason: UnsupportedReason) -> Self {
+        Self {
+            code: reason.code().into(),
+            message: reason.message().into(),
+            retryable: false,
+        }
+    }
+}
+impl From<AppError> for SpotifyLookupError {
+    fn from(error: AppError) -> Self {
+        Self {
+            code: "lookupFailed".into(),
+            message: error.to_string(),
+            retryable: true,
+        }
+    }
+}
+impl std::fmt::Display for SpotifyLookupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
 }
 use url::Url;
 const BODY_LIMIT: usize = 2 * 1024 * 1024;
@@ -39,7 +99,7 @@ fn secure_url(url: &Url, hosts: &[&str]) -> bool {
 pub fn classify_spotify_url(raw: &str) -> Option<SpotifyInput> {
     let raw = raw.trim();
     if raw.to_ascii_lowercase().starts_with("spotify:") {
-        return Some(SpotifyInput::Unsupported);
+        return Some(SpotifyInput::Unsupported(UnsupportedReason::Uri));
     }
     let url = Url::parse(raw).ok()?;
     let host = url.host_str()?;
@@ -47,7 +107,7 @@ pub fn classify_spotify_url(raw: &str) -> Option<SpotifyInput> {
         return None;
     }
     if !secure_url(&url, &["open.spotify.com", "spotify.link"]) {
-        return Some(SpotifyInput::Unsupported);
+        return Some(SpotifyInput::Unsupported(UnsupportedReason::InsecureUrl));
     }
     if host == "spotify.link" {
         let token = url.path().trim_start_matches('/');
@@ -62,7 +122,7 @@ pub fn classify_spotify_url(raw: &str) -> Option<SpotifyInput> {
                     url: url.to_string(),
                 }
             } else {
-                SpotifyInput::Unsupported
+                SpotifyInput::Unsupported(UnsupportedReason::InvalidTrackUrl)
             },
         );
     }
@@ -84,7 +144,11 @@ pub fn classify_spotify_url(raw: &str) -> Option<SpotifyInput> {
                 id: parts[1].into(),
             }
         } else {
-            SpotifyInput::Unsupported
+            SpotifyInput::Unsupported(match parts.first() {
+                Some(&"embed") => UnsupportedReason::Embed,
+                Some(&"track") => UnsupportedReason::InvalidTrackUrl,
+                _ => UnsupportedReason::Collection,
+            })
         },
     )
 }
@@ -344,12 +408,6 @@ async fn fetch_bounded(
                 .send()
                 .await?;
             let status = response.status();
-            #[cfg(test)]
-            eprintln!(
-                "Spotify HTTP host={} status={}",
-                url.host_str().unwrap_or_default(),
-                status.as_u16()
-            );
             if [301, 302, 303, 307, 308].contains(&status.as_u16()) {
                 if *redirects >= 5 {
                     return Err(AppError::msg("Spotify exceeded five redirects."));
@@ -417,7 +475,10 @@ pub fn http_client() -> reqwest::Client {
         .build()
         .expect("Spotify HTTP client configuration is valid")
 }
-pub async fn resolve(app: &crate::AppHandle, raw: &str) -> Result<SpotifyResolution> {
+pub async fn resolve(
+    app: &crate::AppHandle,
+    raw: &str,
+) -> std::result::Result<SpotifyResolution, SpotifyLookupError> {
     use tauri::Manager;
     let state = app.state::<crate::state::AppState>();
     resolve_with(
@@ -433,21 +494,34 @@ async fn resolve_with(
     raw: &str,
     deadline: tokio::time::Instant,
     endpoint: &(dyn Fn(&Url) -> Url + Sync),
-) -> Result<SpotifyResolution> {
+) -> std::result::Result<SpotifyResolution, SpotifyLookupError> {
     let mut redirects = 0;
+    const SHORT_FAILED: &str =
+        "Couldn't resolve this Spotify short link. Try again, or paste the full Spotify track link.";
+    let short_failed = || SpotifyLookupError {
+        code: "shortLinkUnresolved".into(),
+        message: SHORT_FAILED.into(),
+        retryable: true,
+    };
     let id = match classify_spotify_url(raw) {
         Some(SpotifyInput::Track { id }) => id,
         Some(SpotifyInput::Short { url }) => {
-            let (final_url, _) = fetch_bounded(client, Url::parse(&url).map_err(|_| AppError::msg("Invalid Spotify short link."))?, deadline, &mut redirects, None, endpoint).await
-                .map_err(|_| AppError::msg("Couldn't resolve this Spotify short link. Please paste the full Spotify track link."))?;
+            let start = Url::parse(&url).map_err(|_| short_failed())?;
+            let (final_url, _) =
+                fetch_bounded(client, start, deadline, &mut redirects, None, endpoint)
+                    .await
+                    .map_err(|_| short_failed())?;
             match classify_spotify_url(final_url.as_str()) {
                 Some(SpotifyInput::Track { id }) => id,
-                _ => return Err(AppError::msg("Couldn't resolve this Spotify short link. Please paste the full Spotify track link.")),
+                _ => return Err(short_failed()),
             }
         }
-        _ => {
-            return Err(AppError::msg(
-                "Spotify albums and playlists aren't supported yet. Paste a single track link.",
+        Some(SpotifyInput::Unsupported(reason)) => {
+            return Err(SpotifyLookupError::unsupported(reason))
+        }
+        None => {
+            return Err(SpotifyLookupError::unsupported(
+                UnsupportedReason::InvalidTrackUrl,
             ))
         }
     };
@@ -528,6 +602,41 @@ mod tests {
                 "{raw}"
             );
         }
+    }
+    #[test]
+    fn unsupported_inputs_carry_distinct_reasons() {
+        use UnsupportedReason::*;
+        let cases = [
+            ("https://open.spotify.com/album/4cOdK2wGLETKBW3PvgPWqT", Collection),
+            ("https://open.spotify.com/playlist/4cOdK2wGLETKBW3PvgPWqT", Collection),
+            ("spotify:track:4cOdK2wGLETKBW3PvgPWqT", Uri),
+            ("https://open.spotify.com/embed/track/4cOdK2wGLETKBW3PvgPWqT", Embed),
+            ("https://open.spotify.com/track/short", InvalidTrackUrl),
+            ("https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT/extra", InvalidTrackUrl),
+            ("http://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT", InsecureUrl),
+            ("https://open.spotify.com:444/track/4cOdK2wGLETKBW3PvgPWqT", InsecureUrl),
+            ("https://spotify.link/bad token", InvalidTrackUrl),
+        ];
+        for (raw, reason) in cases {
+            assert_eq!(classify_spotify_url(raw), Some(SpotifyInput::Unsupported(reason)), "{raw}");
+        }
+        let codes: std::collections::HashSet<_> = [Collection, Uri, Embed, InvalidTrackUrl, InsecureUrl].iter().map(|r| r.code()).collect();
+        assert_eq!(codes.len(), 5);
+        let error = SpotifyLookupError::unsupported(Uri);
+        assert!(!error.retryable);
+        assert_eq!(serde_json::to_value(&error).unwrap()["code"], "unsupportedUri");
+    }
+    #[tokio::test]
+    async fn resolver_failures_are_typed_and_only_transport_failures_retry() {
+        let client = http_client();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+        let endpoint = |u: &Url| u.clone();
+        for raw in ["https://open.spotify.com/album/4cOdK2wGLETKBW3PvgPWqT", "spotify:track:x", "http://open.spotify.com/track/x"] {
+            let error = resolve_with(&client, raw, deadline, &endpoint).await.unwrap_err();
+            assert!(!error.retryable, "{raw}");
+        }
+        let error = resolve_with(&client, "https://spotify.link/", deadline, &endpoint).await.unwrap_err();
+        assert!(!error.retryable);
     }
     #[test]
     fn embed_preserves_identity_unicode_artists_and_milliseconds() {

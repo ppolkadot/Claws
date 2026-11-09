@@ -63,7 +63,7 @@ pub async fn probe_url(app: AppHandle, url: String) -> Result<ProbeResult> {
 }
 
 #[tauri::command]
-pub async fn resolve_spotify_track(app: AppHandle, url: String) -> Result<crate::spotify::SpotifyResolution> {
+pub async fn resolve_spotify_track(app: AppHandle, url: String) -> std::result::Result<crate::spotify::SpotifyResolution, crate::spotify::SpotifyLookupError> {
     crate::spotify::resolve(&app, &url).await
 }
 
