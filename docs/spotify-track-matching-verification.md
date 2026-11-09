@@ -63,3 +63,17 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml spotify_live_audio_save
 Remaining acceptance limits: no real `spotify.link` sample was supplied/verified (allowlist, relative hops, redirect counts and rejection behavior are covered by local HTTP tests). No listening-based playback check or manual real-WebView2 review was performed; real native saves/ffprobe and the actual frontend in headless Edge were tested separately. Live pause/resume across a network outage and removal of a real chosen recording were not exercised; existing native fixture lifecycle tests cover persistence/retry, and controller/probe tests cover unavailable candidates. Live-site availability and recording-version correctness are not guarantees.
 
 No installer is built or installed as part of this change. The installed Claws application is not updated by changing this branch.
+
+## Review follow-up (2026-11-09)
+
+Implemented from `docs/superpowers/plans/2026-11-09-spotify-review-followup.md`:
+
+- Typed `resolve_spotify_track` failures `{ code, message, retryable }` (`unsupportedCollection`, `unsupportedUri`, `unsupportedEmbed`, `invalidTrackUrl`, `insecureUrl`, `shortLinkUnresolved`, `lookupFailed`); Retry is shown only when `retryable`.
+- Identical warning/error text renders once; the positive "Similar title" warning is gone; results and empty outcomes are announced in one persistent polite status region.
+- Automatic queries are bounded to 300 code points (title and ` audio` reserved, whole artists fill the rest); Library search also matches the recorded Spotify title and artists (`src/library-search.ts`).
+- The query field is a single node per matching session; Enter during IME composition never searches; an identical in-flight search is not repeated.
+- Ranking: artist overlap is `0.70 * max + 0.30 * mean`; ` - Topic`/matching `VEVO` uploaders and trailing presentation annotations are normalized for scoring only; "Artist/channel differs" caution added. Evidence: the adversarial cases in `spotify_match::tests` (covers, live, remaster, collaborations, non-Latin names, ties). These show ordering on a small hand-built corpus, not measured match accuracy.
+
+Automated results at this change: Rust `cargo test --locked` 441 passed / 3 ignored; `clippy --all-targets -D warnings` clean; Node suites fonts 7, spotify 36, logic 156, queue 19, motion 63; `npm run build` passes.
+
+Not done in this pass (still unverified): live metadata/search/audio reruns, a real `spotify.link` redirect smoke, the mounted headless-Edge harness, and any real WebView2/OS-IME session. Synthetic composition events in the DOM tests do not establish native IME behavior.

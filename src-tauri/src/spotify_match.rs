@@ -165,13 +165,88 @@ fn has_category(title: &str, category: &str) -> bool {
     }
 }
 
+const ANNOTATIONS: [&str; 14] = [
+    "official audio",
+    "official music video",
+    "official video",
+    "official lyric video",
+    "official visualizer",
+    "lyric video",
+    "music video",
+    "audio",
+    "lyrics",
+    "visualizer",
+    "hd",
+    "hq",
+    "4k",
+    "full song",
+];
+
+fn normalized_words(raw: &str) -> String {
+    tokens_in_order(raw).join(" ")
+}
+
+fn tokens_in_order(raw: &str) -> Vec<String> {
+    raw.chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The title as compared with the requested one: explicit trailing presentation
+/// annotations (`(Official Audio)`, `[Official Music Video]`, ` - Lyrics`) are dropped
+/// unless the requested title itself contains that annotation. Everything that names a
+/// version (live, remix, cover, remaster, a year) is kept.
+fn comparable_title(candidate: &str, requested: &str) -> String {
+    let wanted = normalized_words(requested);
+    let own = |annotation: &str| format!(" {wanted} ").contains(&format!(" {annotation} "));
+    let mut title = candidate.trim().to_string();
+    loop {
+        let trimmed = title.trim_end();
+        let stripped = [('(', ')'), ('[', ']')].iter().find_map(|(open, close)| {
+            let inner_end = trimmed.strip_suffix(*close)?;
+            let start = inner_end.rfind(*open)?;
+            let inner = normalized_words(&inner_end[start + 1..]);
+            (ANNOTATIONS.contains(&inner.as_str()) && !own(&inner))
+                .then(|| trimmed[..start].to_string())
+        });
+        let stripped = stripped.or_else(|| {
+            let start = trimmed.rfind(" - ")?;
+            let tail = normalized_words(&trimmed[start + 3..]);
+            (ANNOTATIONS.contains(&tail.as_str()) && !own(&tail) && start > 0)
+                .then(|| trimmed[..start].to_string())
+        });
+        match stripped {
+            Some(next) if !next.trim().is_empty() => title = next,
+            _ => return title.trim().to_string(),
+        }
+    }
+}
+
+/// The uploader as compared with the requested artists: a trailing ` - Topic` is
+/// dropped, and a trailing `VEVO` only when what remains is a requested artist.
+fn comparable_uploader(uploader: &str, artists: &[String]) -> String {
+    let lower = uploader.trim().to_lowercase();
+    let base = lower.strip_suffix(" - topic").unwrap_or(&lower).trim();
+    if let Some(rest) = base.strip_suffix("vevo") {
+        let rest = rest.trim();
+        if !rest.is_empty() && artists.iter().any(|a| tokens(a) == tokens(rest)) {
+            return rest.into();
+        }
+    }
+    base.into()
+}
+
 fn rank(track: &SpotifyTrack, candidate: &mut YouTubeCandidate) {
-    let title = tokens(&candidate.title);
+    let requested_title = track.title.as_deref().unwrap_or_default();
+    let title = tokens(&comparable_title(&candidate.title, requested_title));
     let mut weighted = 0.0;
     let mut weight = 0.0;
     if let Some(requested) = track.title.as_ref() {
-        let similarity = dice(&tokens(requested), &title);
-        weighted += 0.55 * similarity;
+        weighted += 0.55 * dice(&tokens(requested), &title);
         weight += 0.55;
     } else {
         candidate
@@ -179,18 +254,25 @@ fn rank(track: &SpotifyTrack, candidate: &mut YouTubeCandidate) {
             .push("Spotify title is unavailable".into());
     }
     if !track.artists.is_empty() {
-        let uploader = tokens(candidate.uploader.as_deref().unwrap_or_default());
-        let similarity = track
+        let uploader = tokens(&comparable_uploader(
+            candidate.uploader.as_deref().unwrap_or_default(),
+            &track.artists,
+        ));
+        let overlaps: Vec<f64> = track
             .artists
             .iter()
             .map(|a| {
                 let a = tokens(a);
                 dice(&a, &title).max(dice(&a, &uploader))
             })
-            .sum::<f64>()
-            / track.artists.len() as f64;
-        weighted += 0.30 * similarity;
+            .collect();
+        let best = overlaps.iter().cloned().fold(0.0, f64::max);
+        let mean = overlaps.iter().sum::<f64>() / overlaps.len() as f64;
+        weighted += 0.30 * (0.70 * best + 0.30 * mean);
         weight += 0.30;
+        if best == 0.0 {
+            candidate.warnings.push("Artist/channel differs".into());
+        }
     } else {
         candidate
             .warnings
@@ -459,6 +541,128 @@ mod tests {
             .score,
             1.0
         );
+    }
+
+    fn scored(track: &SpotifyTrack, entries: serde_json::Value) -> Vec<YouTubeCandidate> {
+        parse_candidates(track, &json!({ "entries": entries }))
+    }
+    fn entry(id: &str, title: &str, uploader: &str, duration: f64) -> serde_json::Value {
+        json!({"id": id, "title": title, "uploader": uploader, "duration": duration})
+    }
+    fn by_id<'a>(found: &'a [YouTubeCandidate], id: &str) -> &'a YouTubeCandidate {
+        found.iter().find(|c| c.video_id == id).unwrap()
+    }
+    fn collab() -> SpotifyTrack {
+        SpotifyTrack {
+            artists: vec!["Cher".into(), "Björk".into()],
+            ..track()
+        }
+    }
+
+    #[test]
+    fn collaboration_credit_does_not_lift_covers_or_wrong_versions() {
+        let found = scored(
+            &collab(),
+            json!([
+                entry("aaaaaaaaaaa", "Believe", "Cher", 200.0),
+                entry("bbbbbbbbbbb", "Cher & Björk - Believe", "Some Label", 200.0),
+                entry("ccccccccccc", "Believe (Cher cover)", "Random Guy", 200.0),
+                entry("ddddddddddd", "Believe (Live)", "Cher", 200.0),
+                entry("eeeeeeeeeee", "Believe", "Unrelated Channel", 200.0),
+            ]),
+        );
+        let clean = by_id(&found, "aaaaaaaaaaa").score;
+        let named = by_id(&found, "bbbbbbbbbbb").score;
+        let cover = by_id(&found, "ccccccccccc");
+        let live = by_id(&found, "ddddddddddd");
+        let stranger = by_id(&found, "eeeeeeeeeee");
+        assert!(clean > cover.score && clean > live.score && clean > stranger.score);
+        assert!(named > cover.score && named > live.score);
+        assert!(cover.warnings.iter().any(|w| w.contains("cover")));
+        assert!(live.warnings.iter().any(|w| w.contains("live")));
+        assert!(stranger.warnings.iter().any(|w| w == "Artist/channel differs"));
+        assert!(!by_id(&found, "aaaaaaaaaaa").warnings.iter().any(|w| w.contains("differs")));
+        // One participating artist alone earns most of the artist credit (a plain mean of
+        // the two artists would cap this exact recording at 0.85).
+        assert!(clean > 0.9, "{clean}");
+        assert!(clean > stranger.score);
+    }
+
+    #[test]
+    fn topic_and_vevo_channels_count_only_for_a_requested_artist() {
+        let found = scored(
+            &track(),
+            json!([
+                entry("aaaaaaaaaaa", "Believe", "Cher - Topic", 200.0),
+                entry("bbbbbbbbbbb", "Believe", "CherVEVO", 200.0),
+                entry("ccccccccccc", "Believe", "RandomVEVO", 200.0),
+                entry("ddddddddddd", "Believe", "Cher VEVO", 200.0),
+            ]),
+        );
+        assert_eq!(by_id(&found, "aaaaaaaaaaa").score, 1.0);
+        assert_eq!(by_id(&found, "bbbbbbbbbbb").score, 1.0);
+        assert_eq!(by_id(&found, "ddddddddddd").score, 1.0);
+        assert!(by_id(&found, "ccccccccccc").score < 1.0);
+        assert!(by_id(&found, "ccccccccccc").warnings.iter().any(|w| w.contains("differs")));
+        assert_eq!(by_id(&found, "bbbbbbbbbbb").uploader.as_deref(), Some("CherVEVO"));
+    }
+
+    #[test]
+    fn presentation_annotations_are_ignored_but_identity_words_are_not() {
+        let found = scored(
+            &track(),
+            json!([
+                entry("aaaaaaaaaaa", "Believe (Official Audio)", "Cher", 200.0),
+                entry("bbbbbbbbbbb", "Believe [Official Music Video]", "Cher", 200.0),
+                entry("ccccccccccc", "Believe - Lyrics", "Cher", 200.0),
+                entry("ddddddddddd", "Believe (2020 Remaster)", "Cher", 200.0),
+                entry("eeeeeeeeeee", "Believe (Official Audio) (HD)", "Cher", 200.0),
+            ]),
+        );
+        for id in ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc", "eeeeeeeeeee"] {
+            assert_eq!(by_id(&found, id).score, 1.0, "{id}");
+        }
+        assert!(by_id(&found, "ddddddddddd").score < 1.0);
+        // A requested title that is itself an annotation word is never stripped.
+        let lyrics = SpotifyTrack { title: Some("Lyrics".into()), ..track() };
+        assert_eq!(scored(&lyrics, json!([entry("aaaaaaaaaaa", "Lyrics", "Cher", 200.0)]))[0].score, 1.0);
+        let audio = SpotifyTrack { title: Some("Believe (Audio)".into()), ..track() };
+        assert_eq!(scored(&audio, json!([entry("aaaaaaaaaaa", "Believe (Audio)", "Cher", 200.0)]))[0].score, 1.0);
+        let wrong = scored(&lyrics, json!([entry("aaaaaaaaaaa", "Other Song (Lyrics)", "Cher", 200.0)]));
+        assert!(wrong[0].score < 1.0);
+    }
+
+    #[test]
+    fn missing_metadata_and_non_latin_names_keep_separate_warnings() {
+        let none = SpotifyTrack { artists: vec![], duration: None, ..track() };
+        let found = scored(&none, json!([{"id": "aaaaaaaaaaa", "title": "Believe"}]));
+        assert!(found[0].warnings.iter().any(|w| w.contains("artist is unavailable")));
+        assert!(!found[0].warnings.iter().any(|w| w.contains("differs")));
+        let jp = SpotifyTrack {
+            title: Some("夜に駆ける".into()),
+            artists: vec!["YOASOBI".into()],
+            duration: None,
+            ..track()
+        };
+        let found = scored(
+            &jp,
+            json!([
+                entry("aaaaaaaaaaa", "夜に駆ける (Official Audio)", "YOASOBI", 261.0),
+                entry("bbbbbbbbbbb", "夜に駆ける", "別のチャンネル", 261.0),
+            ]),
+        );
+        assert_eq!(found[0].video_id, "aaaaaaaaaaa");
+        assert_eq!(found[0].score, 1.0);
+        assert!(found[1].warnings.iter().any(|w| w.contains("differs")));
+        // Equal scores keep the search order.
+        let ties = scored(&track(), json!([entry("aaaaaaaaaaa", "Believe", "Cher", 200.0), entry("bbbbbbbbbbb", "Believe", "Cher", 200.0)]));
+        assert_eq!(ties[0].video_id, "aaaaaaaaaaa");
+    }
+
+    #[test]
+    fn title_match_no_longer_adds_a_positive_warning() {
+        let found = scored(&track(), json!([entry("aaaaaaaaaaa", "Believe", "Cher", 200.0)]));
+        assert!(found[0].warnings.is_empty(), "{:?}", found[0].warnings);
     }
 
     #[test]
