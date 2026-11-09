@@ -2,7 +2,13 @@
 
 Everything a new session (human or AI) needs to pick this project up. Lives at `docs/HANDOFF.md`. Last updated 2026-11-09.
 
-## Current release target: 1.0.0 (2026-11-09)
+## Current release: 1.0.6 (2026-11-09)
+
+The owner requested moving the approved 1.0.0 Beta to version 1.0.6 and adding it to the project and GitHub Releases. All five version files are synchronized to 1.0.6. The feature code, application identifier, schema-3 queue and existing data locations are unchanged from approved commit `356569d`. The installer, checksum and build record are under `installers/Claws_1.0.6_x64-setup.exe*`; current evidence and limits are in `docs/releases/1.0.6.md`. The release tag is `v1.0.6`, targeting the new version/preparation commit, and is intended as GitHub's Latest standard release. Earlier artifact records below are historical.
+
+Verified installer: 2,967,923 bytes, SHA-256 `f7d2a1435407d3191031ccf423c4e64356d4d20b57ef327c18234575a440acee`. Fresh validation passed 409 Rust, 241 Node and 2 Python tests, Clippy, clean-export build, production NSIS build and exact embedded-asset checks. Live installation/upgrade remains unverified.
+
+## Historical 1.0.0 Beta preparation (2026-11-09)
 
 The owner requested version 1.0.0 for the current source and a freshly rebuilt installer. All five version files now say 1.0.0; the application identifier stays `dev.claws.downloader`, queue schema stays 3, and installer `allowDowngrades` is explicitly true. This is a version-number reset, not a rollback of features or data formats.
 
