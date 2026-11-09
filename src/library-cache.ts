@@ -10,6 +10,7 @@ import { orderMoves } from "./ui/row-order.js";
  * is provably the one Claws saved (Delete File Too); and the kept subtitle files.
  */
 export interface TileSource {
+  matchOrigin?: { kind: string; spotifyUrl: string; spotifyTitle: string | null; spotifyArtists: string[] } | null;
   id: string;
   title: string;
   uploader: string | null;
@@ -33,6 +34,7 @@ export interface TileSource {
  */
 export function tileSignature(item: TileSource): string {
   return JSON.stringify([
+    item.matchOrigin ?? null,
     item.title,
     item.uploader,
     item.duration,

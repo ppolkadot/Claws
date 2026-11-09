@@ -18,6 +18,7 @@ import {
 import type { RunSnapshot } from "./download-estimates";
 import { LinkBatch, type ParsedInput } from "./download-input";
 import { PreviewMemory } from "./preview-session";
+import { isSpotifyInput, type SpotifyMatchSnapshot } from "./spotify-match";
 import { JobTable } from "./queue-events";
 
 export type Route = "download" | "queue" | "library" | "settings";
@@ -83,7 +84,8 @@ type Topic =
   /** A batch of links started or was cleared; see `store.batch`. */
   | "batch"
   /** One row of the batch changed (detail: the row). */
-  | "batchRow";
+  | "batchRow"
+  | "spotifyMatch";
 
 const sameValue = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 type Listener = (detail?: unknown) => void;
@@ -142,6 +144,7 @@ class Store {
    * link is added to the queue (preview-session.ts).
    */
   readonly previews = new PreviewMemory<ProbeResult, PreviewChoices, EstimateItem>();
+  spotifyMatch: { snapshot: SpotifyMatchSnapshot; audioFormat: string; fastSave: boolean; sessionId: string; enqueuePending: boolean } | null = null;
 
   /**
    * The current batch. It lives here, not in the Download view, so its lookups carry on
@@ -149,7 +152,9 @@ class Store {
    * lookups still running from a replaced batch count towards its limit of three.
    */
   batch: BatchSession | null = null;
-  readonly links = new LinkBatch<ProbeResult>((url) => api.probe(url), {
+  readonly links = new LinkBatch<ProbeResult>((url) => isSpotifyInput(url)
+    ? Promise.reject(new Error("Open this Spotify track individually to choose and review a YouTube match. Spotify albums and playlists aren't supported yet."))
+    : api.probe(url), {
     onRow: (row) => this.emit("batchRow", row),
     describe: errorMessage,
   });
@@ -301,6 +306,7 @@ class Store {
 
   /** Replaces any batch with these links and starts looking them up (never downloading). */
   startBatch(parsed: ParsedInput) {
+    this.spotifyMatch = null;
     this.previews.clear(); // the list replaces any single link's details
     this.batch = { parsed, choices: { mode: "video", maxHeight: null, videoPreset: "compatible", audioFormat: "mp3" }, estimate: null };
     this.links.start(parsed.links);
