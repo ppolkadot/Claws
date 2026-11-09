@@ -343,10 +343,15 @@ impl Drop for ProbeSlot<'_> {
 const PROBE_TIMEOUT: Duration = Duration::from_secs(90);
 
 fn guard_spotify(raw: &str) -> Result<()> {
-    if crate::spotify::classify_spotify_url(raw).is_some() {
-        return Err(AppError::msg("Open a single Spotify track individually to review YouTube matches. Spotify albums and playlists aren't supported yet. Paste a single track link."));
+    use crate::spotify::SpotifyInput;
+    let guidance = "Open a single Spotify track individually to review YouTube matches.";
+    match crate::spotify::classify_spotify_url(raw) {
+        None => Ok(()),
+        Some(SpotifyInput::Unsupported(reason)) => {
+            Err(AppError::msg(format!("{guidance} {}", reason.message())))
+        }
+        Some(_) => Err(AppError::msg(guidance)),
     }
-    Ok(())
 }
 
 pub async fn probe(app: &AppHandle, raw_url: &str) -> Result<ProbeResult> {
@@ -662,6 +667,8 @@ pub fn error_text(stderr: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use serde_json::json;
     #[test]
     fn spotify_guard_explains_individual_review_before_discovery() {
         let app = tauri::test::mock_builder().build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
@@ -691,8 +698,6 @@ mod tests {
         old.as_object_mut().unwrap().remove("audioAvailable");
         assert_eq!(serde_json::from_value::<ProbeResult>(old).unwrap().audio_available, None);
     }
-    use super::*;
-    use serde_json::json;
 
     #[test]
     fn probe_cache_drops_stale_entries_then_the_oldest_beyond_its_budget() {

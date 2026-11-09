@@ -268,6 +268,13 @@ export interface SpotifyResolution {
   warnings: string[];
 }
 
+/** What `resolve_spotify_track` rejects with; other commands reject with plain text. */
+export interface SpotifyLookupIssue {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
 export interface YouTubeCandidate {
   url: string;
   videoId: string;

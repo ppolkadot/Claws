@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SpotifyMatchController, initialSpotifyQuery, isSpotifyInput } from "../../.test-build/spotify-match.js";
+import { SpotifyMatchController, initialSpotifyQuery, isSpotifyInput, toLookupIssue } from "../../.test-build/spotify-match.js";
 
 const id = "4cOdK2wGLETKBW3PvgPWqT";
 const url = `https://open.spotify.com/track/${id}`;
@@ -29,7 +29,7 @@ test("Spotify routing uses exact hosts and catches unsupported Spotify forms", (
 
 test("initial queries use real metadata and do not invent an artist", () => {
   assert.equal(initialSpotifyQuery(track()), "Artist - Song audio");
-  assert.equal(initialSpotifyQuery(track({ artists: [] })), "Song");
+  assert.equal(initialSpotifyQuery(track({ artists: [] })), "Song audio");
   assert.equal(initialSpotifyQuery(track({ title: null })), "");
 });
 
@@ -245,4 +245,75 @@ test("search results remain bounded distinct YouTube identities", async () => {
   assert.equal(c.state.candidates.length, 5);
   assert.equal(new Set(c.state.candidates.map((item) => item.videoId)).size, 5);
   assert.equal(c.state.selectedId, null);
+});
+
+const cp = (text) => Array.from(text).length;
+
+test("automatic queries stay within 300 code points and keep the audio suffix", () => {
+  assert.equal(initialSpotifyQuery(track({ title: "Song", artists: ["A", "B"] })), "A, B - Song audio");
+  const many = Array.from({ length: 20 }, (_, i) => `Artist ${String(i).padStart(2, "0")} ${"x".repeat(40)}`);
+  const q = initialSpotifyQuery(track({ artists: many }));
+  assert.ok(cp(q) <= 300 && q.endsWith(" - Song audio"), q);
+  assert.ok(q.startsWith(many[0]));
+  for (const part of q.slice(0, q.indexOf(" - Song")).split(", ")) assert.ok(many.includes(part), part);
+  const long = initialSpotifyQuery(track({ title: `${"word ".repeat(80)}end`, artists: ["Artist"] }));
+  assert.ok(cp(long) <= 300 && long.endsWith(" audio"));
+  assert.ok(!long.includes(" - "));
+  const astral = initialSpotifyQuery(track({ title: "😀".repeat(400), artists: [] }));
+  assert.equal(cp(astral), 300);
+  assert.ok(!/[\ud800-\udbff](?![\udc00-\udfff])/.test(astral));
+  assert.equal(initialSpotifyQuery(track({ title: "x".repeat(294), artists: ["A"] })), `${"x".repeat(294)} audio`);
+  const meta = track({ title: "t".repeat(400), artists: many });
+  initialSpotifyQuery(meta);
+  assert.equal(meta.title.length, 400);
+  assert.equal(meta.artists.length, 20);
+});
+
+test("lookup failures are normalized into readable issues", () => {
+  assert.deepEqual(toLookupIssue({ code: "insecureUrl", message: "No.", retryable: false }), { code: "insecureUrl", message: "No.", retryable: false });
+  assert.equal(toLookupIssue("plain text").message, "plain text");
+  assert.ok(toLookupIssue({ weird: true }).message.length > 0);
+  assert.ok(toLookupIssue(undefined).message.length > 0);
+});
+
+test("terminal input offers no retry; a retryable short-link failure does", async () => {
+  const { controller: c } = setup({ resolve: async () => { throw { code: "unsupportedCollection", message: "Albums aren't supported. Paste a single track link.", retryable: false }; } });
+  await c.open("https://open.spotify.com/album/x");
+  assert.equal(c.state.stage, "failed");
+  assert.equal(c.state.retryable, false);
+  assert.equal(c.state.error, "Albums aren't supported. Paste a single track link.");
+  const { controller: s } = setup({ resolve: async () => { throw { code: "shortLinkUnresolved", message: "Couldn't resolve.", retryable: true }; } });
+  await s.open("https://spotify.link/abc");
+  assert.equal(s.state.retryable, true);
+  assert.match(s.state.error, /Couldn't resolve\./);
+  const { controller: u } = setup({ resolve: async () => { throw new Error("boom"); } });
+  await u.open("https://spotify.link/abc");
+  assert.match(u.state.error, /boom/);
+});
+
+test("duplicate immediate searches make one request; a changed query searches again", async () => {
+  const pending = deferred(); let searches = 0;
+  const { controller: c } = setup({ resolve: async () => ({ track: track({ title: null, artists: [] }), warnings: [] }), search: () => { searches++; return pending.promise; } });
+  await c.open(url);
+  c.setQuery("manual");
+  const a = c.search(); const b = c.search();
+  assert.equal(searches, 1);
+  pending.resolve([candidate()]); await Promise.all([a, b]);
+  assert.equal(c.state.candidates.length, 1);
+  c.setQuery("manual two");
+  const d = c.search(); assert.equal(searches, 2);
+  c.setQuery("manual three");
+  const e = c.search(); assert.equal(searches, 3);
+  await Promise.all([d, e]);
+});
+
+test("a late probe cannot restore confirmation after a new search", async () => {
+  const late = deferred();
+  const { controller: c } = setup({ probe: () => late.promise });
+  await c.open(url); c.select(videoId);
+  const confirming = c.confirm();
+  c.setQuery("other"); await c.search();
+  late.resolve(probe()); await confirming;
+  assert.equal(c.state.confirmed, null);
+  assert.notEqual(c.state.stage, "confirmed");
 });
