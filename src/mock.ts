@@ -238,7 +238,9 @@ async function estimateLink(url: string, playlistIndex: number | null, options: 
   if (key % 6 === 0) return unknown("The site does not say how large this download is.");
   const seconds = 120 + (hash(url) % 1800);
   const bytesAt = (kbps: number) => Math.round((kbps * 1000) / 8 * seconds);
-  const rewrite = settings.embedMetadata && !options.fastSave;
+  // download_policy.rs `ProcessingPolicy::rewrites_output`: metadata, and for MP3 and M4A the
+  // cover art, are whole-file passes that Fast Save skips.
+  const rewrite = !options.fastSave && (settings.embedMetadata || (options.mode === "audio" && (options.audioFormat === "mp3" || options.audioFormat === "m4a")));
   if (options.mode === "audio") {
     const matching = settings.audioSelection === "preferMatching" && options.audioFormat === "m4a";
     const source = matching
@@ -246,8 +248,12 @@ async function estimateLink(url: string, playlistIndex: number | null, options: 
       : { formatId: "a251", acodec: "opus", ext: "webm", kbps: 160 };
     const bytes = bytesAt(source.kbps);
     const converts = options.audioFormat !== "best";
-    const output = options.audioFormat === "wav" ? seconds * 192_000 : options.audioFormat === "flac" ? Math.round(seconds * 192_000 * 0.65) : bytes;
-    const peak = converts ? bytes + output : rewrite ? bytes * 2 : bytes;
+    // disk_budget.rs `audio_output`: WAV and FLAC from the duration, the rest about the source.
+    const output =
+      options.audioFormat === "wav" ? Math.floor(seconds * 192_000) : options.audioFormat === "flac" ? Math.floor(seconds * (48_000 * 2 * 2 * 0.65)) : bytes;
+    // disk_budget.rs `peak_bytes`: every audio target goes through extraction (even "Original"),
+    // so the source stays beside the output, and a rewrite adds a second output-sized copy.
+    const peak = bytes + output * (rewrite ? 2 : 1);
     return {
       downloadBytes: bytes,
       confidence: "approximate",
@@ -436,6 +442,10 @@ export function installMock() {
           };
         case "list_history":
           return history;
+        case "kept_files_report":
+          return { attached: 0, inaccessible: [], ignored: 0 };
+        case "show_kept_files":
+          return { status: "shown", folder: "C:\\Users\\Sample\\Downloads\\Claws\\.claws-work\\sample", files: 1 };
         case "probe_url":
           return probeLink(String(payload.url));
         case "cached_link":

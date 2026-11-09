@@ -1,13 +1,52 @@
 # Claws: handoff
 
-Everything a new session (human or AI) needs to pick this project up. Lives at `docs/HANDOFF.md`. Last updated 2026-11-08.
+Everything a new session (human or AI) needs to pick this project up. Lives at `docs/HANDOFF.md`. Last updated 2026-11-09.
+
+## Current release target: 1.0.0 (2026-11-09)
+
+The owner requested version 1.0.0 for the current source and a freshly rebuilt installer. All five version files now say 1.0.0; the application identifier stays `dev.claws.downloader`, queue schema stays 3, and installer `allowDowngrades` is explicitly true. This is a version-number reset, not a rollback of features or data formats.
+
+Startup recovery now propagates `attach_kept` save failures instead of marking the job Completed. A new lifecycle regression was observed failing before the fix and passing afterward; it verifies a durable failed job, retained subtitles, a successful retry and no second media download. All required new modules and tests must be included in the eventual commit. No commit or publication has been performed.
+
+Current installer: `installers/Claws_1.0.0_x64-setup.exe`, 2,969,491 bytes, SHA-256 `02fc30a0f2e67edd38aaf072cbff86bc002d9cf6b423a28a349628f52f84f095`. Its archive, executable version, NSIS marker-only production difference and exact decompressed font/CSS/JS/license bytes are verified. Current checks pass 409 Rust, 241 Node and 2 Python tests, Clippy, clean-export dependency install/build and production NSIS build. No npm vulnerabilities were reported.
+
+Current packaging and validation evidence is in `docs/releases/1.0.0.md`; the earlier 1.1.0 installer and the entries below are historical. Real-site speed, native editor drag and disposable-profile installation/upgrade remain acceptance limits. Do not use the owner's installed profile as a fixture.
+
+## Historical implementation pass before the 1.0.0 rebuild (2026-11-09, uncommitted on `feature-expansion-and-motion`)
+
+Implemented from `docs/superpowers/plans/2026-11-09-consolidated-review-report-and-implementation-plan.md` (subagent-driven: test-first implementer, independent spec/adversarial reviewers, fix pass per package). **Nothing is committed, the installer was not rebuilt, and nothing was published.** The stored `installers/Claws_1.1.0_x64-setup.exe` predates all of this. Baseline snapshot of the tree before the work: `git ref refs/claws/baseline-pre-implementation`.
+
+- **W1 queue recovery** (`queue_writer.rs`, `store.rs`): corrupt bytes are always preserved under a unique name; legacy arrays recover; empty supported backups count; ambiguity is reported, never guessed; a recovery journal makes backup consumption durable; retrying rename.
+- **W2 tools** (`tools.rs`, `state.rs`): bounded network bodies and deadlines, `tool_install` mutex, unique staging, engine writer taken only for the final swap.
+- **W3 file safety** (`download_files.rs`, `history.rs`, new `history_mutation.rs`): manifest roots bound to the verified folder; deletion through a verified opened handle; durable journal for history mutations and Delete File Too; legacy entries get Library-only removal plus Show in folder.
+- **W4 kept files**: withheld subtitles are recorded durably, shown in Library and completed Queue rows, repaired from known roots only, and never deleted with the Queue entry.
+- **W5/W6**: late transfer telemetry cannot undo Processing; disk free-space sampling and ledger decisions run in `spawn_blocking`.
+- **W7**: one processing policy for arguments and sizing, checked arithmetic, conservative audio rewrite space. The audio peak is an upper-bound estimate, not a measured exact value.
+- **W8/W9**: over-limit subtitle selections are rejected (and capped in the picker), live chat no longer counts toward the caption limit, refresh signatures include kind and name; estimates distinguish available / unknown / failed with a targeted Retry.
+- **W10**: confirmation first-decision-wins, status-transition toasts, radio keyboard navigation, preview/estimate session kept across navigation, structured Library tile signature.
+- **W11 (R07)**: COM/LPT superscript digits are reserved.
+
+Deliberate non-changes: M4 (excluded), F6 (already implemented), C01 (no native evidence), C02 `.gitattributes` and C03 artwork preference (optional). **R20 was not done:** `core:window:allow-destroy` is still used by the JS `onCloseRequested` auto-destroy path, so removing it would break close. Replace that path with a Rust-side close before dropping the grant.
+
+Verification on 2026-11-09 after all packages: fixture-tool build; **408 Rust tests**; Node suites fonts 7, queue 19, logic 152, motion 63; 2 Python font tests; production build with source/dist font integrity; feature-enabled Clippy with warnings denied; `git diff --check` clean. `npm ci` was not rerun.
+
+Not exercised (still open): real-site download and any speed claim (W0 is evidence-blocked, see `docs/performance/speed-diagnosis.md`), real yt-dlp/ffmpeg temp-file peaks on a disposable volume, an offline yt-dlp subtitle-precedence fixture (that test skips itself unless yt-dlp is found), Explorer/editor drag, a stalled receiver, Windows 10, DOM-level tests for Library/Queue/Download view wiring, a real WebView2 pass of the confirmation sheet and Retry focus, and installation/upgrade on disposable profiles.
+
+## Latest source safeguards (2026-11-08, uncommitted)
+
+These changes supersede the earlier drag restrictions below. The existing `installers/Claws_1.1.0_x64-setup.exe` was built before them and has not been replaced.
+
+- Removed the `drag` crate. Copy-only Shell/OLE dragging runs on one dedicated STA worker, with fallible data-object creation, normal long/UNC path support and swapped-primary-button handling. The UI thread no longer owns the receiver's blocking call. A 60-second cooperative cancel and 65-second command timeout bound ordinary drags; an unresponsive receiver can retain the one worker until it returns or the app restarts. Further drags are refused while it remains busy. Never terminate the COM thread forcibly.
+- Schema-2 migration keeps an exact backup. Returning after a downgrade can restore one supported schema-3 queue set aside by the older app, preserving newer options and jobs created in the older app. Ambiguous backups remain untouched. Backups are consumed only after durable publication. Old 1.0.5 still cannot execute schema-3 jobs.
+- Queue read, backup and set-aside failures stop startup to protect data; backup names cannot collide within the same second. A native error dialog shows the failure and queue location before shutdown, including in release builds without a console.
+- Verification (superseded by the 2026-11-09 section above): 234 Rust tests, 124 JavaScript tests (fonts, queue, download logic and motion), 2 Python font tests, production frontend build, feature-enabled Clippy with warnings denied, and `git diff --check` all passed. An isolated native debug build and launch were exercised. Explorer/editor drop acceptance is pending: UI automation cannot drag across window boundaries. See `docs/CURRENT_DEVELOPMENT_STATUS.md` for the current checks and limitations.
 
 ## 1.1.0 feature expansion (2026-11-08, branch `feature-expansion-and-motion`)
 
 Source version is **1.1.0** in all five version files. It is a release candidate: no 1.1.0 installer has been published, and the published release is still 1.0.5. What changed, newest decisions first:
 
 - **Scope.** The owner removed macOS, vocal removal, ProRes presets and clip sections from this release. Clip sections are **deferred to a future version**, not abandoned. Claws stays Windows-only. Replay metadata and optional speech recognition remain deferred. See `docs/superpowers/plans/2026-11-07-feature-expansion-and-motion.md` (remaining work only) and `docs/CURRENT_DEVELOPMENT_STATUS.md`.
-- **Delivered.** Independent-link batches (`src/download-input.ts`), size and temporary-space previews (`estimate.rs`, `disk_budget::RunPlan`, `download_policy::selection_args`), source-driven resolutions up to 8K with Compatible / Original output (`resolution.ts`, `videoPreset`), transcript export (`transcript.rs`, `transcriptFormat`, mode `transcript`), native outgoing file drag (`file_drag.rs`, `drag` 2.1.1) and the motion pass (`src/ui/progress-motion.ts`, `row-order.ts`, `job-status.ts`, DESIGN.md "Motion").
+- **Delivered.** Independent-link batches (`src/download-input.ts`), size and temporary-space previews (`estimate.rs`, `disk_budget::RunPlan`, `download_policy::selection_args`), source-driven resolutions up to 8K with Compatible / Original output (`resolution.ts`, `videoPreset`), transcript export (`transcript.rs`, `transcriptFormat`, mode `transcript`), native outgoing file drag (`file_drag.rs`, direct Windows Shell/OLE APIs) and the motion pass (`src/ui/progress-motion.ts`, `row-order.ts`, `job-status.ts`, DESIGN.md "Motion").
 - **Data format changes.** `QUEUE_SCHEMA` is **3** (1.0.5 sets a schema-3 queue aside instead of reading it; a schema-2 queue loads with every job Compatible). `DownloadOptions` gained `videoPreset` and `transcriptFormat`, and `mode` gained `"transcript"`. `ProbeResult` gained `resolutions` and `captions`; cached links without them still load. Every new persisted field is `#[serde(default)]` and has a legacy-shape test, because one unreadable job or history entry sets the whole file aside.
 - **Shared formulas.** Admission (`downloader.rs` `Budget`) and the size preview both size a run through `disk_budget::RunPlan`; the download and the preview both take their `-f`/`-S`/merge arguments from `download_policy::selection_args`. Change them there, not in one place.
 - **Probe cache.** It has a 256 MB budget; `probe::cached_info` returns a lease that a download holds until yt-dlp exits, and prunes skip leased files.
@@ -125,9 +164,9 @@ Not done:
 
   Unknown sizes are watched every 5 s or more, with a stop below 256 MiB.
 - **Bounded output.** Lookup JSON is capped at 32 MiB, and the process tree is killed on overflow. Error output keeps its last 256 KiB, and lines are capped at 256 KiB.
-- **Fast Save** (`options.fastSave`) turns off the metadata pass and embedded subtitles for one job.
+- **Fast Save** (`options.fastSave`) turns off the optional metadata pass, embedded subtitles and embedded cover art for one job (one `ProcessingPolicy` in `download_policy.rs` drives both the yt-dlp arguments and disk sizing). Necessary conversion, merge or container repair still runs.
 
-Lock order is unchanged: store write lock, `running`, `jobs`, `live_jobs`. `pending_cleanup`, `destinations` and `disk_ledger` are leaf locks (free space is read while `disk_ledger` is held).
+Lock order is unchanged: store write lock, `running`, `jobs`, `live_jobs`. `pending_cleanup`, `destinations` and `disk_ledger` are leaf locks (free space is sampled while `disk_ledger` is held, inside `spawn_blocking`, so it never blocks an async worker; the global ledger can still serialize reservations behind one slow sample).
 
 ### Verified
 

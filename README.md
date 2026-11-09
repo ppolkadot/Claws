@@ -44,7 +44,7 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 - **Paste many links.** Put one link per line (up to 500) and Claws looks them up three at a time, with a status for each row. A link that fails can be retried on its own without losing the others. Nothing starts until you press Download, and links already in the queue are reported rather than added twice.
 - **Transcripts.** Choose *Transcript* to save a video's own captions as text (plain, or with timestamps), SRT or VTT, without downloading the video. Human and automatic captions are listed separately. Claws does no speech recognition: automatic captions are the site's and can contain errors, and a video with no captions simply has no transcript.
 - **Drag into an editor.** A finished download in the Library or the Queue has a *Drag file* handle that starts a real Windows file drag (copy only), so you can drop the file into Explorer or an editor's media bin. The file stays in your Library. Press Enter on the handle to show the file in its folder instead.
-- **Fast Save.** An optional per-download switch. It skips writing metadata into the file and keeps subtitles as separate `.srt` files, so a large file is not rewritten after it downloads. The video and audio are the same either way.
+- **Fast Save.** An optional per-download switch. It skips writing metadata into the file, skips embedding the cover art (MP3 and M4A audio) and keeps subtitles as separate `.srt` files, so a large file is not rewritten after it downloads. Conversion or merging that the chosen format needs still happens. The video and audio are the same either way.
 - **Audio without needless conversion.** With *Prefer matching source audio* on, an audio stream already in the chosen format is saved by copying it instead of converting it.
 - **Playlists and channels.** Pick exactly which videos to download.
 
@@ -80,7 +80,9 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 2. Run it. Releases are not code-signed yet, so Windows SmartScreen may warn on first run; choose **More info → Run anyway**.
 3. On first launch Claws downloads yt-dlp into its own folder and verifies it against the checksum yt-dlp publishes. This happens once and takes a few seconds.
 
-The 1.0.5 installer, with the download reliability work, is also [included in this repository](installers/Claws_1.0.5_x64-setup.exe), alongside its [SHA-256 checksum](installers/Claws_1.0.5_x64-setup.exe.sha256). The earlier [1.0.4 installer](installers/Claws_1.0.4_x64-setup.exe) ([checksum](installers/Claws_1.0.4_x64-setup.exe.sha256)) is kept there too. The 1.1.0 installer ([installers/Claws_1.1.0_x64-setup.exe](installers/Claws_1.1.0_x64-setup.exe), [checksum](installers/Claws_1.1.0_x64-setup.exe.sha256)) is built but unpublished and untested on a clean install or an upgrade; see [`docs/releases/1.1.0.md`](docs/releases/1.1.0.md) for its limits.
+The current local build is **Claws 1.0.0**, an intentional version-number reset requested by the owner. It includes the newer batch, transcript, native drag and reliability work; it is not an older feature set. Download the [repository installer](installers/Claws_1.0.0_x64-setup.exe) and its [SHA-256 checksum](installers/Claws_1.0.0_x64-setup.exe.sha256). See the [1.0.0 release notes](docs/releases/1.0.0.md) for validation and limits. This build has not been published to GitHub Releases; the latest published release remains 1.0.5.
+
+The installer permits installation over higher-numbered versions, retains the same application identifier and does not remove existing app data. Queue schema remains 3: old 1.0.5 cannot execute these jobs, but this build can recover an unambiguous queue it preserved. A live clean-install/upgrade check remains outstanding. Earlier installers, including the superseded 1.1.0 candidate, are retained as historical artifacts.
 
 ### Requirements
 

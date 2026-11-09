@@ -172,3 +172,42 @@ export class JobTable<T extends Ordered> {
     this.listCache = null;
   }
 }
+
+/** The job statuses that earn a notice. */
+export type NoticeStatus = "completed" | "failed";
+
+/**
+ * Turns status changes into notices. The backend can send a newer event for a job whose
+ * status has not changed (a failed job that is updated again), and the store passes it on,
+ * so a notice follows a transition into Completed or Failed, never the status itself.
+ * A job that is retried leaves Failed first, so failing again is a new transition.
+ */
+export class StatusTransitions {
+  private statuses = new Map<string, string>();
+
+  /** Starts from the bootstrap snapshot: what is already finished or failed is not news. */
+  seed(jobs: Iterable<{ id: string; status: string }>) {
+    this.statuses = new Map();
+    for (const job of jobs) this.statuses.set(job.id, job.status);
+  }
+
+  get size(): number {
+    return this.statuses.size;
+  }
+
+  /** Records a job's latest state; returns the status to announce, if it newly arrived. */
+  observe(job: { id: string; status: string }): NoticeStatus | null {
+    const previous = this.statuses.get(job.id);
+    this.statuses.set(job.id, job.status);
+    if (previous === job.status) return null;
+    return job.status === "completed" || job.status === "failed" ? job.status : null;
+  }
+
+  /** Forgets jobs that are no longer in the list. */
+  prune(ids: Iterable<string>) {
+    const keep = new Set(ids);
+    for (const id of this.statuses.keys()) {
+      if (!keep.has(id)) this.statuses.delete(id);
+    }
+  }
+}

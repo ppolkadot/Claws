@@ -23,7 +23,7 @@ use tauri::Manager;
 use crate::disk_budget::{self, RunPlan};
 use crate::download_policy::{self, AudioSelection, JobExecution, Source};
 use crate::downloader::DownloadOptions;
-use crate::error::{AppError, Result};
+use crate::error::Result;
 use crate::probe;
 use crate::state::AppState;
 use crate::tools;
@@ -46,6 +46,20 @@ pub enum Confidence {
     /// Some selected stream has no size at all. Never shown as zero.
     #[default]
     Unknown,
+}
+
+/// Whether a figure could be had at all.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum EstimateState {
+    /// The download size is known (exactly or approximately).
+    Available,
+    /// The estimate ran, but the site gives no size (or none that can be added up).
+    #[default]
+    Unknown,
+    /// The estimate could not be made: the tool did not run, timed out or said something
+    /// unreadable. Worth trying again, unlike `Unknown`.
+    Failed,
 }
 
 /// One selected stream.
@@ -87,6 +101,10 @@ pub struct DownloadEstimate {
     pub converted: bool,
     /// Why a figure above is missing.
     pub unknown_reason: Option<String>,
+    /// Available, unknown or failed. Older shapes lack it: a missing state reads as unknown.
+    pub state: EstimateState,
+    /// For a failed estimate, a short single-line reason that is safe to show.
+    pub diagnostic: Option<String>,
 }
 
 /// What yt-dlp printed about its selection.
@@ -141,7 +159,7 @@ fn parse_selection(output: &str) -> Option<Selection> {
         }
     }
     let top = top?;
-    let duration = top["duration"].as_f64().filter(|d| *d > 0.0);
+    let duration = top["duration"].as_f64().filter(|d| d.is_finite() && *d > 0.0);
     let top = part(&top);
     let parts = if streams.is_empty() { vec![top.clone()] } else { streams };
     Some(Selection { top, duration, parts })
@@ -151,10 +169,70 @@ pub fn unknown(reason: &str) -> DownloadEstimate {
     DownloadEstimate { unknown_reason: Some(reason.to_string()), ..DownloadEstimate::default() }
 }
 
+/// The longest diagnostic kept, in characters.
+const DIAGNOSTIC_LIMIT: usize = 240;
+
+/// A word that names a place on the machine: a `file:` link, a drive, UNC or rooted path,
+/// anything with a backslash or a drive letter inside it (`--cookies=C:/x`), or a relative path
+/// with two or more slashes. A web link is not one: its `://` is not a drive separator.
+fn looks_like_path(word: &str) -> bool {
+    let word = word.trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';'));
+    let bytes = word.as_bytes();
+    let drive = bytes.iter().enumerate().any(|(i, b)| {
+        b.is_ascii_alphabetic()
+            && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric())
+            && bytes.get(i + 1) == Some(&b':')
+            && (bytes.get(i + 2) == Some(&b'\\') || (bytes.get(i + 2) == Some(&b'/') && bytes.get(i + 3) != Some(&b'/')))
+    });
+    let rooted = |w: &str| w.len() > 1 && w.starts_with('/');
+    drive
+        || word.contains('\\')
+        || word.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("file:"))
+        || rooted(word)
+        || word.split_once('=').is_some_and(|(_, value)| rooted(value))
+        || (!word.contains("://") && word.matches('/').count() >= 2)
+}
+
+/// What a person may be shown about a failed estimate: one short line, with control
+/// characters and local paths (which can name the user's profile) left out.
+fn safe_diagnostic(raw: &str) -> String {
+    let words: Vec<&str> = raw
+        .split(|c: char| c.is_whitespace() || c.is_control())
+        .filter(|w| !w.is_empty())
+        .map(|w| if looks_like_path(w) { "<path>" } else { w })
+        .collect();
+    let line = words.join(" ");
+    if line.is_empty() {
+        return "No further details were given.".to_string();
+    }
+    if line.chars().count() > DIAGNOSTIC_LIMIT {
+        return line.chars().take(DIAGNOSTIC_LIMIT).collect::<String>() + "\u{2026}";
+    }
+    line
+}
+
+/// The estimate could not be made. Unlike `unknown`, trying again may work.
+pub fn failed(diagnostic: &str) -> DownloadEstimate {
+    let safe = safe_diagnostic(diagnostic);
+    DownloadEstimate { state: EstimateState::Failed, unknown_reason: Some(safe.clone()), diagnostic: Some(safe), ..DownloadEstimate::default() }
+}
+
+/// Turns what the lookup gave into an estimate. A tool that did not run, timed out or printed
+/// something unreadable is a failure, not an unknown size.
+fn outcome(lookup: std::result::Result<Vec<u8>, String>, options: &DownloadOptions, rewrite: bool) -> DownloadEstimate {
+    match lookup {
+        Ok(stdout) => match parse_selection(&String::from_utf8_lossy(&stdout)) {
+            Some(selection) => build(selection, options, rewrite),
+            None => failed("yt-dlp did not say which streams it would download."),
+        },
+        Err(e) => failed(&e),
+    }
+}
+
 /// Sizes a selection for these options. `rewrite` is whether metadata or subtitles are
 /// written into the finished file, as admission counts it.
 fn build(selection: Selection, options: &DownloadOptions, rewrite: bool) -> DownloadEstimate {
-    let converted = options.mode == "audio" && options.audio_format != "best";
+    let converted = download_policy::converts_audio(&options.mode, &options.audio_format);
     let container = if options.mode == "audio" {
         // A converted file has the target's extension; "Original" keeps whatever comes.
         converted.then(|| options.audio_format.clone())
@@ -163,7 +241,7 @@ fn build(selection: Selection, options: &DownloadOptions, rewrite: bool) -> Down
     };
     let parts = selection.parts;
     let sizes: Vec<Option<u64>> = parts.iter().map(|p| p.bytes).collect();
-    let download_bytes: Option<u64> = sizes.iter().copied().sum();
+    let download_bytes = disk_budget::known_total(&sizes);
     let confidence = match download_bytes {
         None => Confidence::Unknown,
         Some(_) if parts.iter().all(|p| p.exact) => Confidence::Exact,
@@ -173,13 +251,19 @@ fn build(selection: Selection, options: &DownloadOptions, rewrite: bool) -> Down
     let peak_temp_bytes = plan.peak(&sizes);
     let output_bytes = plan.output(&sizes);
     let unknown_reason = if download_bytes.is_none() {
-        Some(if parts.len() > 1 {
+        Some(if sizes.iter().all(Option::is_some) {
+            "The stated sizes are too large to add up, so no figure is shown."
+        } else if parts.len() > 1 {
             "The site does not say how large one of the selected streams is."
         } else {
             "The site does not say how large this download is."
         })
     } else if peak_temp_bytes.is_none() {
-        Some("The converted file's size depends on the length, which the site does not give.")
+        Some(if converted {
+            "The converted file's size depends on the length, which the site does not give."
+        } else {
+            "The temporary space needed cannot be worked out from the sizes given."
+        })
     } else {
         None
     };
@@ -193,6 +277,8 @@ fn build(selection: Selection, options: &DownloadOptions, rewrite: bool) -> Down
         output_bytes,
         converted,
         unknown_reason: unknown_reason.map(String::from),
+        state: if download_bytes.is_some() { EstimateState::Available } else { EstimateState::Unknown },
+        diagnostic: None,
     }
 }
 
@@ -222,7 +308,8 @@ fn estimate_args(common: Vec<String>, options: &DownloadOptions, audio_selection
 /// Estimates one item with the options as they would be frozen if it started now. The
 /// cached lookup is used when there is one (no network); otherwise the link is read again
 /// through the same bounded lookup path as a probe. A size that cannot be told is an
-/// `unknown` estimate with a reason, not an error.
+/// `unknown` estimate with a reason. A tool that is missing, does not launch, times out or
+/// prints nothing readable is a `failed` one, also not an error, so it can be retried.
 pub async fn estimate(app: &AppHandle, raw_url: &str, playlist_index: Option<u32>, mut options: DownloadOptions) -> Result<DownloadEstimate> {
     let url = probe::validate_url(raw_url)?;
     options.validate()?;
@@ -235,10 +322,12 @@ pub async fn estimate(app: &AppHandle, raw_url: &str, playlist_index: Option<u32
     let settings = state.settings.lock().unwrap().clone();
     // What the download would bind (JobExecution::freeze) if it started now.
     let execution = JobExecution::freeze(&settings, options.fast_save);
-    let rewrite = execution.embed_metadata || options.embeds_subtitles();
+    let rewrite = download_policy::ProcessingPolicy::new(&options, &execution).rewrites_output();
     // Waits while yt-dlp is being replaced, and keeps it from being replaced meanwhile.
     let _engine = state.engine.read().await;
-    let ytdlp = tools::find_ytdlp(app).ok_or_else(|| AppError::msg("yt-dlp is not installed yet."))?;
+    let Some(ytdlp) = tools::find_ytdlp(app) else {
+        return Ok(failed("yt-dlp is not installed yet."));
+    };
     // Playlist items picked by position are never cached. The lease keeps the cached file
     // from being pruned while yt-dlp reads it.
     let cached = playlist_index.is_none().then(|| probe::cached_info(app, &url)).flatten();
@@ -250,13 +339,7 @@ pub async fn estimate(app: &AppHandle, raw_url: &str, playlist_index: Option<u32
     let args = preview_args(tools::common_args(app, &settings), &options, execution.audio_selection, source);
     let output = probe::run_lookup(app, &ytdlp, &args).await;
     drop(cached);
-    Ok(match output {
-        Ok(stdout) => match parse_selection(&String::from_utf8_lossy(&stdout)) {
-            Some(selection) => build(selection, &options, rewrite),
-            None => unknown("yt-dlp did not say which streams it would download."),
-        },
-        Err(e) => unknown(&e.to_string()),
-    })
+    Ok(outcome(output.map_err(|e| e.to_string()), &options, rewrite))
 }
 
 #[cfg(test)]
@@ -381,12 +464,64 @@ mod tests {
         assert_eq!(estimate.download_bytes, Some(12_000_000));
         assert_eq!(estimate.peak_temp_bytes, None);
         assert!(estimate.unknown_reason.is_some());
-        // "Original" is not converted, so its container is only known once it is saved.
+        // "Original" is not converted, so its container is only known once it is saved. It is
+        // still extracted, which may write a whole copy beside the source.
         let original = DownloadOptions { audio_format: "best".into(), ..options("audio") };
         let estimate = build(parse_selection(&out).unwrap(), &original, false);
         assert_eq!(estimate.container, None);
         assert!(!estimate.converted);
-        assert_eq!(estimate.peak_temp_bytes, Some(12_000_000));
+        assert_eq!(estimate.output_bytes, Some(12_000_000));
+        assert_eq!(estimate.peak_temp_bytes, Some(24_000_000));
+    }
+
+    #[test]
+    fn the_preview_and_admission_size_every_audio_choice_alike() {
+        use crate::download_policy::ProcessingPolicy;
+        for format in ["mp3", "m4a", "opus", "flac", "wav", "best"] {
+            for metadata in [false, true] {
+                for fast_save in [false, true] {
+                    let settings = crate::settings::Settings { embed_metadata: metadata, ..crate::settings::Settings::default() };
+                    let options = DownloadOptions { audio_format: format.into(), fast_save, ..options("audio") };
+                    let execution = JobExecution::freeze(&settings, fast_save);
+                    let policy = ProcessingPolicy::new(&options, &execution);
+                    // With and without a duration. Whether the site has a thumbnail does not change
+                    // the figures: a missing cover only means yt-dlp skips the pass.
+                    for duration in [Some(600.0), None] {
+                        let mut fields = json!({"format_id": "a251", "ext": "webm", "filesize": 12_000_000, "acodec": "opus", "vcodec": "none"});
+                        if let Some(d) = duration {
+                            fields["duration"] = json!(d);
+                        }
+                        let selection = parse_selection(&top(fields)).unwrap();
+                        let admission = policy.run_plan(&options, selection.duration).peak(&[Some(12_000_000)]);
+                        let preview = build(selection, &options, policy.rewrites_output());
+                        let case = format!("{format} metadata={metadata} fast={fast_save} duration={duration:?}");
+                        assert_eq!(preview.peak_temp_bytes, admission, "{case}");
+                        assert_eq!(preview.required_free_bytes, admission.map(disk_budget::required), "{case}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn extreme_site_sizes_never_wrap_the_estimate() {
+        let out = [
+            top(json!({"format_id": "v+a", "ext": "mp4", "duration": 60})),
+            parts(json!([{"format_id": "v", "filesize": 1.8e19}, {"format_id": "a", "filesize": 1.8e19}])),
+        ]
+        .join("\n");
+        let estimate = build(parse_selection(&out).unwrap(), &options("video"), true);
+        assert_eq!(estimate.download_bytes, None);
+        assert_eq!(estimate.confidence, Confidence::Unknown);
+        assert_eq!(estimate.peak_temp_bytes, None);
+        assert_eq!(estimate.required_free_bytes, None);
+        assert_eq!(estimate.output_bytes, None);
+        assert!(estimate.unknown_reason.is_some());
+        // A single stream near the top of the range cannot double either.
+        let one = [top(json!({"format_id": "18", "ext": "mp4", "filesize": 1.8e19})), parts(json!([]))].join("\n");
+        let estimate = build(parse_selection(&one).unwrap(), &options("video"), true);
+        assert_eq!(estimate.peak_temp_bytes, None);
+        assert_eq!(estimate.required_free_bytes, None);
     }
 
     #[test]
@@ -440,6 +575,151 @@ mod tests {
         for flag in ["--no-simulate", "--write-subs", "--embed-metadata", "-P", "-o", "--"] {
             assert!(!args.iter().any(|a| a == flag), "{flag} has no place in a preview");
         }
+    }
+
+    // ---- Available, unknown and failed ------------------------------------------------------
+
+    #[test]
+    fn a_known_size_is_available_and_a_site_with_no_size_is_unknown_not_failed() {
+        let known = build(parse_selection(&top(json!({"format_id": "18", "filesize": 10}))).unwrap(), &options("video"), false);
+        assert_eq!((known.state, known.diagnostic.as_deref()), (EstimateState::Available, None));
+        // A size without a figure for the temporary space is still an available size.
+        let wav = DownloadOptions { audio_format: "wav".into(), ..options("audio") };
+        let no_peak = build(parse_selection(&top(json!({"format_id": "a1", "ext": "webm", "filesize": 5000}))).unwrap(), &wav, false);
+        assert_eq!((no_peak.state, no_peak.peak_temp_bytes), (EstimateState::Available, None));
+        // The site gives no size: the estimate ran, so this is unknown with its reason.
+        let none = outcome(Ok(top(json!({"format_id": "18", "ext": "mp4"})).into_bytes()), &options("video"), false);
+        assert_eq!((none.state, none.download_bytes), (EstimateState::Unknown, None));
+        assert_eq!(none.diagnostic, None);
+        assert!(none.unknown_reason.is_some());
+        // Sizes too large to add up are unknown as well.
+        let huge = [
+            top(json!({"format_id": "v+a", "ext": "mp4"})),
+            parts(json!([{"format_id": "v", "filesize": 1.8e19}, {"format_id": "a", "filesize": 1.8e19}])),
+        ]
+        .join("\n");
+        assert_eq!(outcome(Ok(huge.into_bytes()), &options("video"), false).state, EstimateState::Unknown);
+        assert_eq!(unknown("Text only: the video is not downloaded.").state, EstimateState::Unknown);
+    }
+
+    #[test]
+    fn a_tool_that_failed_timed_out_or_said_nothing_usable_is_failed() {
+        let video = options("video");
+        let cases: Vec<(&str, std::result::Result<Vec<u8>, String>)> = vec![
+            ("timeout", Err("Timed out while reading that link.".into())),
+            ("launch", Err("%1 is not a valid Win32 application. (os error 193)".into())),
+            ("site", Err("[youtube] x: Video unavailable".into())),
+            ("empty output", Ok(Vec::new())),
+            ("malformed selection", Ok(b"CLAWSEST|{not json".to_vec())),
+            ("selection that is not an object", Ok(b"CLAWSEST|[1,2]".to_vec())),
+            ("malformed parts", Ok(format!("{}\n{TAG_PARTS}{{oops", top(json!({"format_id": "18"}))).into_bytes())),
+        ];
+        for (name, lookup) in cases {
+            let estimate = outcome(lookup, &video, true);
+            assert_eq!(estimate.state, EstimateState::Failed, "{name}");
+            let why = estimate.diagnostic.as_deref().unwrap_or_default();
+            assert!(!why.is_empty(), "{name}: a failure says why");
+            // What older readers show for any missing figure is the same safe text.
+            assert_eq!(estimate.unknown_reason.as_deref(), Some(why), "{name}");
+            // A failure is never a size, and so never a zero one.
+            assert_eq!((estimate.download_bytes, estimate.peak_temp_bytes, estimate.required_free_bytes, estimate.output_bytes), (None, None, None, None), "{name}");
+            assert_eq!(estimate.confidence, Confidence::Unknown, "{name}");
+            assert!(estimate.parts.is_empty(), "{name}");
+        }
+        assert!(outcome(Err("Timed out while reading that link.".into()), &video, true).diagnostic.unwrap().contains("Timed out"));
+    }
+
+    #[test]
+    fn a_diagnostic_is_one_short_line_without_local_paths() {
+        let raw = "ERROR: [generic] unable to open C:\\Users\\Someone\\AppData\\Roaming\\dev.claws.downloader\\bin\\yt-dlp.exe (os error 2)\n  at /home/someone/.cache/x.json\r\n\u{7}bell";
+        let safe = safe_diagnostic(raw);
+        assert!(!safe.contains('\n') && !safe.contains('\r') && !safe.contains('\u{7}'), "{safe:?}");
+        assert!(!safe.contains("Someone") && !safe.contains("someone"), "{safe:?}");
+        assert!(safe.contains("unable to open"), "the reason survives: {safe:?}");
+        // A link is not a path.
+        assert!(safe_diagnostic("failed to read https://example.com/watch?v=1").contains("https://example.com/watch?v=1"));
+        // Other spellings of a local path are left out too, and links and plain slashes stay.
+        for raw in [
+            "cannot read file:///C:/Users/Name/x.json today",
+            "cannot read file:/home/name/x.json today",
+            "cannot read bin/yt-dlp/yt-dlp.exe today",
+            "bad --cookies=C:/Users/Name/c.txt given",
+            r"bad --cookies=C:\Users\Name\c.txt given",
+            "bad --config-location=/home/name/c.conf given",
+        ] {
+            let safe = safe_diagnostic(raw);
+            assert!(!safe.contains("Name") && !safe.contains("name") && !safe.contains("yt-dlp"), "{raw:?} -> {safe:?}");
+            assert!(safe.contains("<path>"), "{raw:?} -> {safe:?}");
+        }
+        assert_eq!(safe_diagnostic("use audio and/or video, 1/2 done"), "use audio and/or video, 1/2 done");
+        assert_eq!(safe_diagnostic("see https://a.example/b/c?x=1 and http://h/p"), "see https://a.example/b/c?x=1 and http://h/p");
+        let long = safe_diagnostic(&"word ".repeat(500));
+        assert!(long.chars().count() <= 241, "{}", long.chars().count());
+        assert!(long.ends_with('\u{2026}'));
+        assert_eq!(safe_diagnostic("  \n "), "No further details were given.");
+        // Whatever goes in, a failed estimate carries only the safe text.
+        let estimate = failed(raw);
+        assert_eq!(estimate.diagnostic.as_deref(), Some(safe.as_str()));
+    }
+
+    #[test]
+    fn the_state_is_sent_with_older_fields_intact_and_older_shapes_still_load() {
+        let known = build(parse_selection(&top(json!({"format_id": "18", "filesize": 10}))).unwrap(), &options("video"), false);
+        let value = serde_json::to_value(&known).unwrap();
+        assert_eq!(value["state"], "available");
+        assert_eq!(value["diagnostic"], serde_json::Value::Null);
+        assert_eq!(serde_json::to_value(unknown("why")).unwrap()["state"], "unknown");
+        let failure = serde_json::to_value(failed("Timed out while reading that link.")).unwrap();
+        assert_eq!(failure["state"], "failed");
+        assert_eq!(failure["diagnostic"], "Timed out while reading that link.");
+        assert_eq!(failure["unknownReason"], "Timed out while reading that link.", "readable by code that predates `state`");
+        assert_eq!(failure["downloadBytes"], serde_json::Value::Null);
+        // Saved or older-shaped data without the new fields reads as it did: unknown.
+        let old: DownloadEstimate = serde_json::from_str(r#"{"downloadBytes":null,"confidence":"unknown","unknownReason":"The site does not say how large this download is."}"#).unwrap();
+        assert_eq!((old.state, old.diagnostic), (EstimateState::Unknown, None));
+        assert!(old.unknown_reason.is_some());
+        let failed_back: DownloadEstimate = serde_json::from_value(failure).unwrap();
+        assert_eq!(failed_back.state, EstimateState::Failed);
+    }
+
+    fn app_with_bin(tag: &str, install: impl FnOnce(&std::path::Path)) -> crate::lifecycle_tests::TestApp {
+        let dir = crate::download_tests::temp_dir(tag);
+        install(&dir.join("bin"));
+        crate::lifecycle_tests::TestApp::with_data(dir.clone(), dir.join("out"), Vec::new())
+    }
+
+    fn estimate_link(app: &AppHandle, link: &str) -> Result<DownloadEstimate> {
+        tauri::async_runtime::block_on(estimate(app, link, None, options("video")))
+    }
+
+    #[test]
+    fn a_missing_tool_is_a_failed_estimate_not_an_error() {
+        let app = app_with_bin("estimate-missing", |_| {});
+        if tools::find_ytdlp(app.handle()).is_some() {
+            eprintln!("skipped: a yt-dlp on PATH would be found");
+            return;
+        }
+        let estimate = estimate_link(app.handle(), "https://example.invalid/v").expect("a failed estimate, not an error");
+        assert_eq!(estimate.state, EstimateState::Failed);
+        assert!(estimate.diagnostic.as_deref().unwrap().contains("yt-dlp is not installed"));
+        assert_eq!(estimate.download_bytes, None);
+        // A malformed link is the caller's mistake, still rejected as before.
+        assert!(estimate_link(app.handle(), "not a link").is_err());
+    }
+
+    #[test]
+    fn a_tool_that_cannot_launch_is_a_failed_estimate_with_a_safe_reason() {
+        let app = app_with_bin("estimate-launch", |bin| {
+            let folder = bin.join("yt-dlp");
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("yt-dlp.exe"), b"this is not a program").unwrap();
+        });
+        let estimate = estimate_link(app.handle(), "https://example.invalid/v").expect("a failed estimate, not an error");
+        assert_eq!(estimate.state, EstimateState::Failed);
+        let why = estimate.diagnostic.unwrap();
+        assert!(!why.is_empty() && !why.contains('\n'), "{why:?}");
+        assert!(!why.contains(&*app.dir.to_string_lossy()), "no local path: {why:?}");
+        assert_eq!((estimate.download_bytes, estimate.peak_temp_bytes), (None, None));
     }
 
     // ---- The installed yt-dlp, offline, on made-up info ----------------------------------

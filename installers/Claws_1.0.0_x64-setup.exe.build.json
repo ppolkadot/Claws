@@ -1,0 +1,27 @@
+{
+  "version": "1.0.0",
+  "installer": "Claws_1.0.0_x64-setup.exe",
+  "bytes": 2969491,
+  "sha256": "02fc30a0f2e67edd38aaf072cbff86bc002d9cf6b423a28a349628f52f84f095",
+  "payloadBytes": 7008256,
+  "payloadSha256": "bbf7104f95822d3fa58e4b4445fbf0b57de1b57a06978b860aac51084646cec5",
+  "productionExeSha256": "cb27d6fcc5692cc77565723daa7a629da8077b81476b732b66d83f39e3a8f525",
+  "sourceBaseCommit": "92972355265c45d3fad8fedc54f2d14f26fce060",
+  "sourceSnapshotSha256": "d14eb9a6b94d8b065fe06ec121d6eecee3be7e5ef4c50d9f105a83d6661e2772",
+  "sourceSnapshotDefinition": "SHA-256 of sorted lines <file sha256>  <repository path> followed by a newline for all 138 tracked or untracked nonignored files except docs/ and installers/.",
+  "buildCommand": "npm run tauri build -- --bundles nsis",
+  "payloadMatchesProductionExceptTauriNsisMarker": true,
+  "embeddedAssetSha256": {
+    "salted-flutters-polaris-400-CmbYq7vv.woff2": "b1d46fa9b32bd2f7651a9a7493cb33ac1f4387a9dc0853d97a95691bfe5b798e",
+    "salted-flutters-polaris-500-Cb1Umjz4.woff2": "59bbda895cc2953383048c72ac8e4326f06b439702aa338f93ce245bff3b643e",
+    "salted-flutters-polaris-600-Bl0CThj_.woff2": "e036e34e8572314c947d8269d8f63d9320d16227542936f272ee0aacdd9058f8",
+    "salted-flutters-polaris-700-DtqvDOx1.woff2": "06358f62f7b04cbe78a6cb9c5c9c5e4b8b46ea6f5727121988fd39cd57a518bc",
+    "index-DfRiW9VE.js": "f1f2b93031480f0e0ec552db38f3d61e06e20064a701bb953cb059ea3ac5977a",
+    "index-ChWbsSSD.css": "f11dee905303e64588a5e575933b4af1e58bdec509fd506f6ec20930457f1b5b",
+    "LICENSE.txt": "78c35830990141b6570a6c6b628b7ea58c4e08ac821e681fbfe5eb59903ec499"
+  },
+  "installerArchiveIntegrity": "7-Zip test passed",
+  "allowDowngrades": true,
+  "installedUpgradeTested": false,
+  "published": false
+}

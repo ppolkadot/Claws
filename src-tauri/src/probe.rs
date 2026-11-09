@@ -187,7 +187,10 @@ fn collect_captions(value: &Value) -> Vec<SubtitleLang> {
     if let Some(map) = value["automatic_captions"].as_object() {
         let tracks = || map.iter().filter(|(code, _)| *code != "live_chat");
         let has_original = tracks().any(|(code, _)| code.ends_with("-orig"));
-        let wanted = |code: &str| if has_original { code.ends_with("-orig") } else { map.len() <= ALL_AUTO_CAPTIONS_UP_TO };
+        // Only tracks a transcript could use count toward "a short list": the chat replay
+        // entry is not one.
+        let usable = tracks().count();
+        let wanted = |code: &str| if has_original { code.ends_with("-orig") } else { usable <= ALL_AUTO_CAPTIONS_UP_TO };
         let mut automatic: Vec<(&String, &Value)> = tracks().filter(|(code, _)| wanted(code)).collect();
         // The common languages in their usual order, then the rest by code.
         let rank = |code: &str| AUTO_CAPTION_LANGS.iter().position(|c| *c == code).unwrap_or(AUTO_CAPTION_LANGS.len());
@@ -844,6 +847,91 @@ mod tests {
         assert_eq!(caption_kinds(&parse("https://example.com/x", &few)), [("nl".to_string(), true), ("sv".to_string(), true)]);
         // No captions at all: an empty list, which the interface shows as unavailable.
         assert_eq!(parse("https://example.com/y", &json!({ "title": "Silent" })).captions.map(|c| c.len()), Some(0));
+    }
+
+    /// `count` automatic tracks named l0.. plus, optionally, YouTube's chat replay entry.
+    fn automatic_tracks(count: usize, live_chat: bool) -> Value {
+        let mut map = serde_json::Map::new();
+        for i in 0..count {
+            map.insert(format!("l{i}"), json!([{ "name": format!("Language {i}") }]));
+        }
+        if live_chat {
+            map.insert("live_chat".into(), json!([{}]));
+        }
+        Value::Object(map)
+    }
+
+    #[test]
+    fn the_twelve_track_threshold_counts_only_usable_tracks() {
+        let auto_codes = |value: Value| -> Vec<String> {
+            caption_kinds(&parse("https://example.com/v", &value)).into_iter().filter(|(_, auto)| *auto).map(|(code, _)| code).collect()
+        };
+        // Twelve real tracks and a chat replay entry: the chat is not a track, so all twelve stay.
+        let twelve = auto_codes(json!({ "automatic_captions": automatic_tracks(12, true) }));
+        assert_eq!(twelve.len(), 12, "{twelve:?}");
+        assert!(!twelve.iter().any(|c| c == "live_chat"));
+        // Thirteen real tracks are a long machine-translated list.
+        assert!(auto_codes(json!({ "automatic_captions": automatic_tracks(13, false) })).is_empty());
+        assert!(auto_codes(json!({ "automatic_captions": automatic_tracks(13, true) })).is_empty());
+        // A -orig track decides it however long the list: only that track, chat or not.
+        let mut with_orig = automatic_tracks(12, true);
+        with_orig.as_object_mut().unwrap().insert("l3-orig".into(), json!([{ "name": "Original" }]));
+        assert_eq!(auto_codes(json!({ "automatic_captions": with_orig })), ["l3-orig"]);
+        let mut short_orig = automatic_tracks(2, false);
+        short_orig.as_object_mut().unwrap().insert("fr-orig".into(), json!([{}]));
+        assert_eq!(auto_codes(json!({ "automatic_captions": short_orig })), ["fr-orig"]);
+        // Only a chat entry: nothing to offer, and the video has no captions.
+        assert!(auto_codes(json!({ "automatic_captions": automatic_tracks(0, true) })).is_empty());
+    }
+
+    #[test]
+    fn human_spanish_hides_automatic_spanish_and_automatic_english_stays() {
+        // The picker's identity is the code: human Spanish is the one Spanish choice, and
+        // English is offered automatic. (yt-dlp's own precedence is checked below when it is present.)
+        let value = json!({
+            "subtitles": { "es": [{ "name": "Spanish" }] },
+            "automatic_captions": { "es": [{ "name": "Spanish" }], "en": [{ "name": "English" }] }
+        });
+        let result = parse("https://example.com/v", &value);
+        let offered: Vec<_> = result.subtitles.iter().map(|s| (s.code.as_str(), s.auto)).collect();
+        assert_eq!(offered, [("es", false), ("en", true)]);
+        // Transcripts still keep the two Spanish kinds apart.
+        let kinds = caption_kinds(&result);
+        assert!(kinds.contains(&("es".to_string(), false)) && kinds.contains(&("es".to_string(), true)) && kinds.contains(&("en".to_string(), true)), "{kinds:?}");
+    }
+
+    /// Runs the real yt-dlp over a generated info file (no network: nothing is fetched, only
+    /// the subtitle selection is printed). Needs `CLAWS_TEST_YTDLP` or a `yt-dlp` on PATH;
+    /// without either it says so and passes, so the suite stays hermetic.
+    #[test]
+    fn yt_dlp_picks_human_spanish_once_beside_automatic_english() {
+        let Some(ytdlp) = std::env::var_os("CLAWS_TEST_YTDLP").map(PathBuf::from).or_else(|| which::which("yt-dlp").ok()) else {
+            eprintln!("SKIPPED: no yt-dlp (set CLAWS_TEST_YTDLP) - upstream subtitle precedence was not exercised");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("claws-subtitle-precedence-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let track = |name: &str| json!([{ "ext": "vtt", "url": format!("https://example.invalid/{name}.vtt"), "name": name }]);
+        let info = json!({
+            "id": "fixture", "title": "Fixture", "extractor": "fixture", "extractor_key": "Fixture",
+            "webpage_url": "https://example.invalid/watch", "url": "https://example.invalid/video.mp4", "ext": "mp4",
+            "subtitles": { "es": track("human-es") },
+            "automatic_captions": { "es": track("auto-es"), "en": track("auto-en") }
+        });
+        let info_path = dir.join("info.json");
+        std::fs::write(&info_path, info.to_string()).unwrap();
+        let output = std::process::Command::new(&ytdlp)
+            .current_dir(&dir)
+            .args(["--ignore-config", "--no-cache-dir", "--skip-download", "--write-subs", "--write-auto-subs", "--sub-langs", "es,en", "--dump-json", "--load-info-json"])
+            .arg(&info_path)
+            .output()
+            .expect("yt-dlp runs");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let printed: Value = serde_json::from_slice(&output.stdout).expect("yt-dlp prints its info");
+        let chosen = printed["requested_subtitles"].as_object().expect("requested_subtitles");
+        let urls: BTreeMap<&str, &str> = chosen.iter().map(|(code, t)| (code.as_str(), t["name"].as_str().unwrap_or(""))).collect();
+        assert_eq!(urls, BTreeMap::from([("en", "auto-en"), ("es", "human-es")]), "one Spanish track, the human one");
     }
 
     #[test]

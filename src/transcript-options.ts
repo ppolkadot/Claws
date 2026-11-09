@@ -92,6 +92,114 @@ export function keptCaption(key: string | null, choices: CaptionChoices, preferr
   return key && all.some((t) => captionKey(t) === key) ? key : defaultCaption(choices, preferred);
 }
 
+/** The most subtitle languages one video download can ask for (downloader.rs `MAX_SUBTITLE_LANGS`; a Rust test ties the two). */
+export const MAX_SUBTITLE_LANGS = 12;
+
+/** How many subtitle languages the video picker lists. */
+export const SUBTITLE_CHIPS_SHOWN = 14;
+
+/** The subtitle tracks the picker lists (all of them, up to SUBTITLE_CHIPS_SHOWN). */
+export function offeredSubtitles<T>(tracks: readonly T[]): T[] {
+  return tracks.slice(0, SUBTITLE_CHIPS_SHOWN);
+}
+
+/** Whether the picker may add `code`: always when it is already chosen (it can be removed). */
+export function canSelectSubtitle(selected: ReadonlySet<string>, code: string): boolean {
+  return selected.has(code) || selected.size < MAX_SUBTITLE_LANGS;
+}
+
+/** What the subtitle picker says about its limit. */
+export function subtitleLimitHint(count: number): string {
+  return count >= MAX_SUBTITLE_LANGS
+    ? `Limit reached: ${MAX_SUBTITLE_LANGS} of ${MAX_SUBTITLE_LANGS} languages. Clear one to choose another.`
+    : `Choose up to ${MAX_SUBTITLE_LANGS} languages per download.`;
+}
+
+/** What a lookup shows; when two lookups' signatures are equal a refresh redraws nothing. */
+export interface RefreshSource extends CaptionSource {
+  title: string;
+  thumbnail: string | null;
+  duration: number | null;
+  uploader: string | null;
+  site: string | null;
+  heights: number[];
+  resolutions?: unknown[] | null;
+  entries: { url: string; playlistIndex: number | null; title: string; uploader: string | null; duration: number | null; thumbnail: string | null }[];
+}
+
+/** A track as the page shows it: its identity (code and kind) and its display name. */
+const trackSignature = (t: CaptionTrack) => [t.code, t.auto, t.name];
+
+export function refreshSignature(r: RefreshSource): string {
+  return JSON.stringify([
+    r.kind,
+    r.title,
+    r.thumbnail,
+    r.duration,
+    r.uploader,
+    r.site,
+    r.heights,
+    r.resolutions ?? null,
+    r.subtitles.map(trackSignature),
+    r.captions?.map(trackSignature) ?? null,
+    r.entries.map((e) => [e.url, e.playlistIndex, e.title, e.uploader, e.duration, e.thumbnail]),
+  ]);
+}
+
+/** The choices a refreshed lookup can invalidate. */
+export interface TrackChoices {
+  mode: "video" | "audio" | "transcript";
+  subs: ReadonlySet<string>;
+  caption: string | null;
+}
+
+/**
+ * `choices` after a refreshed lookup, with a notice for each choice that could not be honored.
+ * Only the subtitle and caption choices can change; every other field of `choices` is
+ * returned as it was, so a refresh never costs the user's quality, audio or format choices.
+ *
+ * A subtitle stays chosen only while the refresh still lists the same track: the same code
+ * and the same kind (human or automatic), among the languages the picker shows. A track
+ * that is now a different kind is a different subtitle file, so it is deselected and named
+ * rather than swapped. A transcript's caption is kept the same way (by `captionKey`);
+ * otherwise the default replaces it, and the notice says so.
+ */
+export function refreshTrackChoices<T extends TrackChoices>(
+  choices: T,
+  before: CaptionSource | null,
+  next: CaptionSource,
+  preferred: readonly string[] = [],
+): { choices: T; notices: string[] } {
+  const notices: string[] = [];
+  const was = new Map((before ? offeredSubtitles(before.subtitles) : []).map((t) => [t.code, t]));
+  const now = offeredSubtitles(next.subtitles);
+  const subs = new Set<string>();
+  const lost: string[] = [];
+  for (const code of choices.subs) {
+    const chosen = was.get(code);
+    if (chosen && now.some((t) => t.code === code && t.auto === chosen.auto)) subs.add(code);
+    else lost.push(chosen?.name ?? code);
+  }
+  if (lost.length > 0) {
+    notices.push(`No longer available as chosen, so deselected: ${lost.join(", ")}.`);
+  }
+
+  const captions = captionChoices(next);
+  const caption = keptCaption(choices.caption, captions, preferred);
+  let mode = choices.mode;
+  if (mode === "transcript") {
+    if (!captions.available) {
+      mode = "video";
+      notices.push("This video no longer has captions, so Transcript was switched to Video.");
+    } else if (caption !== choices.caption) {
+      const named = (c: CaptionChoices, key: string | null) => [...c.human, ...c.automatic].find((t) => captionKey(t) === key)?.name;
+      const gone = before ? named(captionChoices(before), choices.caption) : undefined;
+      notices.push(`The caption track${gone ? ` ${gone}` : ""} is no longer available; ${named(captions, caption) ?? "another track"} is selected instead.`);
+    }
+  }
+  return { choices: { ...choices, subs, caption, mode }, notices };
+}
+
 /** The options a transcript is queued with (downloader.rs `DownloadOptions`). */
 export interface TranscriptDownloadOptions {
   mode: "transcript";

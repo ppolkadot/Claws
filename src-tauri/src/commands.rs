@@ -10,7 +10,8 @@ use crate::links::{self, CachedLink};
 use crate::error::{AppError, Result};
 use crate::estimate::{self, DownloadEstimate};
 use crate::file_drag;
-use crate::history::{self, HistoryItem};
+use crate::history::{self, HistoryItem, KeptReveal, RepairReport};
+use crate::history_mutation;
 use crate::probe::{self, ProbeResult};
 use crate::settings::Settings;
 use crate::state::AppState;
@@ -47,7 +48,9 @@ pub fn quit_app(app: AppHandle) {
 }
 
 #[tauri::command]
-pub fn app_ready(window: WebviewWindow, state: State<'_, AppState>) {
+pub fn app_ready(app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) {
+    // The window is listening for notices now; show what startup recovery found meanwhile.
+    crate::history_mutation::release_notices(&app);
     // Opened at login: stay in the notification area until the user asks for Claws.
     if !state.start_hidden.load(std::sync::atomic::Ordering::SeqCst) {
         let _ = window.show();
@@ -197,6 +200,33 @@ pub fn reveal_download(app: AppHandle, state: State<'_, AppState>, id: String) -
         .map_err(|e| AppError::msg(e.to_string()))
 }
 
+/// Shows the side files a download kept in its work folder because their names were taken.
+/// The page sends the id; the folder comes from the Library entry's saved record, resolved
+/// through the verified work folder. The answer tells a shown file from a folder that is
+/// offline, gone or not provably this download's.
+#[tauri::command]
+pub async fn show_kept_files(app: AppHandle, id: String) -> Result<KeptReveal> {
+    let item = history_item(&app.state::<AppState>(), &id)?;
+    let (reveal, file) = tauri::async_runtime::spawn_blocking(move || history::reveal_plan(&item)).await??;
+    if let Some(file) = file {
+        app.opener().reveal_item_in_dir(file).map_err(|e| AppError::msg(e.to_string()))?;
+    }
+    Ok(reveal)
+}
+
+/// Looks again for kept side files of older downloads, in the folders that could not be read
+/// before as well as the rest.
+#[tauri::command]
+pub async fn repair_kept_files(app: AppHandle) -> Result<RepairReport> {
+    Ok(tauri::async_runtime::spawn_blocking(move || history::repair_kept_files(&app)).await?)
+}
+
+/// What the last look for kept side files found (see `repair_kept_files`).
+#[tauri::command]
+pub fn kept_files_report(app: AppHandle) -> RepairReport {
+    history::last_repair(&app)
+}
+
 /// Starts Windows' copy-only file drag of a Library file (see file_drag). The page sends
 /// the id; the path comes from the Library entry only.
 #[tauri::command]
@@ -221,41 +251,15 @@ pub fn open_output_dir(app: AppHandle, state: State<'_, AppState>) -> Result<()>
         .map_err(|e| AppError::msg(e.to_string()))
 }
 
+/// Off the main thread: deleting a file may hash it, and the Library is saved to disk.
 #[tauri::command]
-pub fn delete_history(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: String,
-    delete_file: bool,
-) -> Result<()> {
-    let Ok(item) = history_item(&state, &id) else {
-        return Ok(()); // already removed
-    };
-    // The file goes first: if it cannot be deleted, the entry stays.
-    if delete_file {
-        if let Some(path) = &item.file_path {
-            match std::fs::remove_file(path) {
-                Ok(()) => {}
-                // A file that is already gone is not an error.
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    return Err(AppError::msg(format!(
-                        "The file could not be deleted ({e}), so it is still in your library. Close any app using it and try again."
-                    )))
-                }
-            }
-        }
-    }
-    state.history.lock().unwrap().retain(|h| h.id != id);
-    history::remove_thumbnail(&item);
-    history::save(&app)
+pub async fn delete_history(app: AppHandle, id: String, delete_file: bool) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || history_mutation::delete_entry(&app, &id, delete_file)).await?
 }
 
 #[tauri::command]
-pub fn clear_history(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
-    let removed: Vec<HistoryItem> = std::mem::take(&mut *state.history.lock().unwrap());
-    removed.iter().for_each(history::remove_thumbnail);
-    history::save(&app)
+pub async fn clear_history(app: AppHandle) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || history_mutation::clear(&app)).await?
 }
 
 #[tauri::command]

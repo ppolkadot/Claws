@@ -26,6 +26,102 @@ pub(crate) struct TestApp {
     /// Free bytes the app reads, in order; the last value repeats. Plenty by default.
     pub free: Arc<Mutex<VecDeque<u64>>>,
     pub low_space_delay: Arc<std::sync::atomic::AtomicU64>,
+    /// Holds free-space samples on a barrier and records where they ran.
+    pub gate: Arc<SampleGate>,
+}
+
+/// A barrier for free-space samples, standing in for a slow (SMB-like) volume. Samples
+/// are numbered from 0 in the order they start; those from `hold_from` on wait until the
+/// gate is released. It also records samples that ran on a known async worker thread (which
+/// a blocking disk call must never occupy) and can make the volume unreadable.
+pub(crate) struct SampleGate {
+    started: std::sync::atomic::AtomicUsize,
+    on_worker: std::sync::atomic::AtomicUsize,
+    workers: Mutex<std::collections::HashSet<std::thread::ThreadId>>,
+    hold_from: std::sync::atomic::AtomicUsize,
+    unreadable: std::sync::atomic::AtomicBool,
+    panic_at: std::sync::atomic::AtomicUsize,
+    released: Mutex<bool>,
+    changed: std::sync::Condvar,
+}
+
+impl SampleGate {
+    fn new() -> Self {
+        Self {
+            started: Default::default(),
+            on_worker: Default::default(),
+            workers: Default::default(),
+            hold_from: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            unreadable: Default::default(),
+            panic_at: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            released: Mutex::new(true),
+            changed: Default::default(),
+        }
+    }
+
+    /// Called by the provider for each sample.
+    fn enter(&self) -> std::io::Result<()> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let index = self.started.fetch_add(1, SeqCst);
+        if index == self.panic_at.load(SeqCst) {
+            panic!("the free-space sample panicked");
+        }
+        if self.workers.lock().unwrap().contains(&std::thread::current().id()) {
+            self.on_worker.fetch_add(1, SeqCst);
+        }
+        let mut released = self.released.lock().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while index >= self.hold_from.load(SeqCst) && !*released && Instant::now() < deadline {
+            released = self.changed.wait_timeout(released, Duration::from_millis(50)).unwrap().0;
+        }
+        drop(released);
+        if self.unreadable.load(SeqCst) {
+            return Err(std::io::Error::other("the volume cannot be read"));
+        }
+        Ok(())
+    }
+
+    pub fn hold_from(&self, index: usize) {
+        *self.released.lock().unwrap() = false;
+        self.hold_from.store(index, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Makes the sample numbered `index` panic, as a failing provider would.
+    pub fn panic_at(&self, index: usize) {
+        self.panic_at.store(index, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.changed.notify_all();
+    }
+
+    pub fn started(&self) -> usize {
+        self.started.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn on_worker(&self) -> usize {
+        self.on_worker.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Learns the runtime's async worker threads by polling many sleeping tasks (a thread of
+    /// the blocking pool never runs one), so a sample on one of them can be told apart.
+    /// Workers missed here only make the check less sensitive, never wrongly fail it.
+    pub fn learn_workers(&self) -> usize {
+        for _ in 0..40 {
+            let (tx, rx) = std::sync::mpsc::channel();
+            for _ in 0..64 {
+                let tx = tx.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                    let _ = tx.send(std::thread::current().id());
+                });
+            }
+            drop(tx);
+            self.workers.lock().unwrap().extend(rx.iter());
+        }
+        self.workers.lock().unwrap().len()
+    }
 }
 
 impl TestApp {
@@ -63,7 +159,10 @@ impl TestApp {
         let readings = free.clone();
         let low_space_delay = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let delay = low_space_delay.clone();
+        let gate = Arc::new(SampleGate::new());
+        let sampler = gate.clone();
         state.free_space = Box::new(move |_| {
+            sampler.enter()?;
             let mut readings = readings.lock().unwrap();
             let value = *readings.front().unwrap();
             if readings.len() > 1 {
@@ -77,7 +176,9 @@ impl TestApp {
         });
         app.manage(state);
         downloader::restore_queue(app.handle(), queue).join().expect("startup recovery");
-        Self { app, dir, out, free, low_space_delay }
+        crate::history_mutation::reconcile(app.handle()).join().expect("history journal recovery");
+        crate::history::start_kept_repair(app.handle()).join().expect("kept-files repair");
+        Self { app, dir, out, free, low_space_delay, gate }
     }
 
     pub fn set_free(&self, readings: &[u64]) {
@@ -96,7 +197,7 @@ impl TestApp {
         std::mem::forget(self); // its folder is reused, so Drop must not remove it
         change(&dir);
         let mut notices = Vec::new();
-        let queue = crate::queue_writer::load(&dir.join("queue.json"), &mut notices);
+        let queue = crate::queue_writer::load(&dir.join("queue.json"), &mut notices).expect("queue load");
         Self::with_data(dir, out, queue)
     }
 
@@ -161,6 +262,7 @@ impl TestApp {
 
 impl Drop for TestApp {
     fn drop(&mut self) {
+        self.gate.release();
         downloader::shutdown(self.handle());
         let _ = std::fs::remove_dir_all(&self.dir);
     }
@@ -322,12 +424,12 @@ fn a_restart_while_the_library_still_cannot_be_saved_keeps_everything() {
 
 #[test]
 fn a_move_whose_record_was_lost_is_finished_without_downloading_again() {
-    use crate::download_files::{read_manifest, write_manifest, MoveState, Publication};
+    use crate::download_files::{verify, write_manifest, MoveState, Publication, WorkspaceRef};
     let Some(t) = TestApp::new("b3-app") else { return };
     let (id, workspace) = published_but_not_recorded(&t, "november");
     t.unblock("history.json");
     // Rewind the journal to the instant between the move and its record.
-    let mut manifest = read_manifest(&workspace).unwrap();
+    let mut manifest = verify(&WorkspaceRef { schema_version: 1, path: workspace.clone(), attempt: 0 }, &id).unwrap();
     manifest.state = Publication::Publishing;
     manifest.moves.iter_mut().for_each(|m| m.state = MoveState::Moving);
     write_manifest(&manifest).unwrap();
@@ -406,6 +508,174 @@ fn low_space_during_processing_keeps_retryable_files_or_a_valid_result() {
     t.set_free(&[2 * GIB]);
     downloader::resume(t.handle(), &id);
     t.wait_job(&id, |j| j.status == JobStatus::Completed, "the retry");
+}
+
+/// Counts ticks of an unrelated async task, to show the runtime keeps running.
+fn heartbeat() -> Arc<std::sync::atomic::AtomicUsize> {
+    let beats = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let ticks = beats.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            ticks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+    beats
+}
+
+fn held(t: &TestApp, id: &str) -> Option<u64> {
+    t.state().disk_ledger.lock().unwrap().held(id)
+}
+
+/// Whether another thread holds the ledger right now (without waiting for it).
+fn ledger_is_locked(t: &TestApp) -> bool {
+    matches!(t.state().disk_ledger.try_lock(), Err(std::sync::TryLockError::WouldBlock))
+}
+
+#[test]
+fn space_is_never_sampled_on_an_async_worker() {
+    let Some(t) = TestApp::new("w6-off-worker") else { return };
+    let workers = t.gate.learn_workers();
+    if workers < 2 {
+        // A one-core runner has a single async worker: the check cannot tell it from the pool.
+        eprintln!("skipped: could not tell the async workers apart ({workers} found)");
+        return;
+    }
+    // Admission samples once; the merge's recheck samples again.
+    let id = t.enqueue("https://fixture.invalid/ok-fast/golf");
+    t.wait_job(&id, |j| j.status == JobStatus::Completed, "the download");
+    assert!(t.gate.started() >= 2, "expected an admission and a processing sample, saw {}", t.gate.started());
+    assert_eq!(t.gate.on_worker(), 0, "a free-space sample ran on an async worker");
+}
+
+#[test]
+fn space_a_blocked_admission_sample_leaves_async_work_and_ledger_free_commands_running() {
+    let Some(t) = TestApp::new("w6-blocked") else { return };
+    t.gate.hold_from(0);
+    let id = t.enqueue(&format!("https://fixture.invalid/hang/hotel/{GIB}"));
+    wait_until("the admission sample to start", || t.gate.started() >= 1);
+    let beats = heartbeat();
+    let before = beats.load(std::sync::atomic::Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(500));
+    let ticks = beats.load(std::sync::atomic::Ordering::SeqCst) - before;
+    assert!(ticks >= 20, "the runtime stalled behind the sample: {ticks} ticks in 500 ms");
+    // Commands that never touch the ledger answer while the sample is blocked.
+    let started = Instant::now();
+    assert!(downloader::list(t.handle()).iter().any(|j| j.id == id));
+    assert!(started.elapsed() < Duration::from_millis(500));
+    // The reading and the decision stay together under the ledger's lock. Anything that
+    // needs the ledger (not asked here) waits for the sample: the remaining, documented bound.
+    assert!(ledger_is_locked(&t), "the sample was taken outside the ledger's lock");
+
+    t.gate.release();
+    t.wait_job(&id, running, "the download after the sample");
+    assert!(held(&t, &id).is_some(), "the admitted job is reserved");
+    downloader::cancel(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Cancelled, "the cancel");
+}
+
+#[test]
+fn space_two_admissions_cannot_reserve_the_same_bytes() {
+    let Some(t) = TestApp::new("w6-same-bytes") else { return };
+    // Each plans 1 GiB and needs about 1.5 GiB with its margin: only one fits in 2.5 GiB.
+    t.set_free(&[2 * GIB + GIB / 2]);
+    t.gate.hold_from(0);
+    let first = t.enqueue(&format!("https://fixture.invalid/hang/india/{GIB}"));
+    let second = t.enqueue(&format!("https://fixture.invalid/hang/juliet/{GIB}"));
+    wait_until("a sample to start", || t.gate.started() >= 1);
+    // One sample is out under the ledger's lock; the other admission waits for the lock.
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(ledger_is_locked(&t), "the sample was taken outside the ledger's lock");
+    assert_eq!(t.gate.started(), 1, "a second sample started beside the first");
+    t.gate.release();
+    wait_until("exactly one job to be refused", || {
+        [&first, &second].iter().filter(|id| t.job(id).is_some_and(|j| j.status == JobStatus::Failed)).count() == 1
+    });
+    let (kept, refused) = if t.job(&first).unwrap().status == JobStatus::Failed { (&second, &first) } else { (&first, &second) };
+    let error = t.job(refused).unwrap().error.unwrap_or_default();
+    assert!(error.contains("Not enough free space"), "{error}");
+    assert!(held(&t, kept).is_some(), "the admitted job holds its reservation");
+    assert_eq!(held(&t, refused), None);
+    downloader::cancel(t.handle(), kept);
+    t.wait_job(kept, |j| j.status == JobStatus::Cancelled, "the cancel");
+}
+
+#[test]
+fn space_an_unreadable_volume_is_watched_not_refused() {
+    let Some(t) = TestApp::new("w6-unreadable") else { return };
+    t.gate.unreadable.store(true, std::sync::atomic::Ordering::SeqCst);
+    let id = t.enqueue(&format!("https://fixture.invalid/hang/kilo/{GIB}"));
+    t.wait_job(&id, running, "the download to run without a reading");
+    assert_eq!(held(&t, &id), None, "an unreadable volume reserves nothing");
+    downloader::cancel(t.handle(), &id);
+    t.wait_job(&id, |j| j.status == JobStatus::Cancelled, "the cancel");
+}
+
+#[test]
+fn space_a_panicking_sample_neither_admits_silently_nor_keeps_another_jobs_claim() {
+    let Some(t) = TestApp::new("w6-panic") else { return };
+    // Sample 0 admits the first job; sample 1 panics under the ledger's lock (poisoning it).
+    t.gate.panic_at(1);
+    let first = t.enqueue(&format!("https://fixture.invalid/hang/nova/{GIB}"));
+    t.wait_job(&first, running, "the first download");
+    assert!(held(&t, &first).is_some(), "the first is reserved");
+    let second = t.enqueue(&format!("https://fixture.invalid/hang/oscar2/{GIB}"));
+    wait_until("the panicking sample", || t.gate.started() >= 2);
+    // The panic is no reason to fail the job, and no reservation is made for it.
+    t.wait_job(&second, running, "the second download to run on the disk watch");
+    let claim = |id: &str| t.state().disk_ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).held(id);
+    assert_eq!(claim(&second), None);
+    // The ledger is poisoned but sound: a later download is admitted and reserved as usual,
+    // not sent to the disk watch because every admission would panic on the poisoned lock.
+    assert!(t.state().disk_ledger.is_poisoned(), "the panicking sample was meant to poison the ledger");
+    let third = t.enqueue(&format!("https://fixture.invalid/hang/papa3/{GIB}"));
+    t.wait_job(&third, running, "the third download");
+    wait_until("the third's reservation", || claim(&third).is_some());
+    // The poisoned ledger still lets a finished job's claim go.
+    downloader::cancel(t.handle(), &first);
+    t.wait_job(&first, |j| j.status == JobStatus::Cancelled, "the cancel");
+    wait_until("the first's claim to go", || claim(&first).is_none());
+    downloader::cancel(t.handle(), &second);
+    t.wait_job(&second, |j| j.status == JobStatus::Cancelled, "the second cancel");
+    downloader::cancel(t.handle(), &third);
+    t.wait_job(&third, |j| j.status == JobStatus::Cancelled, "the third cancel");
+    wait_until("the third's claim to go", || claim(&third).is_none());
+}
+
+#[test]
+fn space_a_cancel_while_the_sample_blocks_stays_cancelled_and_holds_nothing() {
+    let Some(t) = TestApp::new("w6-cancel") else { return };
+    // The reading would refuse the job, but the user has already cancelled it.
+    t.set_free(&[100 * MIB]);
+    t.gate.hold_from(0);
+    let id = t.enqueue(&format!("https://fixture.invalid/hang/lima/{GIB}"));
+    wait_until("the admission sample to start", || t.gate.started() >= 1);
+    downloader::cancel(t.handle(), &id);
+    // The process is stopped at once; the job settles once the sample in flight returns.
+    t.gate.release();
+    t.wait_job(&id, |j| j.status == JobStatus::Cancelled, "the cancel");
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(t.job(&id).map(|j| j.status), Some(JobStatus::Cancelled), "the late sample changed a cancelled job");
+    wait_until("no reservation to outlive the job", || held(&t, &id).is_none());
+}
+
+#[test]
+fn space_a_job_that_finishes_before_its_processing_sample_returns_completes() {
+    let Some(t) = TestApp::new("w6-finished-first") else { return };
+    // Sample 0 is the admission; sample 1 is the merge's recheck, held, and then short.
+    t.set_free(&[2 * GIB, 100 * MIB]);
+    t.gate.hold_from(1);
+    let id = t.enqueue("https://fixture.invalid/ok-fast/mike");
+    wait_until("the processing sample to start", || t.gate.started() >= 2);
+    // The tool finishes while the sample is out; its process is reaped and forgotten, so
+    // a late "stop" has no process to kill (and must not touch a reused id).
+    wait_until("the process to be reaped", || t.state().running.lock().unwrap().get(&id).is_some_and(|r| r.pid.is_none()));
+    assert_ne!(t.job(&id).unwrap().status, JobStatus::Failed);
+    t.gate.release();
+    t.wait_job(&id, |j| j.status == JobStatus::Completed, "completion despite the late short reading");
+    assert_eq!(std::fs::read(t.out.join("mike.mp4")).unwrap(), b"merged");
+    assert_eq!(library_entries(&t, &id), 1);
+    wait_until("the claim to go", || held(&t, &id).is_none());
 }
 
 #[test]
@@ -673,11 +943,41 @@ fn a_completed_queue_job_drags_only_its_recorded_library_file() {
     assert_eq!(std::fs::read(&saved).unwrap(), b"merged", "resolving never touches the file");
 
     // Removed from the Library, the queue row's id no longer resolves.
-    crate::commands::delete_history(t.handle().clone(), t.state(), id.clone(), false).unwrap();
+    crate::history_mutation::delete_entry(t.handle(), &id, false).unwrap();
     let history = { t.state().history.lock().unwrap().clone() };
     let error = crate::file_drag::recorded_file(&history, &id).unwrap_err().to_string();
     assert!(error.contains("no longer in the Library"), "{error}");
     assert!(saved.is_file(), "removing the entry keeps the file");
+}
+
+/// The Library entry of a finished download carries what proves the file is the one this
+/// download saved, so Delete File Too can later tell it from any file put in its place.
+#[test]
+fn a_completed_download_records_the_identity_that_proves_it_is_ours() {
+    let Some(t) = TestApp::new("hm-evidence") else { return };
+    let id = t.enqueue("https://fixture.invalid/ok-fast/evidence");
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Completed, "the download");
+    let saved = PathBuf::from(job.file_path.expect("a saved file"));
+    let recorded = |t: &TestApp| {
+        let history = { t.state().history.lock().unwrap().clone() };
+        history.into_iter().find(|h| h.id == id).expect("in the Library")
+    };
+    assert_eq!(recorded(&t).file_identity, Some(crate::download_files::identify(&saved).unwrap()));
+
+    // Saved with the entry, so it is there after a restart too.
+    let t = t.restart();
+    assert_eq!(recorded(&t).file_identity, Some(crate::download_files::identify(&saved).unwrap()));
+
+    // A replacement at the same path is not the download; the real file is.
+    std::fs::rename(&saved, t.out.join("moved-away.mp4")).unwrap();
+    std::fs::write(&saved, b"merged").unwrap();
+    assert!(crate::history_mutation::delete_entry(t.handle(), &id, true).is_err());
+    assert_eq!(std::fs::read(&saved).unwrap(), b"merged");
+    std::fs::remove_file(&saved).unwrap();
+    std::fs::rename(t.out.join("moved-away.mp4"), &saved).unwrap();
+    crate::history_mutation::delete_entry(t.handle(), &id, true).unwrap();
+    assert!(!saved.exists());
+    assert_eq!(library_entries(&t, &id), 0);
 }
 
 #[test]
@@ -723,8 +1023,14 @@ fn published(t: &TestApp) -> Vec<String> {
 fn a_transcript_is_saved_to_the_folder_and_library_without_any_media() {
     use crate::transcript::TranscriptFormat::Txt;
     let Some(t) = TestApp::new("transcript-ok") else { return };
+    let events = record_job_events(&t);
     let id = t.enqueue_with("https://fixture.invalid/captions/papa", transcript("en", false, Txt));
     let job = t.wait_job(&id, |j| j.status == JobStatus::Completed, "the transcript");
+    // No media is fetched, so the run shows as processing once it starts and never goes
+    // back (the caption conversion is a pre-download postprocessor, but no transfer follows).
+    let seen = events_of(&events, &id);
+    let first = seen.iter().position(|j| j.status == JobStatus::Processing).expect("a processing event");
+    assert!(seen[first..].iter().all(|j| matches!(j.status, JobStatus::Processing | JobStatus::Completed)), "{:?}", seen.iter().map(|j| j.status).collect::<Vec<_>>());
     let saved = t.out.join("papa [en].txt");
     assert_eq!(job.file_path.as_deref(), Some(saved.to_string_lossy().as_ref()));
     let text = std::fs::read_to_string(&saved).unwrap();
@@ -846,4 +1152,335 @@ fn a_transcript_job_resumes_with_its_choices_after_a_restart() {
     let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(t.dir.join("queue.json")).unwrap()).unwrap();
     assert_eq!(saved["jobs"][0]["options"]["mode"], "transcript");
     assert_eq!(saved["jobs"][0]["options"]["transcriptFormat"], "srt");
+}
+
+/// Every `job-update` the app emits, as the interface receives them.
+fn record_job_events(t: &TestApp) -> Arc<Mutex<Vec<Job>>> {
+    use tauri::Listener;
+    let events: Arc<Mutex<Vec<Job>>> = Default::default();
+    let sink = events.clone();
+    t.handle().listen("job-update", move |event| {
+        let payload: serde_json::Value = serde_json::from_str(event.payload()).expect("an event payload");
+        let job = serde_json::from_value(payload["job"].clone()).expect("a job in the event");
+        sink.lock().unwrap().push(job);
+    });
+    events
+}
+
+/// One job's events in revision order: the order the interface applies them in, whichever
+/// thread happened to emit first.
+fn events_of(events: &Arc<Mutex<Vec<Job>>>, id: &str) -> Vec<Job> {
+    let mut seen: Vec<Job> = events.lock().unwrap().iter().filter(|j| j.id == id).cloned().collect();
+    seen.sort_by_key(|j| j.revision);
+    seen
+}
+
+#[test]
+fn final_processing_stays_final_when_transfer_lines_arrive_late() {
+    let Some(t) = TestApp::new("w5-late") else { return };
+    let events = record_job_events(&t);
+    let id = t.enqueue("https://fixture.invalid/late-progress/latepipe");
+    // The fixture announces the merge on stderr, then sends the last stream's progress on
+    // stdout, with the process alive for a while after.
+    wait_until("the late transfer lines", || t.out.join("fixture-late.log").is_file());
+    std::thread::sleep(Duration::from_millis(300)); // Claws has read them
+    let job = t.job(&id).unwrap();
+    assert_eq!(job.status, JobStatus::Processing, "a late transfer line restored the transfer state");
+    assert_eq!((job.speed, job.eta), (None, None), "late telemetry came back during processing");
+    t.wait_job(&id, |j| j.status == JobStatus::Completed, "the completion");
+
+    let seen = events_of(&events, &id);
+    let first = seen.iter().position(|j| j.status == JobStatus::Processing).expect("a processing event");
+    assert!(seen[..first].iter().all(|j| j.status == JobStatus::Downloading), "{:?}", seen[..first].iter().map(|j| j.status).collect::<Vec<_>>());
+    let stage_bytes = seen[first].downloaded_bytes;
+    for j in &seen[first..] {
+        assert!(matches!(j.status, JobStatus::Processing | JobStatus::Completed), "state regressed to {:?}", j.status);
+        if j.status == JobStatus::Processing {
+            assert_eq!((j.speed, j.eta), (None, None), "speed or ETA reappeared during processing");
+            assert_eq!(j.downloaded_bytes, stage_bytes, "late transfer figures overwrote the processing display");
+        }
+    }
+}
+
+#[test]
+fn a_postprocessor_that_runs_before_the_download_does_not_end_the_transfer_stage() {
+    let Some(t) = TestApp::new("w5-preconvert") else { return };
+    let events = record_job_events(&t);
+    let id = t.enqueue("https://fixture.invalid/ok-preconvert/preconvert");
+    t.wait_job(&id, |j| j.status == JobStatus::Completed, "the completion");
+    assert_eq!(std::fs::read(t.out.join("preconvert.mp4")).unwrap(), b"merged");
+
+    let seen = events_of(&events, &id);
+    assert_eq!(seen[0].status, JobStatus::Downloading, "a started job is downloading");
+    let first = seen.iter().position(|j| j.status == JobStatus::Processing).expect("the merge shows as processing");
+    let transfer = &seen[..first];
+    assert!(transfer.iter().all(|j| j.status == JobStatus::Downloading), "the subtitle conversion showed as processing");
+    assert!(
+        transfer.iter().any(|j| j.downloaded_bytes.is_some() && j.speed.is_some()),
+        "Pause and the transfer figures must be available while the streams download"
+    );
+    assert!(seen[first..].iter().all(|j| matches!(j.status, JobStatus::Processing | JobStatus::Completed)));
+}
+
+#[test]
+fn space_is_not_rechecked_for_a_postprocessor_that_runs_before_the_transfer() {
+    let Some(t) = TestApp::new("cleanup-preconvert-space") else { return };
+    let id = t.enqueue("https://fixture.invalid/ok-preconvert/prespace");
+    t.wait_job(&id, |j| j.status == JobStatus::Completed, "the completion");
+    // One sample admits the download and one rechecks before the merge. The subtitle
+    // conversion that precedes the transfer announces itself the same way, but the space
+    // for the processing that follows the last byte is not in question yet, and a shortfall
+    // found then would stop the job with a message about processing it has not reached.
+    assert_eq!(t.gate.started(), 2, "the pre-download postprocessor triggered a processing-space check");
+}
+
+#[test]
+fn a_network_failure_after_a_pre_download_postprocessor_is_not_reported_as_processing() {
+    let Some(t) = TestApp::new("w5-prefail") else { return };
+    let id = t.enqueue("https://fixture.invalid/fail-preconvert/prefail");
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Failed, "the transfer to fail");
+    let error = job.error.clone().unwrap_or_default();
+    assert!(error.contains("timed out"), "{error}");
+    assert!(!error.contains("processing the file failed"), "a transfer failure was reported as a processing failure: {error}");
+}
+
+// ---- Kept side files (W4) ---------------------------------------------------------------------
+
+/// A video with English and Spanish caption files next to it, saved as separate files.
+fn with_captions() -> DownloadOptions {
+    DownloadOptions { subtitle_langs: vec!["en".into(), "es".into()], embed_subs: false, ..DownloadOptions::default() }
+}
+
+fn library_entry(t: &TestApp, id: &str) -> crate::history::HistoryItem {
+    let history = { t.state().history.lock().unwrap().clone() };
+    history.into_iter().find(|h| h.id == id).expect("in the Library")
+}
+
+fn library_entry_count(t: &TestApp, id: &str) -> usize {
+    t.state().history.lock().unwrap().iter().filter(|h| h.id == id).count()
+}
+
+/// The Library as `history.json` holds it: what the next start (or a reload) reads.
+fn saved_library(t: &TestApp) -> Vec<crate::history::HistoryItem> {
+    serde_json::from_str(&std::fs::read_to_string(t.dir.join("history.json")).unwrap()).unwrap()
+}
+
+/// Finishes a download whose `.en.srt` name is taken by the user's own file.
+fn withheld_download(t: &TestApp, name: &str) -> (String, PathBuf) {
+    std::fs::create_dir_all(&t.out).unwrap();
+    std::fs::write(t.out.join(format!("{name}.en.srt")), b"the user's own").unwrap();
+    let id = t.enqueue_with(&format!("https://fixture.invalid/ok-subs/{name}"), with_captions());
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Completed, "the download");
+    (id, job.workspace.expect("the work folder is kept").path)
+}
+
+fn kept_text(item: &crate::history::HistoryItem) -> String {
+    let (reveal, file) = crate::history::reveal_plan(item).expect("a kept-files record");
+    assert_eq!(reveal.status, crate::history::KeptStatus::Shown, "{reveal:?}");
+    std::fs::read_to_string(file.expect("the file to show")).unwrap()
+}
+
+#[test]
+fn a_withheld_sidecar_survives_restart_clear_finished_and_a_library_reload_and_stays_reachable() {
+    let Some(t) = TestApp::new("w4-withheld") else { return };
+    let (id, workspace) = withheld_download(&t, "pine");
+    // The media and the free side file were published; the user's file was not touched.
+    assert_eq!(std::fs::read(t.out.join("pine.mp4")).unwrap(), b"merged");
+    assert!(std::fs::read_to_string(t.out.join("pine.es.srt")).unwrap().contains("fixture es"));
+    assert_eq!(std::fs::read(t.out.join("pine.en.srt")).unwrap(), b"the user's own");
+
+    let entry = library_entry(&t, &id);
+    let kept = entry.kept_files.clone().expect("the Library entry records the kept file");
+    assert_eq!(kept.sources, ["pine.en.srt"], "the retained source, not the occupied destination");
+    assert_eq!(kept.workspace.path, workspace);
+    assert!(kept_text(&entry).contains("fixture en"));
+    assert_eq!(saved_library(&t)[0].kept_files, Some(kept.clone()), "saved with the entry before anything was retired");
+    assert!(workspace.join("pine.en.srt").is_file());
+
+    // Clear Finished removes the Queue row and nothing else.
+    downloader::clear_finished(t.handle());
+    assert!(t.job(&id).is_none());
+    assert_eq!(library_entry(&t, &id).kept_files, Some(kept.clone()));
+    assert!(kept_text(&library_entry(&t, &id)).contains("fixture en"));
+
+    // Restart: the Queue has nothing about the job, the Library still points at the file.
+    let t = t.restart();
+    assert!(t.job(&id).is_none());
+    assert_eq!(library_entry(&t, &id).kept_files, Some(kept.clone()), "after restart");
+    assert_eq!(saved_library(&t)[0].kept_files, Some(kept), "after reload");
+    assert!(kept_text(&library_entry(&t, &id)).contains("fixture en"));
+    downloader::retry_pending_cleanup(t.handle());
+    assert!(workspace.join("pine.en.srt").is_file(), "a cleanup retry must not take the retained file");
+    assert_eq!(std::fs::read(t.out.join("pine.en.srt")).unwrap(), b"the user's own");
+    assert_eq!(std::fs::read(t.out.join("pine.mp4")).unwrap(), b"merged");
+}
+
+#[test]
+fn a_download_whose_sidecars_were_all_published_keeps_nothing_and_cleans_up() {
+    let Some(t) = TestApp::new("w4-no-conflict") else { return };
+    let id = t.enqueue_with("https://fixture.invalid/ok-subs/quiet", with_captions());
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Completed, "the download");
+    assert!(library_entry(&t, &id).kept_files.is_none());
+    let workspace = job.workspace.unwrap().path;
+    wait_until("the work folder to go", || !workspace.exists());
+    assert!(t.out.join("quiet.en.srt").is_file() && t.out.join("quiet.es.srt").is_file());
+}
+
+#[test]
+fn removal_never_takes_the_retained_file_and_its_status_says_what_went_wrong() {
+    use crate::history::KeptStatus;
+    let Some(t) = TestApp::new("w4-removal") else { return };
+    let (id, workspace) = withheld_download(&t, "oak");
+    let retained = workspace.join("oak.en.srt");
+
+    // Delete File Too deletes the media and the side file Claws published, not the kept one.
+    crate::history_mutation::delete_entry(t.handle(), &id, true).unwrap();
+    assert!(!t.out.join("oak.mp4").exists() && !t.out.join("oak.es.srt").exists());
+    assert_eq!(std::fs::read(t.out.join("oak.en.srt")).unwrap(), b"the user's own");
+    assert!(retained.is_file(), "the retained file went with the media");
+    assert_eq!(library_entry_count(&t, &id), 0);
+
+    // Library-only removal leaves it too.
+    let (second, second_workspace) = withheld_download(&t, "elm");
+    crate::history_mutation::delete_entry(t.handle(), &second, false).unwrap();
+    assert!(second_workspace.join("elm.en.srt").is_file());
+    assert!(t.out.join("elm.mp4").is_file());
+
+    // Offline and missing are told apart from a successful show.
+    let (third, third_workspace) = withheld_download(&t, "ash");
+    let entry = library_entry(&t, &third);
+    assert_eq!(crate::history::reveal_plan(&entry).unwrap().0.status, KeptStatus::Shown);
+    std::fs::remove_file(third_workspace.join("ash.en.srt")).unwrap();
+    assert_eq!(crate::history::reveal_plan(&entry).unwrap().0.status, KeptStatus::Missing);
+    let mut offline = entry.clone();
+    let gone = t.dir.join("unplugged");
+    offline.kept_files.as_mut().unwrap().workspace.path = gone.join(crate::download_files::WORK_DIR).join(third_workspace.file_name().unwrap());
+    assert_eq!(crate::history::reveal_plan(&offline).unwrap().0.status, KeptStatus::Offline);
+    let mut none = entry;
+    none.kept_files = None;
+    assert!(crate::history::reveal_plan(&none).is_err());
+}
+
+#[test]
+fn a_kept_file_of_an_entry_saved_before_kept_records_is_found_again_at_the_next_start() {
+    let Some(t) = TestApp::new("w4-repair-start") else { return };
+    let (id, workspace) = withheld_download(&t, "fir");
+    // As an older version left it: the entry has no kept-files record.
+    let t = t.restart_after(|dir| {
+        let path = dir.join("history.json");
+        let mut library: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        library[0].as_object_mut().unwrap().remove("keptFiles");
+        std::fs::write(&path, serde_json::to_vec(&library).unwrap()).unwrap();
+    });
+    let entry = library_entry(&t, &id);
+    assert!(entry.kept_files.is_some(), "the startup look attaches it");
+    assert!(kept_text(&entry).contains("fixture en"));
+    assert_eq!(saved_library(&t)[0].kept_files, entry.kept_files, "and saves it");
+    assert!(workspace.join("fir.en.srt").is_file());
+}
+
+/// A finished download with a taken side-file name whose Library entry could not be saved:
+/// published, failed, still in the queue, its work folder holding the retained file.
+fn withheld_but_not_recorded(t: &TestApp, name: &str) -> (String, PathBuf) {
+    std::fs::create_dir_all(&t.out).unwrap();
+    std::fs::write(t.out.join(format!("{name}.en.srt")), b"the user's own").unwrap();
+    t.block("history.json");
+    let id = t.enqueue_with(&format!("https://fixture.invalid/ok-subs/{name}"), with_captions());
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Failed, "the Library save to fail");
+    assert!(job.error.unwrap_or_default().contains("could not add it to your Library"));
+    (id, job.workspace.expect("the work folder is kept").path)
+}
+
+#[test]
+fn start_recovery_of_an_unrecorded_completion_records_its_kept_file_before_anything_is_retired() {
+    let Some(t) = TestApp::new("w4-recover") else { return };
+    let (id, workspace) = withheld_but_not_recorded(&t, "yew");
+    t.unblock("history.json");
+    let t = t.restart();
+    assert_eq!(t.job(&id).expect("recovered").status, JobStatus::Completed);
+    let entry = library_entry(&t, &id);
+    assert!(kept_text(&entry).contains("fixture en"));
+    assert_eq!(saved_library(&t)[0].kept_files, entry.kept_files);
+    std::thread::sleep(Duration::from_millis(500)); // a cleanup would have run by now
+    assert!(workspace.join("yew.en.srt").is_file(), "recovery took the retained file with the work folder");
+    wait_until("the queue to retire the job", || t.saved_queue().iter().all(|j| j.id != id));
+    let t = t.restart();
+    assert!(t.job(&id).is_none());
+    assert!(kept_text(&library_entry(&t, &id)).contains("fixture en"));
+}
+
+#[test]
+fn start_recovery_gives_an_entry_without_a_kept_record_one_before_the_job_is_retired() {
+    let Some(t) = TestApp::new("w4-recover-known") else { return };
+    let (id, workspace) = withheld_but_not_recorded(&t, "ash2");
+    t.unblock("history.json");
+    // The entry was saved by an older version: it knows the media, not the kept file.
+    let mut older: crate::history::HistoryItem = serde_json::from_value(serde_json::json!({
+        "id": id, "title": "older", "url": "https://fixture.invalid/ok-subs/ash2", "uploader": null, "duration": null,
+        "thumbnail": null, "thumbnailLocal": null, "filePath": t.out.join("ash2.mp4").to_string_lossy(),
+        "fileSize": 6, "mode": "video", "quality": "Best", "finishedAt": 1
+    }))
+    .unwrap();
+    older.kept_files = None;
+    crate::store::save_snapshot(&t.dir.join("history.json"), || vec![older.clone()]).unwrap();
+    let t = t.restart();
+    assert_eq!(t.job(&id).expect("recovered").status, JobStatus::Completed);
+    assert!(kept_text(&library_entry(&t, &id)).contains("fixture en"));
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(workspace.join("ash2.en.srt").is_file());
+}
+
+#[test]
+fn start_recovery_keeps_a_known_entry_retryable_when_its_kept_record_cannot_be_saved() {
+    let Some(t) = TestApp::new("w4-recover-known-save-failed") else { return };
+    let (id, workspace) = withheld_but_not_recorded(&t, "cedar");
+    wait_until("the failed download worker to settle", || t.state().workers.load(std::sync::atomic::Ordering::SeqCst) == 0);
+    t.unblock("history.json");
+    let older: crate::history::HistoryItem = serde_json::from_value(serde_json::json!({
+        "id": id, "title": "older", "url": "https://fixture.invalid/ok-subs/cedar", "uploader": null, "duration": null,
+        "thumbnail": null, "thumbnailLocal": null, "filePath": t.out.join("cedar.mp4").to_string_lossy(),
+        "fileSize": 6, "mode": "video", "quality": "Best", "finishedAt": 1
+    })).unwrap();
+    crate::history_mutation::add(t.handle(), older).unwrap();
+    t.block("history.json");
+    let starts = t.starts().len();
+    downloader::restore_queue(t.handle(), vec![t.job(&id).unwrap()]).join().unwrap();
+    let recovered = t.job(&id).unwrap();
+    assert_eq!(recovered.status, JobStatus::Failed, "a failed kept-file save must not retire recovery");
+    assert!(recovered.error.unwrap_or_default().contains("Press Try Again"));
+    assert!(library_entry(&t, &id).kept_files.is_none());
+    downloader::flush_queue(t.handle()).unwrap();
+    assert!(t.saved_queue().iter().any(|job| job.id == id), "the retry must remain durable");
+    assert!(workspace.join("cedar.en.srt").is_file());
+    t.unblock("history.json");
+    downloader::resume(t.handle(), &id);
+    t.wait_job(&id, |job| job.status == JobStatus::Completed, "the kept-file retry to complete");
+    assert!(kept_text(&library_entry(&t, &id)).contains("fixture en"));
+    assert!(saved_library(&t)[0].kept_files.is_some());
+    assert_eq!(t.starts().len(), starts, "retry must not download the media again");
+    assert_eq!(std::fs::read(t.out.join("cedar.en.srt")).unwrap(), b"the user's own");
+}
+
+#[test]
+fn removing_a_finished_download_that_never_reached_the_library_keeps_its_retained_file() {
+    let Some(t) = TestApp::new("w4-remove-unrecorded") else { return };
+    let (id, workspace) = withheld_but_not_recorded(&t, "elm");
+    t.unblock("history.json");
+    downloader::remove(t.handle(), &id).unwrap();
+    assert!(t.job(&id).is_none());
+    wait_until("the removal to settle", || t.state().pending_cleanup.lock().unwrap().is_empty());
+    std::thread::sleep(Duration::from_millis(500)); // a cleanup would have run by now
+    let kept = std::fs::read_to_string(workspace.join("elm.en.srt")).expect("the only copy was deleted");
+    assert!(kept.contains("fixture en"));
+    assert_eq!(std::fs::read(t.out.join("elm.en.srt")).unwrap(), b"the user's own");
+}
+
+#[test]
+fn cancelling_a_finished_download_that_never_reached_the_library_keeps_its_retained_file() {
+    let Some(t) = TestApp::new("w4-cancel-unrecorded") else { return };
+    let (id, workspace) = withheld_but_not_recorded(&t, "oak");
+    downloader::cancel(t.handle(), &id);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(workspace.join("oak.en.srt").is_file());
+    assert!(t.job(&id).is_some(), "a committed publication is not cancelled");
 }

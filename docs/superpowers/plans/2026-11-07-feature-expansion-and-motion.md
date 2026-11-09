@@ -13,13 +13,13 @@ Scope: macOS support, vocal removal, ProRes presets and clip sections are exclud
 
 Font safeguards; independent-link batches; size and temporary-space previews; source-driven resolutions up to 8K with Compatible and Original output; transcript export; native outgoing file drag; completion feedback and the motion pass. Their behaviour, tests and limits are described in `docs/releases/1.1.0.md` and `docs/CURRENT_DEVELOPMENT_STATUS.md`.
 
-## 1. Remaining before 1.1.0 can be published
+## 1. Remaining before the owner-requested 1.0.0 can be published
 
 These need a person at a Windows desktop or the owner's authorization; none can be established by the automated checks.
 
 - [ ] **Native drag acceptance.** Run the manual checklist in `docs/CURRENT_DEVELOPMENT_STATUS.md` with disposable data: Explorer copy, one installed editor (record name, version, container and codec separately from whether the drop happened), Escape, a drop onto Claws, a missing file, Unicode and long paths, and that the Library file is intact afterwards. A passing build or fixture test does not prove timeline import.
-- [ ] **Windows 10 and upstream.** Re-check the `drag` crate's open issues (#72, #76, #94) and test the drag on Windows 10; neither is covered by the review so far.
-- [ ] **Fresh install and upgrade.** Install the 1.1.0 installer on a clean profile, then upgrade from an installed 1.0.5 (the queue file moves to schema 3; 1.0.5 sets a schema-3 queue aside rather than reading it). Neither has been tested.
+- [ ] **Windows 10 and receiver stalls.** Test the direct Shell/OLE worker on Windows 10 and against a receiver that stalls; verify Claws stays responsive, later drags are bounded and downloads continue.
+- [ ] **Fresh install and upgrade.** Install the current 1.0.0 installer on a clean profile, then upgrade from an installed 1.0.5 (the queue file moves to schema 3; 1.0.5 sets a schema-3 queue aside rather than reading it). Neither has been tested.
 - [ ] **A real source.** Run one download of each kind (video, Original video, audio, transcript, a pasted batch) against a real site with disposable settings. The automated tests use fixtures and made-up metadata only, so site-specific behaviour (for example YouTube caption shapes, 6K/8K and HDR formats) is unverified.
 - [ ] **Reduce motion and visual check** in the real WebView2 window. The motion measurements were taken in headless Edge against the dev mock.
 - [ ] **Publish only with authorization.** Verify the uploaded installer's digest against the local file and the release commit.
@@ -44,7 +44,7 @@ The font safeguards are committed and verified; preserve them. The affected slow
 - **Most replayed.** Inspect whether selected sources expose usable heatmap data; show a shortcut only when present. It must not reintroduce clip-export controls.
 - **Speech recognition.** Optional local model, language selection, separate download size, timestamp output and cancellation; do not bundle a large model to claim transcript support.
 - **Lyrics.** Only text from a legitimate supported source; distinguish lyrics from speech transcripts.
-- **Multiple-file drag**, after single-file reliability is proven, and replacing the `drag` crate with Claws' own `DoDragDrop` call if the long-path and network limits matter.
+- **Multiple-file drag**, after single-file reliability is proven.
 - **macOS.** Separate platform plan; no macOS-native claim for this release.
 
 ## 4. Verification for every increment

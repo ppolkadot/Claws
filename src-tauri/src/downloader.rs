@@ -92,6 +92,10 @@ impl Default for DownloadOptions {
     }
 }
 
+/// The most subtitle languages one video download can ask for. The picker in
+/// src/transcript-options.ts (`MAX_SUBTITLE_LANGS`) enforces the same number; a test ties them.
+pub const MAX_SUBTITLE_LANGS: usize = 12;
+
 impl DownloadOptions {
     /// Whether subtitles go into the video (a whole-file pass) rather than next to it.
     pub fn embeds_subtitles(&self) -> bool {
@@ -138,9 +142,16 @@ impl DownloadOptions {
             return Ok(());
         }
         self.transcript_format = TranscriptFormat::Txt;
-        self.subtitle_langs.truncate(12);
+        // Every entry is judged before the count, and nothing is dropped: a request that
+        // asks for more than the limit is refused, never quietly shortened.
         if !self.subtitle_langs.iter().all(valid_lang) {
             return Err(AppError::msg("Invalid subtitle language."));
+        }
+        if self.subtitle_langs.len() > MAX_SUBTITLE_LANGS {
+            return Err(AppError::msg(format!(
+                "Choose at most {MAX_SUBTITLE_LANGS} subtitle languages per download ({} were requested).",
+                self.subtitle_langs.len()
+            )));
         }
         Ok(())
     }
@@ -273,7 +284,7 @@ pub enum Intent {
 /// job, so pause, cancel and resume never see a half-finished state.
 pub struct Running {
     /// `None` once the process has exited, so a late kill never hits a reused pid.
-    pid: Option<u32>,
+    pub(crate) pid: Option<u32>,
     intent: Intent,
     /// Legacy leftovers from earlier runs, handed over when a running job is removed.
     cleanup: Vec<String>,
@@ -443,7 +454,9 @@ pub fn restore_queue(app: &AppHandle, saved: Vec<Job>) -> std::thread::JoinHandl
                                 job.file_path = Some(media.to_string_lossy().into_owned());
                                 update_job(&app, &id, |j| j.file_path = job.file_path.clone());
                                 let known = state.history.lock().unwrap().iter().any(|h| h.id == id);
-                                let recorded = if known { Ok(()) } else { history::record(&app, &job) };
+                                // An entry recorded before kept-file records existed gets its record now,
+                                // while the work folder still holds what it points at.
+                                let recorded = if known { history::attach_kept(&app, &job) } else { history::record(&app, &job) };
                                 match recorded {
                                     Ok(()) => {
                                         if let Some(done) = update_job(&app, &id, |j| {
@@ -454,6 +467,10 @@ pub fn restore_queue(app: &AppHandle, saved: Vec<Job>) -> std::thread::JoinHandl
                                         }) {
                                             if manifest.withheld().is_empty() {
                                                 cleanup.push(PendingCleanup::of(&done));
+                                            } else if state.history.lock().unwrap().iter().any(|h| h.id == id && h.kept_files.is_some()) {
+                                                // The retained files are recorded with the Library entry: the
+                                                // finished job may leave the saved queue, the work folder stays.
+                                                persist_queue(&app);
                                             }
                                         }
                                     }
@@ -861,6 +878,12 @@ fn cleanup_now(app: &AppHandle, item: PendingCleanup) -> bool {
     let state = app.state::<AppState>();
     remove_partials_now(&item.legacy);
     let removed = match &item.workspace {
+        // A finished download's retained side file is not an unfinished leftover, even when the job
+        // itself failed or was removed before the Library recorded it. The folder stays.
+        Some(workspace) if download_files::holds_kept_files(workspace, &item.job_id) => {
+            notify(app, format!("A subtitle file that could not be saved next to its video was left in {}. Claws did not delete it.", workspace.path.display()));
+            true
+        }
         Some(workspace) => match download_files::remove_workspace(workspace, &item.job_id) {
             Ok(()) => true,
             Err(_) if !workspace.path.exists() => true,
@@ -1235,17 +1258,32 @@ async fn run_prepared(
     let stopped: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
     let stderr_stopped = stopped.clone();
     let stderr_workspace = workspace.path.clone();
-    // While the job runs, what reached its work folder stops being reserved.
+    // While the job runs, what reached its work folder stops being reserved. The ledger's
+    // lock can wait behind a slow free-space sample, so it is only taken on a blocking
+    // thread. Such a refresh may still be queued when the run ends, so it checks
+    // `ticker_live` under the lock and never touches a reservation that was released.
+    let ticker_live = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let ledger_ticker = {
         let app = app.clone();
         let id = id.to_string();
         let path = workspace.path.clone();
+        let live = ticker_live.clone();
         tauri::async_runtime::spawn(async move {
             loop {
                 tokio::time::sleep(LEDGER_REFRESH).await;
-                let sample = path.clone();
-                let Ok(on_disk) = tokio::task::spawn_blocking(move || disk_budget::bytes_in(&sample)).await else { break };
-                app.state::<AppState>().disk_ledger.lock().unwrap().update(&id, on_disk);
+                let (app, id, path, live) = (app.clone(), id.clone(), path.clone(), live.clone());
+                let refreshed = tokio::task::spawn_blocking(move || {
+                    let on_disk = disk_budget::bytes_in(&path);
+                    let state = app.state::<AppState>();
+                    let mut ledger = disk_budget::lock(&state.disk_ledger);
+                    if live.load(Ordering::SeqCst) {
+                        ledger.update(&id, on_disk);
+                    }
+                })
+                .await;
+                if refreshed.is_err() {
+                    break;
+                }
             }
         })
     };
@@ -1260,10 +1298,18 @@ async fn run_prepared(
             let line = line.trim_end();
             if let Some(rest) = line.strip_prefix(TAG_POST) {
                 if rest.starts_with("started") {
-                    stderr_processing.store(true, Ordering::SeqCst);
-                    mark_processing(&stderr_app, &stderr_id);
+                    // A pre-download postprocessor does not make a later transfer failure a processing one.
+                    let final_stage = starts_final_processing(rest);
+                    if final_stage {
+                        stderr_processing.store(true, Ordering::SeqCst);
+                    }
+                    postprocessor_started(&stderr_app, &stderr_id, rest);
                     // Best-effort notification check; this cannot gate yt-dlp before processing.
-                    if let Some(reason) = recheck_processing_space(&stderr_app, &stderr_id, &stderr_workspace).await {
+                    // Only the final stage is checked: what a pre-download postprocessor leaves to
+                    // be done is the whole transfer, which admission already judged, and a
+                    // shortfall found now would stop the job with a processing message.
+                    let short = if final_stage { recheck_processing_space(&stderr_app, &stderr_id, &stderr_workspace).await } else { None };
+                    if let Some(reason) = short {
                         // A disk sample may finish after the process has been reaped.
                         if let Some(pid) = stderr_app.state::<AppState>().running.lock().unwrap().get(&stderr_id).and_then(|r| r.pid) {
                             kill_tree(pid, false);
@@ -1330,6 +1376,7 @@ async fn run_prepared(
 
     let status = child.wait().await;
     ledger_ticker.abort();
+    ticker_live.store(false, Ordering::SeqCst);
     // Forget the pid before `child` drops and Windows can reuse it.
     if let Some(entry) = state.running.lock().unwrap().get_mut(id) {
         entry.pid = None;
@@ -1366,10 +1413,9 @@ async fn run_prepared(
 struct Budget {
     workspace: std::path::PathBuf,
     volume: String,
-    mode: String,
-    audio_format: String,
+    options: DownloadOptions,
+    policy: download_policy::ProcessingPolicy,
     duration: Option<f64>,
-    rewrite: bool,
     checked: bool,
     watching: bool,
     last_watch: Instant,
@@ -1380,14 +1426,19 @@ impl Budget {
         Self {
             workspace: workspace.to_path_buf(),
             volume: disk_budget::volume_key(workspace),
-            mode: job.options.mode.clone(),
-            audio_format: job.options.audio_format.clone(),
+            options: job.options.clone(),
+            policy: download_policy::ProcessingPolicy::new(&job.options, execution),
             duration: job.duration,
-            rewrite: execution.embed_metadata || job.options.embeds_subtitles(),
             checked: false,
             watching: false,
             last_watch: Instant::now(),
         }
+    }
+
+    /// The sizing plan admission reserves from: the policy of this job's own options and
+    /// frozen settings, the same one the size preview builds (estimate.rs).
+    fn plan(&self) -> disk_budget::RunPlan<'_> {
+        self.policy.run_plan(&self.options, self.duration)
     }
 
     /// A reason to stop, if the volume cannot hold this download.
@@ -1398,31 +1449,28 @@ impl Budget {
                 self.watching = true;
                 return None;
             };
-            // The same formula the size preview shows (estimate.rs).
-            let plan = disk_budget::RunPlan {
-                mode: &self.mode,
-                audio_format: &self.audio_format,
-                rewrite: self.rewrite,
-                duration: self.duration,
-            };
-            let Some(peak) = plan.peak(&sizes) else {
+            let Some(peak) = self.plan().peak(&sizes) else {
                 self.watching = true;
                 return None;
             };
-            let workspace = self.workspace.clone();
-            let on_disk = tokio::task::spawn_blocking(move || disk_budget::bytes_in(&workspace)).await.ok()?;
-            let state = app.state::<AppState>();
-            // Free space is read under the ledger's lock, so no other admission or update
-            // lands between the reading and the decision.
-            let mut ledger = state.disk_ledger.lock().unwrap();
-            // An unreadable volume is not evidence of a shortfall: watch instead.
-            let Ok(free) = (state.free_space)(&self.workspace) else {
-                self.watching = true;
-                return None;
-            };
-            return match ledger.admit(id, &self.volume, peak, on_disk, free) {
-                Ok(()) => None,
-                Err(short) => Some(format!(
+            let (app, id, workspace, volume) = (app.clone(), id.to_string(), self.workspace.clone(), self.volume.clone());
+            // The directory walk, the free-space reading and the ledger's lock can all wait
+            // on a slow disk, so they run together on a blocking thread, not an async worker.
+            // The reading and the decision stay together under the ledger's lock.
+            let admission = tokio::task::spawn_blocking(move || {
+                let on_disk = disk_budget::bytes_in(&workspace);
+                let state = app.state::<AppState>();
+                disk_budget::admit_sampled(&state.disk_ledger, &state.free_space, &id, &volume, &workspace, peak, on_disk)
+            })
+            .await;
+            return match settled_admission(admission) {
+                disk_budget::Admission::Admitted => None,
+                // An unreadable volume is not evidence of a shortfall: watch instead.
+                disk_budget::Admission::Unreadable => {
+                    self.watching = true;
+                    None
+                }
+                disk_budget::Admission::Refused(short) => Some(format!(
                     "Not enough free space on {} for this download. It needs about {} more (estimated, including a safety margin) and about {} is available. Free up space, then press Try Again; what was downloaded is kept.",
                     self.volume.to_uppercase(),
                     human_bytes(short.required),
@@ -1447,19 +1495,33 @@ impl Budget {
     }
 }
 
+/// The admission decision once its blocking thread is done. A panic there (a failing
+/// free-space provider or ledger) is no evidence of room: it is logged and degrades to the
+/// disk watch, as an unreadable volume does, instead of silently admitting the job.
+fn settled_admission(joined: std::result::Result<disk_budget::Admission, tokio::task::JoinError>) -> disk_budget::Admission {
+    joined.unwrap_or_else(|e| {
+        eprintln!("Checking free space for a download failed ({e}); the disk is watched instead.");
+        disk_budget::Admission::Unreadable
+    })
+}
+
 /// How often a running job's work folder is measured to shrink its reservation.
 const LEDGER_REFRESH: Duration = Duration::from_secs(2);
 
 /// Refreshes the job's reservation from its work folder (best effort, on a processing
 /// notification) and returns a reason to stop if what it still needs no longer fits.
 async fn recheck_processing_space(app: &AppHandle, id: &str, workspace: &Path) -> Option<String> {
-    let sample = workspace.to_path_buf();
-    let on_disk = tokio::task::spawn_blocking(move || disk_budget::bytes_in(&sample)).await.ok()?;
-    let state = app.state::<AppState>();
-    let mut ledger = state.disk_ledger.lock().unwrap();
-    ledger.update(id, on_disk);
-    let free = (state.free_space)(workspace).ok()?;
-    let short = ledger.recheck(id, free).err()?;
+    // The walk, the reading and the ledger's lock run on a blocking thread (see `Budget::after_line`).
+    let (app, id, sample) = (app.clone(), id.to_string(), workspace.to_path_buf());
+    let short = tokio::task::spawn_blocking(move || {
+        let on_disk = disk_budget::bytes_in(&sample);
+        let state = app.state::<AppState>();
+        disk_budget::recheck_sampled(&state.disk_ledger, &state.free_space, &id, &sample, on_disk)
+    })
+    .await
+    // A panic there is no evidence of a shortfall: no reason to stop the job.
+    .map_err(|e| eprintln!("Rechecking free space during processing failed: {e}"))
+    .ok()??;
     Some(format!(
         "Not enough free space on {} to finish processing this download. It needs about {} more (estimated, including a safety margin) and about {} is available. Free up space, then press Try Again; the downloaded files are kept in the work folder.",
         disk_budget::volume_key(workspace).to_uppercase(),
@@ -1480,6 +1542,26 @@ fn human_bytes(bytes: u64) -> String {
         format!("{value:.0} {}", UNITS[unit])
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Postprocessors yt-dlp runs before the download starts, in the options Claws asks for
+/// (`--convert-subs` runs before the media is fetched). They announce themselves with the
+/// same signal as the final stage, but a transfer still follows them.
+const PRE_DOWNLOAD_PROCESSORS: [&str; 4] = ["FFmpegSubtitlesConvertor", "FFmpegThumbnailsConvertor", "MetadataParser", "SponsorBlock"];
+
+/// Whether a `started|<postprocessor>` line of the postprocessing stream announces the
+/// final processing stage (merge, audio extraction, embedding, moves), which follows the
+/// last byte and is authoritative until the process exits. A pre-download postprocessor
+/// leaves the transfer stage alone.
+fn starts_final_processing(rest: &str) -> bool {
+    let name = rest.split('|').nth(1).unwrap_or_default().trim();
+    !PRE_DOWNLOAD_PROCESSORS.contains(&name)
+}
+
+fn postprocessor_started(app: &AppHandle, id: &str, rest: &str) {
+    if starts_final_processing(rest) {
+        mark_processing(app, id);
     }
 }
 
@@ -1511,7 +1593,7 @@ fn handle_line(
         outcome.captions = serde_json::from_str::<Vec<String>>(rest.trim()).ok();
     } else if let Some(rest) = line.strip_prefix(TAG_POST) {
         if rest.starts_with("started") {
-            mark_processing(app, id);
+            postprocessor_started(app, id, rest);
         }
     } else if let Some(rest) = line.strip_prefix(TAG_PROGRESS) {
         // status|downloaded|total|estimate|speed|eta|fragment|fragments|format_id|filename
@@ -1525,8 +1607,12 @@ fn handle_line(
         if finished || last_emit.elapsed() >= Duration::from_millis(150) {
             *last_emit = Instant::now();
             update_job(app, id, |j| {
-                if j.status.is_active() {
-                    j.status = JobStatus::Downloading;
+                // Transfer figures belong to the transfer stage only. The two pipes are
+                // read independently, so a line that was buffered while the final
+                // processing began (or the job was paused or cancelled) arrives late and
+                // must not restore the transfer controls, speed or ETA.
+                if j.status != JobStatus::Downloading {
+                    return;
                 }
                 j.progress_known = snapshot.fraction.is_some();
                 j.progress = snapshot.fraction.unwrap_or(j.progress);
@@ -1677,8 +1763,7 @@ async fn publish(app: &AppHandle, id: &str, outcome: &mut Outcome) {
             // has recorded the completion.
             if !published.skipped.is_empty() {
                 outcome.keep_workspace = true;
-                let names: Vec<String> = published.skipped.iter().filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
-                notify(app, format!("Saved “{}”, but {} already existed, so the new copy was kept in the download's work folder.", job.title, names.join(", ")));
+                notify(app, skipped_notice(&job.title, &published));
             }
         }
         Err(message) => {
@@ -1686,6 +1771,25 @@ async fn publish(app: &AppHandle, id: &str, outcome: &mut Outcome) {
             outcome.error = Some(message);
         }
     }
+}
+
+/// What to tell the user about side files that were not published. Only a file the work
+/// folder's marker records as withheld can be shown again (Show kept files); for any other
+/// the notice must not promise it.
+fn skipped_notice(title: &str, published: &download_files::Published) -> String {
+    let names = |paths: Vec<&std::path::PathBuf>| paths.iter().filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).collect::<Vec<_>>().join(", ");
+    let kept: Vec<_> = published.skipped.iter().filter(|p| published.kept.contains(p)).collect();
+    let lost: Vec<_> = published.skipped.iter().filter(|p| !published.kept.contains(p)).collect();
+    let mut text = format!("Saved “{title}”");
+    if !kept.is_empty() {
+        text.push_str(&format!(", but {} could not be saved next to the video (the name may be taken), so the new copy was kept in the download's work folder (Show kept files in your Library opens it).", names(kept)));
+    }
+    if !lost.is_empty() {
+        let (count, joined) = (lost.len(), names(lost));
+        let lead = if text.ends_with('.') { " " } else { ", but " };
+        text.push_str(&format!("{lead}{joined} could not be saved and {} left out.", if count == 1 { "was" } else { "were" }));
+    }
+    text
 }
 
 async fn run_job(app: AppHandle, id: String) {
@@ -1726,7 +1830,16 @@ async fn run_job(app: AppHandle, id: String) {
 
     // The process is gone, so its files stop growing (publication only moves them on the
     // same volume): the claim goes before the job is settled and could be retried.
-    state.disk_ledger.lock().unwrap().release(&id);
+    // (On a blocking thread: the ledger's lock can wait behind a slow free-space sample.)
+    {
+        let (app, id) = (app.clone(), id.clone());
+        // A ledger poisoned by a panicking sample still lets this claim go.
+        let released = tokio::task::spawn_blocking(move || disk_budget::lock(&app.state::<AppState>().disk_ledger).release(&id))
+        .await;
+        if let Err(e) = released {
+            eprintln!("Releasing a download's disk reservation failed: {e}");
+        }
+    }
 
     // Success wins over a pause or cancel that arrives now: the file is published.
     if outcome.success {
@@ -1907,6 +2020,62 @@ pub(crate) fn remove_partials_now(files: &[String]) {
 mod tests {
     use super::*;
 
+    fn budget_for(format: &str, fast_save: bool, embed_metadata: bool) -> Budget {
+        let options = DownloadOptions { mode: "audio".into(), audio_format: format.into(), fast_save, ..DownloadOptions::default() };
+        let job: Job = serde_json::from_value(serde_json::json!({
+            "id": "budget-test", "url": "https://fixture.invalid/a", "title": "T", "thumbnail": null, "uploader": null,
+            "duration": 60.0, "options": options, "status": "queued", "progress": 0.0, "speed": null, "eta": null,
+            "filePath": null, "error": null, "createdAt": 1
+        }))
+        .unwrap();
+        let settings = crate::settings::Settings { embed_metadata, ..crate::settings::Settings::default() };
+        let execution = JobExecution::freeze(&settings, fast_save);
+        Budget::new(&job, &execution, &std::env::temp_dir())
+    }
+
+    #[test]
+    fn the_notice_about_skipped_side_files_promises_only_what_can_be_found_again() {
+        let published = |skipped: &[&str], kept: &[&str]| download_files::Published {
+            media: std::path::PathBuf::from("D:/Out/clip.mp4"),
+            skipped: skipped.iter().map(|n| std::path::PathBuf::from("D:/Out").join(n)).collect(),
+            kept: kept.iter().map(|n| std::path::PathBuf::from("D:/Out").join(n)).collect(),
+        };
+        // Kept and reachable: say where to find it.
+        let kept = skipped_notice("Clip", &published(&["clip.en.srt"], &["clip.en.srt"]));
+        assert!(kept.contains("clip.en.srt") && kept.contains("Show kept files"), "{kept}");
+        // Not recorded: no promise of a copy, and the file is named as left out.
+        let lost = skipped_notice("Clip", &published(&["clip.es.srt"], &[]));
+        assert!(lost.contains("clip.es.srt") && lost.contains("left out"), "{lost}");
+        assert!(!lost.contains("Show kept files") && !lost.contains("work folder"), "{lost}");
+        // A mix names each file under what happened to it.
+        let mixed = skipped_notice("Clip", &published(&["clip.en.srt", "clip.es.srt"], &["clip.en.srt"]));
+        assert!(mixed.contains("clip.en.srt could not be saved next to the video") && !mixed.contains("already existed") && mixed.contains("Show kept files"), "{mixed}");
+        assert!(mixed.contains("clip.es.srt could not be saved and was left out"), "{mixed}");
+    }
+
+    #[test]
+    fn admission_reserves_from_the_jobs_own_processing_choices() {
+        let peak = |format, fast_save, metadata| budget_for(format, fast_save, metadata).plan().peak(&[Some(100)]);
+        // MP3: the cover-art pass rewrites the output, so the output is held twice (S + 2 * O).
+        assert_eq!(peak("mp3", false, false), Some(300));
+        // Fast Save skips it: S + O.
+        assert_eq!(peak("mp3", true, false), Some(200));
+        // Metadata alone rewrites an Opus output; Fast Save drops that too.
+        assert_eq!(peak("opus", false, true), Some(300));
+        assert_eq!(peak("opus", true, true), Some(200));
+        assert_eq!(peak("opus", false, false), Some(200));
+        // "Original" is extracted as well, so it is sized as a possible whole copy.
+        assert_eq!(peak("best", true, false), Some(200));
+    }
+
+    #[test]
+    fn a_panic_while_sampling_space_degrades_to_the_watch_not_to_admission() {
+        let joined = tauri::async_runtime::block_on(async { tokio::task::spawn_blocking(|| -> disk_budget::Admission { panic!("the sample panicked") }).await });
+        assert!(joined.is_err());
+        assert_eq!(settled_admission(joined), disk_budget::Admission::Unreadable);
+        assert_eq!(settled_admission(Ok(disk_budget::Admission::Admitted)), disk_budget::Admission::Admitted);
+    }
+
     #[test]
     fn jobs_saved_by_1_0_4_still_load() {
         // queue.json as 1.0.4 wrote it: none of the fields added since.
@@ -2008,6 +2177,74 @@ mod tests {
         assert_ne!(options_key(&human), options_key(&plain));
     }
 
+    fn video_with(langs: Vec<String>) -> DownloadOptions {
+        DownloadOptions { subtitle_langs: langs, ..DownloadOptions::default() }
+    }
+
+    fn codes(count: usize) -> Vec<String> {
+        (0..count).map(|i| format!("l{i}")).collect()
+    }
+
+    #[test]
+    fn twelve_subtitle_languages_pass_and_more_are_refused_untouched() {
+        let mut twelve = video_with(codes(12));
+        twelve.validate().unwrap();
+        assert_eq!(twelve.subtitle_langs, codes(12));
+        for count in [13, 14, 40] {
+            let mut over = video_with(codes(count));
+            let err = over.validate().unwrap_err().to_string();
+            assert!(err.contains("12"), "{count}: the limit is named: {err}");
+            assert!(err.to_lowercase().contains("subtitle"), "{count}: {err}");
+            assert_eq!(over.subtitle_langs, codes(count), "{count}: a refused request is never truncated");
+        }
+        // Audio downloads carry no subtitles, but the same request is not quietly accepted.
+        let mut audio = DownloadOptions { mode: "audio".into(), subtitle_langs: codes(13), ..DownloadOptions::default() };
+        assert!(audio.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_language_syntax_is_refused_wherever_it_sits() {
+        for (position, bad) in [(0, ""), (11, "bad lang"), (12, "bad lang"), (13, "x;y"), (14, "en,fr"), (30, "a".repeat(25).as_str())] {
+            let mut langs = codes(position.max(12) + 1);
+            langs[position] = bad.to_string();
+            let mut options = video_with(langs);
+            let err = options.validate().unwrap_err().to_string();
+            // Syntax is judged for every entry first, so a bad code past the twelfth is
+            // reported as bad rather than hidden by a truncation (or by the limit).
+            assert!(err.contains("Invalid subtitle language"), "{position} {bad:?}: {err}");
+        }
+        // Twelve valid codes with a thirteenth that is invalid are not a valid request of twelve.
+        let mut thirteen = codes(12);
+        thirteen.push("not valid".into());
+        assert!(video_with(thirteen).validate().is_err());
+    }
+
+    #[test]
+    fn the_transcript_language_rule_is_separate_from_the_video_limit() {
+        // Thirteen languages: a transcript still says it needs one, not that a limit was hit.
+        let err = transcript(&["l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9", "l10", "l11", "l12"]).validate().unwrap_err().to_string();
+        assert!(err.contains("caption language"), "{err}");
+        assert!(!err.contains("12"), "{err}");
+        // A video of twelve is fine; a transcript of two is not.
+        assert!(video_with(codes(12)).validate().is_ok());
+        assert!(transcript(&["en", "fr"]).validate().is_err());
+        assert!(transcript(&["en"]).validate().is_ok());
+    }
+
+    #[test]
+    fn the_subtitle_limit_matches_the_interface_constant() {
+        // src/transcript-options.ts advertises the limit the picker enforces; a drift would
+        // let the picker offer what validate refuses (or hide what it accepts).
+        let source = include_str!("../../src/transcript-options.ts");
+        let line = source
+            .lines()
+            .find(|l| l.trim_start().starts_with("export const MAX_SUBTITLE_LANGS"))
+            .expect("transcript-options.ts exports MAX_SUBTITLE_LANGS");
+        let value: usize = line.split('=').nth(1).and_then(|v| v.trim().trim_end_matches(';').trim().parse().ok()).expect("a number");
+        assert_eq!(value, MAX_SUBTITLE_LANGS);
+        assert_eq!(MAX_SUBTITLE_LANGS, 12);
+    }
+
     #[test]
     fn the_transcript_format_is_ignored_outside_transcripts_and_saved_by_name() {
         let mut video = DownloadOptions { transcript_format: TranscriptFormat::Vtt, ..DownloadOptions::default() };
@@ -2065,6 +2302,74 @@ mod tests {
         entry.request(Intent::Cancel);
         entry.request(Intent::Pause);
         assert_eq!(entry.intent, Intent::Cancel);
+    }
+
+    /// A transfer line that was already buffered when the job was stopped reaches the
+    /// event path after the job is settled: it must change nothing.
+    fn a_late_transfer_line_leaves_a_stopped_job_alone(tag: &str, stop: fn(&AppHandle, &str), stopped: JobStatus) {
+        use crate::lifecycle_tests::{wait_until, TestApp};
+        let Some(t) = TestApp::new(tag) else { return };
+        let id = t.enqueue("https://fixture.invalid/hang/lateevent");
+        t.wait_job(&id, |j| j.status == JobStatus::Downloading && j.downloaded_bytes.is_some(), "the download to run");
+        stop(t.handle(), &id);
+        t.wait_job(&id, |j| j.status == stopped, "the stop to settle");
+        wait_until("the worker to finish", || !t.state().live_jobs.lock().unwrap().contains(&id));
+        let before = t.job(&id).unwrap();
+        assert_eq!(before.downloaded_bytes, Some(7));
+
+        let mut progress = TransferProgress::new("video");
+        let mut last_emit = Instant::now() - Duration::from_secs(1);
+        let mut outcome = Outcome::failed("");
+        for line in [
+            "CLAWS|downloading|5000|9999|NA|123456|3|NA|NA|137|x.f137.mp4",
+            "CLAWS|finished|9999|9999|NA|NA|NA|NA|NA|137|x.f137.mp4",
+        ] {
+            handle_line(t.handle(), &id, line, &mut progress, &mut last_emit, &mut outcome);
+            last_emit = Instant::now() - Duration::from_secs(1);
+        }
+        let after = t.job(&id).unwrap();
+        assert_eq!(after.status, stopped, "a late line changed the settled state");
+        assert_eq!(after.downloaded_bytes, before.downloaded_bytes, "a late line overwrote the stopped job's figures");
+        assert_eq!((after.total_bytes, after.progress, after.speed, after.eta), (before.total_bytes, before.progress, None, None));
+    }
+
+    #[test]
+    fn a_late_transfer_line_does_not_touch_a_paused_job() {
+        a_late_transfer_line_leaves_a_stopped_job_alone("w5-late-pause", pause, JobStatus::Paused);
+    }
+
+    #[test]
+    fn a_late_transfer_line_does_not_touch_a_cancelled_job() {
+        a_late_transfer_line_leaves_a_stopped_job_alone("w5-late-cancel", cancel, JobStatus::Cancelled);
+    }
+
+    #[test]
+    fn only_the_final_stage_is_authoritative_processing() {
+        // Merge, audio extraction, subtitle and thumbnail embedding, metadata and the move
+        // follow the transfer; the subtitle conversion that precedes it does not.
+        // The postprocessor keys yt-dlp reports (`pp_key()`), as spelled in its source.
+        for name in [
+            "FFmpegMerger",
+            "FFmpegExtractAudio",
+            "FFmpegVideoConvertor",
+            "FFmpegVideoRemuxer",
+            "FFmpegEmbedSubtitle",
+            "FFmpegMetadata",
+            "EmbedThumbnail",
+            "MoveFiles",
+            "FFmpegFixupM4a",
+            "FFmpegFixupStretched",
+            "ModifyChapters",
+            "Merger",
+            "NA",
+            "",
+        ] {
+            assert!(starts_final_processing(&format!("started|{name}")), "{name}");
+        }
+        for name in PRE_DOWNLOAD_PROCESSORS {
+            assert!(!starts_final_processing(&format!("started|{name}")), "{name}");
+        }
+        assert!(starts_final_processing("started"), "an unnamed signal is treated as final processing");
     }
 
     #[test]

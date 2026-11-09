@@ -1,5 +1,6 @@
 import { api, errorMessage, type Job } from "../api";
 import { folderName, formatBytes, formatEta, formatSpeed } from "../format";
+import { keptKey, keptLabel } from "../kept-files";
 import { store } from "../store";
 import { button, toast } from "../ui/components";
 import { h, replace } from "../ui/dom";
@@ -12,6 +13,7 @@ import { progressMotion } from "../ui/progress-motion";
 import { orderMoves } from "../ui/row-order";
 import { videoOptionsText } from "../resolution";
 import { transcriptText } from "../transcript-options";
+import { showKept } from "./library";
 import type { MountView } from "./shell";
 
 const fail = (error: unknown) => toast(errorMessage(error), { tone: "error" });
@@ -30,6 +32,8 @@ interface RowRefs {
   guardUntil: number;
   /** Counts the row's presses, so an older press's fallback timer leaves a newer press's state alone. */
   pressId: number;
+  /** What the row last showed about kept subtitle files (kept-files.ts keptKey). */
+  kept: string;
 }
 
 /** A percentage only when every stream's size is known; "about" when a size is an estimate. */
@@ -37,6 +41,11 @@ function percent(job: Job): string | null {
   if (!job.progressKnown) return null;
   const pct = `${Math.round(job.progress * 100)}%`;
   return job.progressEstimated ? `About ${pct}` : pct;
+}
+
+/** The job's Library entry, which holds what a finished download kept (the Queue forgets it). */
+function libraryEntry(job: Job) {
+  return job.status === "completed" ? store.history.find((h) => h.id === job.id) : undefined;
 }
 
 function statusText(job: Job): string {
@@ -57,8 +66,10 @@ function statusText(job: Job): string {
       const at = percent(job) ?? (job.downloadedBytes ? formatBytes(job.downloadedBytes) : job.progress > 0 ? `${Math.round(job.progress * 100)}%` : null);
       return at ? `Paused at ${at}` : "Paused";
     }
-    case "completed":
-      return job.filePath ? `Saved to ${folderName(job.filePath.replace(/[\\/][^\\/]*$/, ""))}` : "Completed";
+    case "completed": {
+      const saved = job.filePath ? `Saved to ${folderName(job.filePath.replace(/[\\/][^\\/]*$/, ""))}` : "Completed";
+      return [saved, keptLabel(libraryEntry(job))].filter(Boolean).join("  ·  ");
+    }
     case "cancelled":
       return "Cancelled";
     case "failed":
@@ -126,7 +137,7 @@ function buildRow(job: Job): RowRefs {
     ),
     actions,
   );
-  return { el, status, bar, actions, thumb, refocus: null, pressed: false, guardUntil: 0, pressId: 0 };
+  return { el, status, bar, actions, thumb, refocus: null, pressed: false, guardUntil: 0, pressId: 0, kept: "" };
 }
 
 function paintActions(refs: RowRefs, job: Job) {
@@ -189,6 +200,8 @@ function paintActions(refs: RowRefs, job: Job) {
       break;
     case "completed":
       items.push(button({ icon: "folder", title: "Show in folder", variant: "plain", onClick: act(() => api.revealDownload(job.id)) }));
+      // Only while the Library entry records kept files: they outlive this row.
+      if (keptLabel(libraryEntry(job))) items.push(button({ icon: "captions", title: "Show kept files", variant: "plain", onClick: act(() => showKept(job.id)) }));
       if (job.filePath) items.push(fileDragButton(job.id));
       items.push(button({ icon: "x", title: "Remove from list", variant: "plain", onClick: act(() => api.remove(job.id)) }));
       break;
@@ -202,12 +215,15 @@ function paintActions(refs: RowRefs, job: Job) {
 function paintRow(refs: RowRefs, job: Job, previous: Job | undefined) {
   refs.el.dataset.status = job.status;
   const changed = !!previous && previous.status !== job.status;
+  const kept = keptKey(libraryEntry(job));
+  const keptChanged = refs.kept !== kept;
+  refs.kept = kept;
   paintJobStatus(refs.status, statusText(job), job.status === "completed", changed, () => icon("check", 12));
   refs.status.title = job.status === "failed" ? job.error ?? "" : "";
   const unknown = job.status === "processing" || (job.status === "downloading" && !job.progressKnown);
   // The fill glides only forwards within one download; completion, retry and the rest snap.
   setProgress(refs.bar, unknown ? null : job.status === "completed" ? 1 : job.progress, progressMotion(previous, job, document.hidden));
-  if (!previous || previous.status !== job.status) paintActions(refs, job);
+  if (!previous || previous.status !== job.status || keptChanged) paintActions(refs, job);
 }
 
 export const mountQueue: MountView = (container, ctx) => {
@@ -369,12 +385,20 @@ export const mountQueue: MountView = (container, ctx) => {
     if (refs) paint(refs, job);
   });
   const offJobs = store.on("jobs", scheduleSync);
+  // The Library entry (with its kept files) can arrive after the job's completion.
+  const offHistory = store.on("history", () => {
+    for (const [id, refs] of rows) {
+      const job = known.get(id);
+      if (job?.status === "completed" && refs.kept !== keptKey(libraryEntry(job))) paint(refs, job);
+    }
+  });
   const offStatus = store.on("jobStatus", paintClear);
   sync();
 
   return () => {
     offJob();
     offJobs();
+    offHistory();
     offStatus();
     cancelAnimationFrame(frame);
     window.clearTimeout(leaveTimer);

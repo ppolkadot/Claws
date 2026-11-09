@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::disk_budget::RunPlan;
 use crate::downloader::DownloadOptions;
 
 use serde::{Deserialize, Serialize};
@@ -82,6 +83,61 @@ impl JobExecution {
             fragment_concurrency: FRAGMENT_CONCURRENCY,
             transport: Transport::Native,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Post-transfer processing. One decision, read by the command line below and by disk sizing
+// (`disk_budget::RunPlan`, used by both admission and the size preview), so what is run and
+// what is reserved cannot drift apart.
+
+/// Whether an audio download is converted: any target but "Original". A conversion is
+/// necessary work, so Fast Save never changes it.
+pub fn converts_audio(mode: &str, audio_format: &str) -> bool {
+    mode == "audio" && audio_format != "best"
+}
+
+/// What a download does to its streams after transferring them.
+///
+/// Contract: Fast Save skips the optional passes (metadata, embedded subtitles and embedded
+/// cover art), because each can rewrite the finished file. Necessary work stays: audio
+/// conversion, a video merge and any container repair yt-dlp itself decides on. A transcript
+/// downloads no media, so nothing here applies to it.
+///
+/// The Fast Save hint in the interface (`src/processing-options.ts`) restates this contract
+/// by hand: change both together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessingPolicy {
+    pub convert_audio: bool,
+    pub embed_metadata: bool,
+    pub embed_subtitles: bool,
+    /// MP3 and M4A only. A missing thumbnail makes yt-dlp skip the step, which cannot be
+    /// known in advance, so sizing assumes the pass happens.
+    pub embed_thumbnail: bool,
+}
+
+impl ProcessingPolicy {
+    pub fn new(options: &DownloadOptions, execution: &JobExecution) -> Self {
+        let optional = options.mode != "transcript" && !options.fast_save;
+        Self {
+            convert_audio: converts_audio(&options.mode, &options.audio_format),
+            embed_metadata: optional && execution.embed_metadata,
+            embed_subtitles: optional && options.mode == "video" && !options.subtitle_langs.is_empty() && options.embeds_subtitles(),
+            embed_thumbnail: optional && options.mode == "audio" && matches!(options.audio_format.as_str(), "mp3" | "m4a"),
+        }
+    }
+
+    /// Whether a pass may write the finished file again (a temporary copy of it), which
+    /// disk sizing must leave room for. Thumbnail embedding is a rewrite for MP3 (an ffmpeg
+    /// temporary output); for M4A it depends on the backend yt-dlp finds, so it is counted
+    /// as one.
+    pub fn rewrites_output(&self) -> bool {
+        self.embed_metadata || self.embed_subtitles || self.embed_thumbnail
+    }
+
+    /// The sizing plan for this job, as admission and the preview both use it.
+    pub fn run_plan<'a>(&self, options: &'a DownloadOptions, duration: Option<f64>) -> RunPlan<'a> {
+        RunPlan { mode: &options.mode, audio_format: &options.audio_format, rewrite: self.rewrites_output(), duration }
     }
 }
 
@@ -255,8 +311,9 @@ fn media_args(push: &mut impl FnMut(&[&str]), options: &DownloadOptions, executi
     // Which streams, and what they become: shared with the size preview.
     let selection = selection_args(options, execution.audio_selection);
     push(&selection.iter().map(String::as_str).collect::<Vec<_>>());
+    let policy = ProcessingPolicy::new(options, execution);
     if options.mode == "audio" {
-        if matches!(options.audio_format.as_str(), "mp3" | "m4a") {
+        if policy.embed_thumbnail {
             push(&["--embed-thumbnail"]);
         }
     } else if !options.subtitle_langs.is_empty() {
@@ -265,13 +322,13 @@ fn media_args(push: &mut impl FnMut(&[&str]), options: &DownloadOptions, executi
         if options.auto_subs {
             push(&["--write-auto-subs"]);
         }
-        if options.embeds_subtitles() {
+        if policy.embed_subtitles {
             push(&["--embed-subs"]);
         } else {
             push(&["--convert-subs", "srt"]);
         }
     }
-    if execution.embed_metadata {
+    if policy.embed_metadata {
         push(&["--embed-metadata"]);
     }
 }
@@ -409,6 +466,129 @@ mod tests {
         assert_eq!(value_after(&args, "-f"), value_after(&normal, "-f"));
         assert_eq!(value_after(&args, "-S"), value_after(&normal, "-S"));
         assert!(normal.contains(&"--embed-subs".to_string()) && normal.contains(&"--embed-metadata".to_string()));
+    }
+
+    const AUDIO_TARGETS: [&str; 6] = ["mp3", "m4a", "opus", "flac", "wav", "best"];
+
+    fn audio_command(format: &str, metadata: bool, fast_save: bool, selection: AudioSelection) -> Vec<String> {
+        let settings = Settings { output_dir: "D:/Out".into(), embed_metadata: metadata, audio_selection: selection, ..Settings::default() };
+        let options = DownloadOptions { audio_format: format.into(), fast_save, ..options("audio") };
+        download_args(vec![], &options, &JobExecution::freeze(&settings, fast_save), Path::new("W"), Source::Url("https://e.com/a"))
+    }
+
+    #[test]
+    fn the_audio_matrix_emits_conversion_always_and_optional_passes_unless_fast_save() {
+        for format in AUDIO_TARGETS {
+            for metadata in [false, true] {
+                for fast_save in [false, true] {
+                    for selection in [AudioSelection::Best, AudioSelection::PreferMatching] {
+                        let args = audio_command(format, metadata, fast_save, selection);
+                        let case = format!("{format} metadata={metadata} fast={fast_save} {selection:?}");
+                        // The conversion is necessary work: Fast Save never turns it into a copy
+                        // of some other format, and never changes the streams.
+                        assert_eq!(value_after(&args, "--audio-format"), [format], "{case}");
+                        assert!(args.contains(&"-x".to_string()), "{case}");
+                        assert_eq!(value_after(&args, "-f"), [audio_selector(format, selection)], "{case}");
+                        assert_eq!(args.contains(&"--embed-metadata".to_string()), metadata && !fast_save, "{case}");
+                        let thumbnail = matches!(format, "mp3" | "m4a") && !fast_save;
+                        assert_eq!(args.contains(&"--embed-thumbnail".to_string()), thumbnail, "{case}");
+                        assert!(!args.contains(&"--embed-subs".to_string()) && !args.contains(&"--write-subs".to_string()), "{case}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fast_save_leaves_necessary_video_work_alone() {
+        // Merging, the container and the chosen streams stay; only the optional passes go.
+        let settings = Settings { output_dir: "D:/Out".into(), embed_metadata: true, ..Settings::default() };
+        let options = DownloadOptions { max_height: Some(720), fast_save: true, ..options("video") };
+        let args = download_args(vec![], &options, &JobExecution::freeze(&settings, true), Path::new("W"), Source::Url("https://e.com/v"));
+        assert_eq!(value_after(&args, "--merge-output-format"), ["mp4"]);
+        assert_eq!(value_after(&args, "-f"), ["bv*+ba/b"]);
+        for flag in ["--embed-metadata", "--embed-subs", "--embed-thumbnail"] {
+            assert!(!args.contains(&flag.to_string()), "{flag}");
+        }
+    }
+
+    fn frozen(format: &str, metadata: bool, fast_save: bool) -> (DownloadOptions, JobExecution) {
+        let settings = Settings { output_dir: "D:/Out".into(), embed_metadata: metadata, ..Settings::default() };
+        let options = DownloadOptions { audio_format: format.into(), fast_save, ..options("audio") };
+        let execution = JobExecution::freeze(&settings, fast_save);
+        (options, execution)
+    }
+
+    #[test]
+    fn the_policy_names_exactly_the_passes_the_command_runs() {
+        for format in AUDIO_TARGETS {
+            for metadata in [false, true] {
+                for fast_save in [false, true] {
+                    let (options, execution) = frozen(format, metadata, fast_save);
+                    let policy = ProcessingPolicy::new(&options, &execution);
+                    let args = download_args(vec![], &options, &execution, Path::new("W"), Source::Url("https://e.com/a"));
+                    let has = |flag: &str| args.contains(&flag.to_string());
+                    let case = format!("{format} metadata={metadata} fast={fast_save}");
+                    assert_eq!(policy.embed_metadata, has("--embed-metadata"), "{case}");
+                    assert_eq!(policy.embed_thumbnail, has("--embed-thumbnail"), "{case}");
+                    assert_eq!(policy.embed_subtitles, has("--embed-subs"), "{case}");
+                    assert_eq!(policy.convert_audio, format != "best", "{case}");
+                    assert_eq!(policy.rewrites_output(), policy.embed_metadata || policy.embed_thumbnail, "{case}");
+                }
+            }
+        }
+        // Video: subtitles are embedded only when asked for, with languages, and not in Fast Save.
+        let settings = Settings { output_dir: "D:/Out".into(), embed_metadata: false, ..Settings::default() };
+        let en = || vec!["en".to_string()];
+        for (langs, embed, fast_save) in [(vec![], true, false), (en(), false, false), (en(), true, false), (en(), true, true)] {
+            let options = DownloadOptions { subtitle_langs: langs, embed_subs: embed, fast_save, ..options("video") };
+            let execution = JobExecution::freeze(&settings, fast_save);
+            let policy = ProcessingPolicy::new(&options, &execution);
+            let args = download_args(vec![], &options, &execution, Path::new("W"), Source::Url("https://e.com/v"));
+            assert_eq!(policy.embed_subtitles, args.contains(&"--embed-subs".to_string()));
+            assert!(!policy.embed_thumbnail && !policy.convert_audio);
+        }
+        // A transcript downloads no media: nothing is converted, embedded or rewritten.
+        let loud = JobExecution::freeze(&Settings { embed_metadata: true, ..Settings::default() }, false);
+        let policy = ProcessingPolicy::new(&transcript("en", false), &loud);
+        assert!(!policy.rewrites_output() && !policy.convert_audio);
+    }
+
+    #[test]
+    fn audio_sizing_follows_the_policy_for_every_format_and_size_relation() {
+        const MIB: u64 = 1 << 20;
+        // A 10-minute source of 12 MiB: WAV and FLAC come out larger (sized from the duration),
+        // a lossy target about the same. A 600 MiB source with a 30-second duration shrinks to
+        // WAV and FLAC. A missing thumbnail does not change these figures: yt-dlp then skips
+        // the pass, so they are an upper bound.
+        let cases: [(u64, f64); 2] = [(12 * MIB, 600.0), (600 * MIB, 30.0)];
+        for (source, duration) in cases {
+            for format in AUDIO_TARGETS {
+                for metadata in [false, true] {
+                    for fast_save in [false, true] {
+                        let (options, execution) = frozen(format, metadata, fast_save);
+                        let policy = ProcessingPolicy::new(&options, &execution);
+                        let plan = policy.run_plan(&options, Some(duration));
+                        let case = format!("{format} metadata={metadata} fast={fast_save} source={source} duration={duration}");
+                        let peak = plan.peak(&[Some(source)]).unwrap_or_else(|| panic!("{case}: unsized"));
+                        let output = plan.output(&[Some(source)]).unwrap();
+                        let thumbnail = matches!(format, "mp3" | "m4a") && !fast_save;
+                        let rewrite = (metadata && !fast_save) || thumbnail;
+                        assert_eq!(policy.rewrites_output(), rewrite, "{case}");
+                        // Every audio target goes through `-x`. A conversion writes its output while the
+                        // source exists; "Original" is sized the same way with an output as large as the
+                        // source, because a changed container (webm Opus to .opus) is a whole copy.
+                        // A rewrite adds a second output-sized copy.
+                        let copies = if rewrite { 2 } else { 1 };
+                        if format == "best" {
+                            assert_eq!(output, source, "{case}");
+                        }
+                        assert_eq!(peak, source + copies * output, "{case}");
+                        assert!(peak > source && peak >= output + if rewrite { output } else { 0 }, "{case}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

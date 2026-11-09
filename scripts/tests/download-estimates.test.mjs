@@ -12,8 +12,11 @@ import {
   EstimateRun,
   PreviewEstimator,
   aggregate,
+  describeFailure,
   describeRun,
   describeSingle,
+  estimateState,
+  failedEstimate,
   formatSize,
 } from "../../.test-build/download-estimates.js";
 import { itemKey } from "../../.test-build/download-input.js";
@@ -97,7 +100,7 @@ test("an unknown size is counted, never added as zero", () => {
   assert.equal(aggregate([est(GB), est(null)]).text, "About 1.0 GB; 1 item has an unknown size");
 });
 
-test("a failed estimate (null) is an unknown item", () => {
+test("an older no-answer (null) is an unknown item", () => {
   const sum = aggregate([est(GB, "exact"), null]);
   assert.equal(sum.unknownCount, 1);
   assert.equal(sum.knownBytes, GB);
@@ -195,7 +198,8 @@ test("list totals of a conversion sum the kept files, unknowns counted apart", (
 
 test("a single preview describes loading, failure and the selected streams", () => {
   assert.deepEqual(describeSingle({ status: "loading" }), { size: "Estimating size…", detail: "" });
-  assert.deepEqual(describeSingle({ status: "failed" }), { size: "Size unknown", detail: "" });
+  // A failed estimate is no longer passed off as an unknown size (see the failed-estimate tests below).
+  assert.deepEqual(describeSingle({ status: "failed" }), { size: "Size estimate failed", detail: "" });
   const video = est(310 * MB, "approximate", 620 * MB, {
     parts: [
       { formatId: "v1080", vcodec: "avc1.640028", acodec: null, ext: "mp4", width: 1920, height: 1080, bytes: 300 * MB, exact: true },
@@ -361,7 +365,8 @@ test("estimates at most three at once, capped, and says how many were not estima
   assert.equal(run.state.notEstimated, 2);
   assert.equal(
     describeRun(run),
-    "Exactly 300 MB for 3 items; 2 items have unknown sizes. Only the first 5 selected items were estimated; 2 were not.",
+    // "b" has no size; "d" could not be estimated at all: a failure, counted apart.
+    "Exactly 300 MB for 3 items; 1 item has an unknown size; the estimate failed for 1 item. Only the first 5 selected items were estimated; 2 were not.",
   );
 });
 
@@ -535,4 +540,499 @@ test("one limit covers every run and the preview, including calls left by a rese
   assert.equal(calls.active, 0);
   assert.equal(describeRun(runB), "About 2.0 MB");
   assert.equal(preview.state.status, "done");
+});
+
+// ---- Failed estimates are not unknown sizes ------------------------------------------
+
+/** An estimate that could not be made: no size, state failed, a safe reason. */
+const failedEst = (why = "Timed out while reading that link.") => ({
+  ...est(null),
+  state: "failed",
+  diagnostic: why,
+  unknownReason: why,
+});
+/** The backend's shape for a size: state available. */
+const avail = (bytes, confidence = "approximate") => ({ ...est(bytes, confidence), state: "available", diagnostic: null });
+/** The backend's shape for a site that gives no size. */
+const unknownEst = () => ({ ...est(null), state: "unknown", diagnostic: null });
+
+test("the state reads from newer responses and is derived for older-shaped ones", () => {
+  assert.equal(estimateState(avail(GB)), "available");
+  assert.equal(estimateState(unknownEst()), "unknown");
+  assert.equal(estimateState(failedEst()), "failed");
+  // Older responses have no state: a size is available, none is unknown (never failed).
+  assert.equal(estimateState(est(GB)), "available");
+  assert.equal(estimateState(est(null)), "unknown");
+  assert.equal(estimateState(null), "unknown");
+  // A failure carries no usable size, whatever else is in the object.
+  assert.equal(estimateState({ ...est(GB), state: "failed" }), "failed");
+  // "available" without a size is not a size.
+  assert.equal(estimateState({ ...est(null), state: "available" }), "unknown");
+  assert.equal(failedEstimate("offline").downloadBytes, null);
+  assert.equal(estimateState(failedEstimate("offline")), "failed");
+  assert.equal(failedEstimate("offline").diagnostic, "offline");
+  assert.equal(failedEstimate("offline").unknownReason, "offline");
+});
+
+test("a rejection becomes a failure with a single short line, without local paths", () => {
+  assert.equal(describeFailure("yt-dlp is not installed yet."), "yt-dlp is not installed yet.");
+  assert.equal(describeFailure(new Error("socket\n hang  up")), "socket hang up");
+  assert.equal(describeFailure("cannot open C:\\Users\\Someone\\AppData\\x.json now"), "cannot open <path> now");
+  // Other spellings of a local path are left out too; links and plain slashes stay.
+  for (const raw of [
+    "cannot read file:///C:/Users/Name/x.json today",
+    "cannot read file:/home/name/x.json today",
+    "cannot read bin/yt-dlp/yt-dlp.exe today",
+    "bad --cookies=C:/Users/Name/c.txt given",
+    String.raw`bad --cookies=C:\Users\Name\c.txt given`,
+    "bad --config-location=/home/name/c.conf given",
+  ]) {
+    const safe = describeFailure(raw);
+    assert.ok(!/Name|name|yt-dlp/.test(safe) && safe.includes("<path>"), `${raw} -> ${safe}`);
+  }
+  assert.equal(describeFailure("use audio and/or video, 1/2 done"), "use audio and/or video, 1/2 done");
+  assert.equal(describeFailure("see https://a.example/b/c?x=1 and http://h/p"), "see https://a.example/b/c?x=1 and http://h/p");
+  assert.equal(describeFailure({ weird: true }), "The estimate could not be made.");
+  assert.equal(describeFailure("   "), "The estimate could not be made.");
+  const long = describeFailure("x ".repeat(500));
+  assert.ok(long.length <= 241 && long.endsWith("\u2026"));
+});
+
+test("totals count failed apart from missing-size items and never add either as zero", () => {
+  const mixed = aggregate([avail(GB, "exact"), avail(2 * GB, "approximate"), unknownEst(), failedEst()]);
+  assert.equal(mixed.knownCount, 2);
+  assert.equal(mixed.unknownCount, 1);
+  assert.equal(mixed.failedCount, 1);
+  assert.equal(mixed.knownBytes, 3 * GB, "only the sizes that exist");
+  assert.equal(mixed.approximate, true);
+  assert.equal(mixed.text, "About 3.0 GB; 1 item has an unknown size; the estimate failed for 1 item");
+  // Exact sizes beside missing ones still say how many the exact total covers.
+  assert.equal(
+    aggregate([avail(GB, "exact"), avail(GB, "exact"), failedEst(), failedEst("x"), unknownEst()]).text,
+    "Exactly 2.0 GB for 2 items; 1 item has an unknown size; the estimates failed for 2 items",
+  );
+  // Only a total with nothing missing is stated as a whole.
+  assert.equal(aggregate([avail(GB, "exact"), avail(GB, "exact")]).text, "Exactly 2.0 GB");
+  assert.equal(aggregate([avail(GB, "exact"), failedEst()]).text, "Exactly 1.0 GB for 1 item; the estimate failed for 1 item");
+  // A failure carrying a size is still no size.
+  const odd = aggregate([{ ...est(GB), state: "failed" }]);
+  assert.equal(odd.knownBytes, null);
+  assert.equal(odd.failedCount, 1);
+});
+
+test("all failed, or only failed and unknown, never read as sizes", () => {
+  const one = aggregate([failedEst()]);
+  assert.equal(one.text, "Size estimate failed");
+  assert.equal(one.knownBytes, null);
+  assert.equal(one.tempText, null);
+  const all = aggregate([failedEst(), failedEst(), failedEst()]);
+  assert.equal(all.text, "Size estimates failed for all 3 items");
+  assert.equal(all.failedCount, 3);
+  assert.equal(all.unknownCount, 0);
+  const some = aggregate([failedEst(), unknownEst(), unknownEst()]);
+  assert.equal(some.text, "2 items have unknown sizes; the estimate failed for 1 item");
+  assert.equal(some.knownBytes, null);
+  for (const text of [one.text, all.text, some.text]) assert.doesNotMatch(text, /\b0 B\b/);
+  // Unknown stays what it was: no failure counted.
+  const unknownOnly = aggregate([unknownEst(), unknownEst()]);
+  assert.equal(unknownOnly.failedCount, 0);
+  assert.equal(unknownOnly.text, "Sizes unknown for all 2 items");
+  // Failed items count towards the free-space and saved-size gaps like unknown ones.
+  const wav = aggregate([audio(10 * MB, 100 * MB), failedEst()]);
+  assert.equal(wav.outputUnknownCount, 1);
+  assert.equal(wav.peakUnknownCount, 1);
+});
+
+test("a single preview tells a failure from an unknown size", () => {
+  assert.deepEqual(describeSingle({ status: "failed", diagnostic: "Timed out while reading that link." }), {
+    size: "Size estimate failed",
+    detail: "Timed out while reading that link.",
+  });
+  assert.deepEqual(describeSingle({ status: "failed" }), { size: "Size estimate failed", detail: "" });
+  // The same when the backend answered that it failed.
+  assert.deepEqual(describeSingle({ status: "done", estimate: failedEst("yt-dlp is not installed yet.") }), {
+    size: "Size estimate failed",
+    detail: "yt-dlp is not installed yet.",
+  });
+  // An unknown size keeps its reason, as before, and offers no failure.
+  assert.deepEqual(describeSingle({ status: "done", estimate: unknownEst() }), {
+    size: "Size unknown",
+    detail: "The site does not say how large this download is.",
+  });
+});
+
+test("a preview that failed is retried once per request, with the same key and limit", async () => {
+  const timers = fakeTimers();
+  const calls = new CallLimit(3);
+  const asked = [];
+  const replies = [];
+  const estimator = new PreviewEstimator((key) => {
+    asked.push(key);
+    const d = deferred();
+    replies.push(d);
+    return d.promise;
+  }, { timers, calls });
+  estimator.retry();
+  timers.fire();
+  assert.deepEqual(asked, [], "nothing to retry before a request");
+  estimator.request("video");
+  timers.fire();
+  estimator.retry();
+  timers.fire();
+  assert.deepEqual(asked, ["video"], "not while it is loading");
+  replies[0].reject("Timed out while reading that link.");
+  await tick();
+  assert.equal(estimator.state.status, "failed");
+  assert.equal(estimator.state.diagnostic, "Timed out while reading that link.");
+  assert.equal(estimator.failed, true);
+  assert.equal(calls.active, 0);
+  // No automatic retry, however long it is left.
+  timers.fire();
+  await tick();
+  assert.deepEqual(asked, ["video"]);
+  estimator.request("video"); // the same choices again do not re-ask by themselves
+  timers.fire();
+  assert.deepEqual(asked, ["video"]);
+  estimator.retry();
+  assert.equal(estimator.state.status, "loading");
+  timers.fire();
+  assert.deepEqual(asked, ["video", "video"]);
+  assert.equal(calls.active, 1, "the shared limit counts it");
+  replies[1].resolve(avail(GB, "exact"));
+  await tick();
+  assert.equal(estimator.state.status, "done");
+  assert.equal(estimator.state.estimate.downloadBytes, GB);
+  assert.equal(estimator.failed, false);
+  estimator.retry(); // nothing failed: no new call
+  timers.fire();
+  assert.deepEqual(asked, ["video", "video"]);
+});
+
+test("a failure the backend reports is a failed preview, and a retry can fail again", async () => {
+  const timers = fakeTimers();
+  const replies = [];
+  const estimator = new PreviewEstimator(() => {
+    const d = deferred();
+    replies.push(d);
+    return d.promise;
+  }, { timers });
+  estimator.request("audio");
+  timers.fire();
+  replies[0].resolve(failedEst("yt-dlp is not installed yet."));
+  await tick();
+  assert.equal(estimator.state.status, "failed");
+  assert.equal(estimator.state.diagnostic, "yt-dlp is not installed yet.");
+  estimator.retry();
+  timers.fire();
+  replies[1].resolve(failedEst("Timed out while reading that link."));
+  await tick();
+  assert.equal(estimator.state.status, "failed");
+  assert.equal(estimator.state.diagnostic, "Timed out while reading that link.");
+  assert.equal(replies.length, 2, "one retry per request");
+  // A size that simply is not given is done, not failed, and offers no retry.
+  estimator.request("video");
+  timers.fire();
+  replies[2].resolve(unknownEst());
+  await tick();
+  assert.equal(estimator.state.status, "done");
+  assert.equal(estimator.failed, false);
+});
+
+test("a late reply to a retry is ignored once the choices changed", async () => {
+  const timers = fakeTimers();
+  const replies = [];
+  const estimator = new PreviewEstimator(() => {
+    const d = deferred();
+    replies.push(d);
+    return d.promise;
+  }, { timers });
+  estimator.request("720p");
+  timers.fire();
+  replies[0].reject("offline");
+  await tick();
+  estimator.retry();
+  timers.fire();
+  estimator.request("1080p"); // options changed while the retry was running
+  timers.fire();
+  replies[1].resolve(avail(MB)); // the retry for 720p answers late
+  await tick();
+  assert.equal(estimator.state.status, "loading", "the 720p retry does not land on 1080p");
+  replies[2].resolve(avail(GB));
+  await tick();
+  assert.equal(estimator.state.estimate.downloadBytes, GB);
+});
+
+/** An EstimateRun over replies the test settles one by one; `settle(item, value)` answers. */
+function runWith(options = {}) {
+  const asked = [];
+  const waiting = new Map();
+  const run = new EstimateRun((item) => {
+    asked.push(item);
+    const d = deferred();
+    const list = waiting.get(item) ?? [];
+    list.push(d);
+    waiting.set(item, list);
+    return d.promise;
+  }, options);
+  const settle = (item, value) => {
+    const d = waiting.get(item).shift();
+    if (value instanceof Error) d.reject(value);
+    else d.resolve(value);
+  };
+  return { run, asked, settle };
+}
+
+test("a run's failures are told from unknown sizes and retried alone, keeping valid estimates", async () => {
+  const { run, asked, settle } = runWith();
+  run.start(["a", "b", "c", "d"], "k");
+  settle("a", avail(GB, "exact"));
+  settle("b", unknownEst());
+  settle("c", new Error("Timed out while reading that link."));
+  await tick(); // three calls at a time: d is asked once a slot is free
+  settle("d", failedEst("yt-dlp is not installed yet."));
+  await tick();
+  assert.equal(run.state.running, false);
+  assert.equal(run.canRetry, true);
+  assert.equal(describeRun(run), "Exactly 1.0 GB for 1 item; 1 item has an unknown size; the estimates failed for 2 items");
+  assert.equal(run.retryFailed("k"), true);
+  assert.deepEqual(asked, ["a", "b", "c", "d", "c", "d"], "only the two failures are asked again");
+  assert.equal(run.state.running, true);
+  assert.equal(describeRun(run), "Retrying 2 failed estimates… 0 of 2");
+  assert.equal(run.canRetry, false, "not while a retry runs");
+  assert.equal(run.retryFailed("k"), false, "no second retry on top");
+  settle("c", avail(MB, "exact"));
+  settle("d", failedEst("Timed out while reading that link."));
+  await tick();
+  assert.equal(run.state.running, false);
+  assert.equal(describeRun(run), "Exactly 1.0 GB for 2 items; 1 item has an unknown size; the estimate failed for 1 item");
+  assert.equal(aggregate(run.state.results).knownCount, 2);
+  assert.equal(asked.length, 6, "no automatic retry of what failed again");
+  // The user asks once more; it works, and only the unknown size is still missing.
+  assert.equal(run.retryFailed("k"), true);
+  settle("d", avail(MB, "exact"));
+  await tick();
+  assert.equal(run.canRetry, false);
+  assert.equal(describeRun(run), "Exactly 1.0 GB for 3 items; 1 item has an unknown size");
+  assert.deepEqual(asked.slice(6), ["d"]);
+  assert.equal(run.retryFailed("k"), false, "nothing failed any more");
+});
+
+test("a retry that fixes everything leaves the whole total, and valid estimates are never reset", async () => {
+  const { run, asked, settle } = runWith();
+  run.start(["a", "b"], "k");
+  settle("a", avail(2 * MB, "exact"));
+  settle("b", new Error("offline"));
+  await tick();
+  const before = run.state.results.find((r) => r.downloadBytes === 2 * MB);
+  assert.equal(describeRun(run), "Exactly 2.0 MB for 1 item; the estimate failed for 1 item");
+  run.retryFailed("k");
+  settle("b", avail(3 * MB, "exact"));
+  await tick();
+  assert.equal(describeRun(run), "Exactly 5.0 MB");
+  assert.ok(run.state.results.includes(before), "the estimate that was fine is the same object");
+  assert.equal(run.state.done, 2);
+  assert.deepEqual(asked, ["a", "b", "b"]);
+});
+
+test("a retry uses the shared limit and waits for a free slot", async () => {
+  const calls = new CallLimit(2);
+  const { run, asked, settle } = runWith({ calls });
+  run.start(["a", "b"], "k");
+  settle("a", new Error("x"));
+  settle("b", new Error("y"));
+  await tick();
+  const other = runWith({ calls });
+  other.run.start(["o1", "o2"], "k");
+  assert.equal(calls.active, 2, "another run holds both slots");
+  run.retryFailed("k");
+  assert.deepEqual(asked, ["a", "b"], "the retry waits for a slot");
+  other.settle("o1", avail(MB));
+  await tick();
+  assert.equal(asked.length, 3, "a freed slot goes to the retry");
+  assert.ok(calls.active <= 2);
+  other.settle("o2", avail(MB));
+  await tick();
+  settle("a", avail(MB));
+  settle("b", avail(MB));
+  await tick();
+  assert.equal(calls.active, 0);
+});
+
+test("changed choices end the run before a retry asks anything", async () => {
+  const { run, asked, settle } = runWith();
+  run.start(["a", "b"], "k");
+  settle("a", new Error("x"));
+  settle("b", avail(MB));
+  await tick();
+  assert.equal(run.retryFailed("other choices"), false);
+  assert.equal(run.key, null, "the old estimates no longer apply");
+  assert.deepEqual(asked, ["a", "b"]);
+  assert.equal(run.retryFailed("k"), false, "and there is nothing left to retry");
+});
+
+test("a late reply to a retry is ignored after the options changed or the run was reset", async () => {
+  const { run, asked, settle } = runWith();
+  run.start(["a", "b"], "k");
+  settle("a", new Error("x"));
+  settle("b", avail(GB, "exact"));
+  await tick();
+  run.retryFailed("k");
+  // The options change while the retry is on its way: the view's follow() resets the run.
+  assert.equal(run.follow("k2", ["a", "b"]), false);
+  assert.equal(run.key, null);
+  run.start(["a", "b"], "k2");
+  settle("a", avail(MB, "exact")); // the retry's reply, from before the change
+  await tick();
+  assert.equal(run.state.done, 0, "it did not land in the new run");
+  assert.equal(asked.length, 5, "the retry, then the new run's two");
+  settle("a", avail(2 * MB, "exact")); // the new run's own first call for "a"
+  settle("b", avail(2 * MB, "exact"));
+  await tick();
+  assert.equal(describeRun(run), "Exactly 4.0 MB");
+});
+
+test("Stop ends a retry without marking the run stopped; failed items stay failed and retryable", async () => {
+  const { run, settle } = runWith();
+  run.start(["a", "b"], "k");
+  settle("a", new Error("x"));
+  settle("b", new Error("y"));
+  await tick();
+  run.retryFailed("k");
+  run.cancel();
+  assert.equal(run.state.running, false);
+  assert.equal(run.state.cancelled, false);
+  settle("a", avail(MB)); // answered after Stop
+  await tick();
+  assert.equal(run.canRetry, true);
+  assert.equal(describeRun(run), "Size estimates failed for all 2 items");
+});
+
+test("a retry in a run capped below its list covers only the items that were asked", async () => {
+  const { run, asked, settle } = runWith({ cap: 2 });
+  run.start(["a", "b", "c"], "k");
+  settle("a", new Error("x"));
+  settle("b", avail(MB, "exact"));
+  await tick();
+  run.retryFailed("k");
+  settle("a", avail(MB, "exact"));
+  await tick();
+  assert.deepEqual(asked, ["a", "b", "a"], "c was beyond the cap and stays so");
+  assert.equal(describeRun(run), "Exactly 2.0 MB. Only the first 2 selected items were estimated; 1 was not.");
+});
+
+test("a call that throws synchronously is a failure that can be retried", async () => {
+  let attempts = 0;
+  const run = new EstimateRun(() => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("bridge closed");
+    return Promise.resolve(avail(MB, "exact"));
+  });
+  run.start(["a"], "k");
+  await tick();
+  assert.equal(describeRun(run), "Size estimate failed");
+  run.retryFailed("k");
+  await tick();
+  assert.equal(describeRun(run), "Exactly 1.0 MB");
+});
+
+// ---- Coming back to a run after another view (session state, see preview-session.ts) --
+
+test("a finished run is saved as plain data and comes back as it was, without asking again", async () => {
+  const { run, settle } = runWith();
+  run.start(["a", "b", "c"], "k");
+  settle("a", avail(GB, "exact"));
+  settle("b", unknownEst());
+  settle("c", new Error("offline"));
+  await tick();
+  const saved = run.snapshot();
+  assert.ok(saved, "a finished run has a snapshot");
+  assert.deepEqual(JSON.parse(JSON.stringify(saved)), saved, "plain data: nothing but JSON values");
+  assert.equal(structuredClone(saved).key, "k");
+
+  const { run: back, asked } = runWith();
+  back.restore(saved);
+  assert.equal(asked.length, 0, "restoring asks nothing");
+  assert.equal(back.key, "k");
+  assert.equal(back.state.running, false);
+  assert.equal(describeRun(back), describeRun(run));
+  assert.equal(back.canRetry, true, "a failure that was retryable still is, by the user's hand only");
+  assert.equal(back.follow("k", ["a", "b", "c"]), true);
+});
+
+test("a run still going is never saved as running: Stop it and what was read stays", async () => {
+  const { run, settle } = runWith();
+  run.start(["a", "b", "c", "d"], "k");
+  settle("a", avail(GB, "exact"));
+  await tick();
+  assert.equal(run.snapshot(), null, "a running run has no snapshot: its calls are not data");
+  run.cancel();
+  const saved = run.snapshot();
+  assert.ok(saved);
+  assert.equal(saved.settled.length, 1);
+  const { run: back } = runWith();
+  back.restore(saved);
+  assert.equal(back.state.running, false);
+  assert.equal(back.state.cancelled, true);
+  assert.equal(describeRun(back), "Exactly 1.0 GB. Stopped after 1 of 4; 3 were not estimated.");
+});
+
+test("a reply from the run that was saved does not land in the restored run", async () => {
+  const { run, settle } = runWith();
+  run.start(["a", "b"], "k");
+  settle("a", avail(GB, "exact"));
+  await tick();
+  run.cancel();
+  const saved = run.snapshot();
+  const { run: back } = runWith();
+  back.restore(saved);
+  settle("b", avail(GB, "exact")); // the first view's call answers after the save
+  await tick();
+  assert.equal(back.state.results.length, 1);
+  assert.equal(run.state.results.length, 1, "and the old run ignores it too (it was stopped)");
+});
+
+test("a restored run is for its choices and items only: other choices or an unticked item end it", async () => {
+  const { run, settle } = runWith();
+  run.start(["a", "b"], "k");
+  settle("a", avail(GB, "exact"));
+  settle("b", avail(GB, "exact"));
+  await tick();
+  const saved = run.snapshot();
+  const first = runWith().run;
+  first.restore(saved);
+  assert.equal(first.follow("other", ["a", "b"]), false);
+  assert.equal(first.key, null);
+  const second = runWith().run;
+  second.restore(saved);
+  assert.equal(second.follow("k", ["a"]), false, "b is no longer selected");
+  assert.equal(second.key, null);
+});
+
+test("a restored run keeps the 200-item cap", () => {
+  const settled = Array.from({ length: ESTIMATE_CAP + 50 }, (_, i) => ({ item: `i${i}`, result: avail(MB, "exact") }));
+  const { run } = runWith();
+  run.restore({ key: "k", asked: settled.map((s) => s.item), total: settled.length, requested: settled.length, done: settled.length, cancelled: false, notEstimated: 0, settled });
+  assert.equal(run.state.results.length, ESTIMATE_CAP);
+});
+
+test("a preview can show an estimate made earlier without asking, and only for its key", async () => {
+  const timers = fakeTimers();
+  let asked = 0;
+  const estimator = new PreviewEstimator(() => {
+    asked += 1;
+    return Promise.resolve(avail(MB));
+  }, { timers });
+  estimator.restore("720p", avail(GB));
+  assert.equal(estimator.state.status, "done");
+  assert.equal(estimator.state.estimate.downloadBytes, GB);
+  assert.equal(estimator.currentKey, "720p");
+  assert.equal(asked, 0);
+  estimator.request("720p"); // the same choices: nothing to ask
+  timers.fire();
+  assert.equal(asked, 0);
+  estimator.request("1080p");
+  timers.fire();
+  await tick();
+  assert.equal(asked, 1, "other choices are asked as usual");
+  assert.equal(estimator.currentKey, "1080p");
 });

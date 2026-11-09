@@ -7,7 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { api, onEvent, errorMessage, type Job, type JobEvent, type JobRemoved, type JobsAdded, type ToolProgress } from "./api";
 import { store } from "./store";
-import { StartupEvents } from "./queue-events";
+import { StartupEvents, StatusTransitions } from "./queue-events";
 import { h } from "./ui/dom";
 import { toast } from "./ui/components";
 import { installSprings } from "./ui/motion";
@@ -129,15 +129,18 @@ async function start() {
     })();
   });
 
-  const finished = new Set<string>();
+  // Notices follow status transitions, starting from the jobs loaded at startup.
+  const transitions = new StatusTransitions();
+  transitions.seed(store.jobList());
+  store.on("jobs", () => transitions.prune(store.jobList().map((job) => job.id)));
   store.on("job", (detail) => {
     const job = detail as Job;
-    if (job.status === "completed" && !finished.has(job.id)) {
-      finished.add(job.id);
+    const notice = transitions.observe(job);
+    if (notice === "completed") {
       if (store.route !== "queue") {
         toast(`Finished: ${job.title}`, { action: { label: "Show", run: () => void api.revealDownload(job.id).catch(() => store.go("library")) } });
       }
-    } else if (job.status === "failed" && store.route !== "queue") {
+    } else if (notice === "failed" && store.route !== "queue") {
       toast(`Couldn't download “${job.title}”.`, { tone: "error", action: { label: "Details", run: () => store.go("queue") } });
     }
   });

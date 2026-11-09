@@ -5,9 +5,10 @@ import type { DownloadEstimate } from "./download-estimates";
 import type { DragOutcome } from "./ui/drag-gesture";
 import type { JobEvent, JobRemoved, JobsAdded } from "./queue-events";
 import type { Resolution, VideoPreset } from "./resolution";
+import type { KeptRecord, KeptRepairReport, KeptRevealResult } from "./kept-files";
 import type { TranscriptFormat } from "./transcript-options";
 
-export type { DownloadEstimate, DragOutcome, JobEvent, JobRemoved, JobsAdded, Resolution, TranscriptFormat, VideoPreset };
+export type { DownloadEstimate, DragOutcome, JobEvent, JobRemoved, JobsAdded, KeptRecord, KeptRepairReport, KeptRevealResult, Resolution, TranscriptFormat, VideoPreset };
 
 export type Theme = "system" | "light" | "dark";
 export type Backdrop = "glass" | "acrylic" | "mica" | "tabbed" | "none";
@@ -62,7 +63,11 @@ export interface DownloadOptions {
   subtitleLangs: string[];
   autoSubs: boolean;
   embedSubs: boolean;
-  /** No metadata pass, subtitles as separate files: nothing rewrites the file afterwards. */
+  /**
+   * Skips the optional passes: no metadata, no embedded subtitles (they stay separate files)
+   * and no embedded cover art in MP3 and M4A. Audio conversion, video merging and container
+   * repair still happen.
+   */
   fastSave: boolean;
   /**
    * What a transcript is saved as. For a transcript, `subtitleLangs` holds its one caption
@@ -126,6 +131,30 @@ export interface HistoryItem {
   mode: DownloadMode;
   quality: string;
   finishedAt: number;
+  /**
+   * What proves `filePath` is the very file this download saved. Absent (or null) for
+   * entries saved by older versions: Claws never deletes such a file automatically.
+   */
+  fileIdentity?: FileIdentity | null;
+  /** Side files the download published next to the media; deleted with it, only if recorded. */
+  publishedSidecars?: PublishedFile[];
+  /**
+   * Subtitle files kept in the download's work folder because their names were taken in the
+   * output folder. Saved with the entry, so they stay reachable after the Queue row is gone.
+   * Never deleted with the entry.
+   */
+  keptFiles?: KeptRecord | null;
+}
+
+export type FileIdentity =
+  | { kind: "fileId"; volume: number; id: string }
+  | { kind: "content"; size: number; sha256: string };
+
+export interface PublishedFile {
+  relative: string;
+  destination: string;
+  identity: FileIdentity;
+  state: "moving" | "done" | "withheld";
 }
 
 export interface ToolInfo {
@@ -246,6 +275,12 @@ export const api = {
   openDownload: (id: string) => invoke<void>("open_download", { id }),
   revealDownload: (id: string) => invoke<void>("reveal_download", { id }),
   dragDownload: (id: string) => invoke<DragOutcome>("drag_download", { id }),
+  /** Opens the folder holding the kept subtitle files; says when it is offline, gone or unproven. */
+  showKeptFiles: (id: string) => invoke<KeptRevealResult>("show_kept_files", { id }),
+  /** Looks again for kept files of older downloads (also in folders that could not be read before). */
+  repairKeptFiles: () => invoke<KeptRepairReport>("repair_kept_files"),
+  /** What the last such look found. */
+  keptFilesReport: () => invoke<KeptRepairReport | null>("kept_files_report"),
   openOutputDir: () => invoke<void>("open_output_dir"),
   deleteHistory: (id: string, deleteFile: boolean) =>
     invoke<void>("delete_history", { id, deleteFile }),
