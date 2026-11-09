@@ -19,6 +19,259 @@ use crate::settings::Settings;
 use crate::state::AppState;
 use crate::AppHandle;
 
+fn spotify_origin_value() -> serde_json::Value {
+    serde_json::json!({"kind":"spotifyYouTube","spotifyUrl":"https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT","spotifyTitle":"Believe","spotifyArtists":["Cher"]})
+}
+
+/// Opt-in integration: real tools and a deliberately chosen YouTube recording,
+/// isolated from the owner's queue, cookies, settings and download folder.
+#[test]
+#[ignore = "live audio save; set CLAWS_SPOTIFY_LIVE_TOOLS to an installed Claws bin folder"]
+fn spotify_live_audio_save_keeps_selected_source() {
+    fn copy_tools(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let destination = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tools(&entry.path(), &destination);
+            } else {
+                std::fs::copy(entry.path(), destination).unwrap();
+            }
+        }
+    }
+    let tools =
+        PathBuf::from(std::env::var_os("CLAWS_SPOTIFY_LIVE_TOOLS").expect("provide tools folder"));
+    let dir = temp_dir("spotify-live-audio");
+    copy_tools(&tools, &dir.join("bin"));
+    let app = TestApp::with_data(dir.clone(), dir.join("out"), Vec::new());
+    // Explicit test selection from the live search; no product auto-match behavior.
+    let source = "https://www.youtube.com/watch?v=n7wvAEDOxAs";
+    let preview =
+        tauri::async_runtime::block_on(crate::probe::probe(app.handle(), source)).unwrap();
+    assert_eq!(preview.url, source);
+    assert_eq!(preview.audio_available, Some(true));
+    for format in ["mp3", "m4a", "opus", "flac", "wav", "best"] {
+        for fast_save in [false, true] {
+            {
+                let state = app.state();
+                let mut settings = state.settings.lock().unwrap();
+                settings.embed_metadata = !fast_save;
+                settings.output_dir = app
+                    .out
+                    .join(format!("{format}-fast-{fast_save}"))
+                    .to_string_lossy()
+                    .into_owned();
+            }
+            let item: EnqueueItem = serde_json::from_value(serde_json::json!({
+                "url":source,"title":preview.title,"uploader":preview.uploader,"duration":preview.duration,
+                "matchOrigin":spotify_origin_value()
+            })).unwrap();
+            let jobs = downloader::enqueue(
+                app.handle(),
+                vec![item],
+                DownloadOptions {
+                    mode: "audio".into(),
+                    audio_format: format.into(),
+                    fast_save,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let id = &jobs.jobs[0].job_id;
+            let deadline = Instant::now() + Duration::from_secs(180);
+            loop {
+                let job = app.job(id).unwrap();
+                if matches!(job.status, JobStatus::Completed | JobStatus::Failed) {
+                    assert_eq!(
+                        job.status,
+                        JobStatus::Completed,
+                        "live {format} fast_save={fast_save} save failed: {:?}",
+                        job.error
+                    );
+                    assert_eq!(job.url, source);
+                    let entry = library_entry(&app, id);
+                    assert_eq!(entry.url, source);
+                    assert_eq!(
+                        serde_json::to_value(&entry).unwrap()["matchOrigin"],
+                        spotify_origin_value()
+                    );
+                    let path = PathBuf::from(entry.file_path.unwrap());
+                    assert!(std::fs::metadata(&path).unwrap().len() > 0);
+                    let output = std::process::Command::new(app.dir.join("bin/ffprobe.exe"))
+                        .args([
+                            "-v",
+                            "error",
+                            "-select_streams",
+                            "a:0",
+                            "-show_entries",
+                            "stream=codec_name",
+                            "-of",
+                            "default=nw=1:nk=1",
+                        ])
+                        .arg(path)
+                        .output()
+                        .unwrap();
+                    assert!(output.status.success());
+                    let codec = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    match format {
+                        "mp3" | "opus" | "flac" => assert_eq!(codec, format),
+                        "m4a" => assert_eq!(codec, "aac"),
+                        "wav" => assert!(codec.starts_with("pcm_")),
+                        _ => assert!(!codec.is_empty()),
+                    }
+                    eprintln!("Live {format} fast_save={fast_save} saved and ffprobed ({codec}); chosen URL and provenance retained.");
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "live save exceeded three minutes"
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    let app = app.restart();
+    let state = app.state();
+    let entries = state.history.lock().unwrap();
+    assert_eq!(entries.len(), 12);
+    assert!(entries
+        .iter()
+        .all(|entry| entry.url == source && entry.match_origin.is_some()));
+    eprintln!(
+        "All 12 live format/Fast Save variants retain their source and provenance after restart."
+    );
+}
+
+#[test]
+fn spotify_origin_queue_restart_history_and_updates_keep_chosen_source() {
+    let dir = temp_dir("spotify-provenance");
+    let out = dir.join("out");
+    let t = TestApp::with_data(dir, out, Vec::new());
+    // Occupy the single worker slot with a paused-independent active placeholder so
+    // enqueue is tested without spawning yt-dlp or contacting a live service.
+    let blocker: Job = serde_json::from_value(serde_json::json!({"id":"blocker","url":"https://fixture.invalid/blocker","title":"Blocker","options":{},"status":"downloading","progress":0,"createdAt":0})).unwrap();
+    t.state().jobs.lock().unwrap().push(blocker);
+    let item = || {
+        serde_json::from_value::<EnqueueItem>(serde_json::json!({"url":"https://www.youtube.com/watch?v=abcdefghijk","title":"Chosen YouTube title","matchOrigin":spotify_origin_value()})).unwrap()
+    };
+    let audio = DownloadOptions {
+        mode: "audio".into(),
+        ..Default::default()
+    };
+    let added = downloader::enqueue(t.handle(), vec![item()], audio.clone()).unwrap();
+    let id = added.jobs[0].job_id.clone();
+    assert_eq!(
+        serde_json::to_value(&added.jobs[0].job).unwrap()["matchOrigin"],
+        spotify_origin_value()
+    );
+    let ordinary: EnqueueItem = serde_json::from_value(serde_json::json!({"url":"https://www.youtube.com/watch?v=abcdefghijk","title":"Ordinary duplicate"})).unwrap();
+    assert!(downloader::enqueue(t.handle(), vec![ordinary], audio.clone()).is_err());
+    assert_eq!(t.job(&id).unwrap().title, "Chosen YouTube title");
+    let t = t.restart();
+    let job = t.job(&id).unwrap();
+    assert_eq!(job.url, "https://www.youtube.com/watch?v=abcdefghijk");
+    assert_eq!(
+        serde_json::to_value(&job).unwrap()["matchOrigin"],
+        spotify_origin_value()
+    );
+    crate::history::record(t.handle(), &job).unwrap();
+    crate::history_mutation::mutate(t.handle(), |items| {
+        items[0].thumbnail_local = Some("local.jpg".into());
+        ((), true)
+    })
+    .unwrap();
+    let saved: Vec<crate::history::HistoryItem> =
+        crate::store::load_or_recover(&t.dir.join("history.json"), "history", &mut Vec::new());
+    assert_eq!(saved[0].url, job.url);
+    assert_eq!(
+        serde_json::to_value(&saved[0]).unwrap()["matchOrigin"],
+        spotify_origin_value()
+    );
+    assert_eq!(saved[0].thumbnail_local.as_deref(), Some("local.jpg"));
+    // A failed attempt remains tied to the exact accepted source on retry. Occupy
+    // the slot again so this state transition cannot start a real media process.
+    {
+        let state = t.state();
+        let mut jobs = state.jobs.lock().unwrap();
+        jobs.iter_mut().find(|j| j.id == "blocker").unwrap().status = JobStatus::Downloading;
+        jobs.iter_mut().find(|j| j.id == id).unwrap().status = JobStatus::Failed;
+    }
+    downloader::resume(t.handle(), &id);
+    assert_eq!(t.job(&id).unwrap().url, job.url);
+    assert_eq!(
+        serde_json::to_value(t.job(&id).unwrap()).unwrap()["matchOrigin"],
+        spotify_origin_value()
+    );
+}
+
+#[test]
+fn spotify_origin_matched_duplicate_preserves_ordinary_first_acceptance() {
+    let dir = temp_dir("spotify-duplicate");
+    let out = dir.join("out");
+    let t = TestApp::with_data(dir, out, Vec::new());
+    let blocker: Job = serde_json::from_value(serde_json::json!({"id":"blocker","url":"https://fixture.invalid/blocker","title":"Blocker","options":{},"status":"downloading","progress":0,"createdAt":0})).unwrap();
+    t.state().jobs.lock().unwrap().push(blocker);
+    let ordinary: EnqueueItem = serde_json::from_value(
+        serde_json::json!({"url":"https://www.youtube.com/watch?v=abcdefghijk","title":"Ordinary"}),
+    )
+    .unwrap();
+    let matched: EnqueueItem = serde_json::from_value(serde_json::json!({"url":"https://www.youtube.com/watch?v=abcdefghijk","title":"Matched","matchOrigin":spotify_origin_value()})).unwrap();
+    let added = downloader::enqueue(
+        t.handle(),
+        vec![ordinary, matched],
+        DownloadOptions {
+            mode: "audio".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(added.jobs.len(), 1);
+    assert_eq!(added.jobs[0].job.title, "Ordinary");
+    assert!(serde_json::to_value(&added.jobs[0].job).unwrap()["matchOrigin"].is_null());
+    let old: crate::history::HistoryItem = serde_json::from_value(serde_json::json!({"id":"old","title":"Old","url":"https://example.test/old","mode":"video","quality":"Best","finishedAt":0})).unwrap();
+    assert!(serde_json::to_value(old).unwrap()["matchOrigin"].is_null());
+}
+
+#[test]
+fn spotify_origin_published_file_ownership_survives_library_restart_and_repair() {
+    let Some(t) = TestApp::new("spotify-published") else {
+        return;
+    };
+    let item: EnqueueItem=serde_json::from_value(serde_json::json!({"url":"https://www.youtube.com/watch?v=abcdefghijk","title":"Chosen recording","matchOrigin":spotify_origin_value()})).unwrap();
+    let added = downloader::enqueue(
+        t.handle(),
+        vec![item],
+        DownloadOptions {
+            mode: "audio".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let id = added.jobs[0].job_id.clone();
+    t.wait_job(
+        &id,
+        |j| j.status == JobStatus::Completed,
+        "matched fixture publication",
+    );
+    let entry = library_entry(&t, &id);
+    assert!(entry.file_identity.is_some());
+    let identity = entry.file_identity.clone();
+    let path = entry.file_path.clone().unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    downloader::clear_finished(t.handle());
+    let t = t.restart();
+    crate::history::repair_kept_files(t.handle());
+    let restored = library_entry(&t, &id);
+    assert_eq!(restored.url, "https://www.youtube.com/watch?v=abcdefghijk");
+    assert_eq!(restored.file_identity, identity);
+    assert_eq!(
+        serde_json::to_value(&restored).unwrap()["matchOrigin"],
+        spotify_origin_value()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+}
+
 pub(crate) struct TestApp {
     app: tauri::App<tauri::test::MockRuntime>,
     pub dir: PathBuf,
@@ -214,7 +467,7 @@ impl TestApp {
     }
 
     pub fn enqueue_with(&self, link: &str, options: DownloadOptions) -> String {
-        let item = EnqueueItem { url: link.into(), playlist_index: None, title: link.into(), thumbnail: None, uploader: None, duration: None };
+        let item = EnqueueItem { url: link.into(), match_origin: None, playlist_index: None, title: link.into(), thumbnail: None, uploader: None, duration: None };
         let added = downloader::enqueue(self.handle(), vec![item], options).expect("enqueue");
         added.jobs[0].job_id.clone()
     }
