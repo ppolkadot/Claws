@@ -778,3 +778,48 @@ fn a_transcript_fetches_only_the_chosen_caption_track_through_the_real_yt_dlp() 
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Exercise the actual Windows yt-dlp executable and production command/arguments.
+/// Environment variables alone do not control the frozen executable's print encoding.
+#[cfg(windows)]
+#[test]
+fn unicode_finished_path_survives_ytdlp_output_and_publishes() {
+    let Some(ytdlp) = ytdlp() else {
+        eprintln!("skipped: real yt-dlp is required");
+        return;
+    };
+    let dir = temp_dir("unicode-finished-path");
+    let out = dir.join("Vídeos 日本語");
+    std::fs::create_dir_all(&out).unwrap();
+    let app = crate::lifecycle_tests::TestApp::with_data(dir.clone(), out.clone(), vec![]);
+    let (workspace, mut manifest) = crate::download_files::open_workspace(&out, &uuid::Uuid::new_v4().to_string(), 0).unwrap();
+    let name = "𝗺𝗶𝗻𝗶 𝘆𝘂𝗿𝗶 │ AVigília 日本語 [fixture].mp4";
+    let media = workspace.path.join(name);
+    // An already completed transfer: no network or media processing is needed on retry.
+    std::fs::write(&media, b"completed transfer").unwrap();
+    let info = dir.join("info.json");
+    std::fs::write(&info, serde_json::json!({
+        "id": "fixture", "title": "Unicode fixture", "ext": "mp4", "extractor": "generic",
+        "webpage_url": "http://127.0.0.1:1/unused.mp4", "url": "http://127.0.0.1:1/unused.mp4"
+    }).to_string()).unwrap();
+    let settings = Settings { output_dir: out.to_string_lossy().into_owned(), embed_metadata: false, ..Settings::default() };
+    let mut execution = JobExecution::freeze(&settings, false);
+    execution.filename_template = name.into();
+    let args = download_policy::download_args(crate::tools::common_args(app.handle(), &settings), &downloader::DownloadOptions::default(), &execution, &workspace.path, Source::InfoJson(&info));
+    let output = tauri::async_runtime::block_on(async {
+        tokio::time::timeout(Duration::from_secs(20), crate::tools::command(&ytdlp).args(args).kill_on_drop(true).output()).await.unwrap().unwrap()
+    });
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    // Match the production reader: diagnostic/progress lines may use a legacy code
+    // page, but the printed finished path must arrive losslessly as UTF-8.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let reported = stdout.lines().find_map(|line| line.strip_prefix("CLAWSDONE|")).expect("finished path");
+    assert_eq!(Path::new(reported), media);
+    let relative = crate::download_files::owned_relative(&workspace.path, Path::new(reported)).expect("finished file remains owned");
+    manifest.outputs = vec![relative.to_string_lossy().into_owned()];
+    manifest.state = crate::download_files::Publication::Ready;
+    crate::download_files::write_manifest(&manifest).unwrap();
+    let published = crate::download_files::publish(&mut manifest, &mut |_| true).unwrap();
+    assert_eq!(published.media, out.join(name));
+    assert_eq!(std::fs::read(published.media).unwrap(), b"completed transfer");
+}

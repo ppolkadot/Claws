@@ -59,7 +59,8 @@ struct ToolProgress {
 pub fn command(program: &Path) -> Command {
     let mut cmd = Command::new(program);
     cmd.stdin(std::process::Stdio::null());
-    // Keep yt-dlp's piped output in UTF-8 instead of the console code page.
+    // Request UTF-8 from Python child tools; frozen yt-dlp also needs --encoding
+    // in common_args below because it can override these environment variables.
     cmd.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
@@ -99,7 +100,10 @@ pub fn find_ffmpeg(app: &AppHandle) -> Option<PathBuf> {
 }
 
 pub fn common_args(app: &AppHandle, settings: &Settings) -> Vec<String> {
-    let mut args: Vec<String> = vec!["--no-colors".into(), "--ignore-config".into()];
+    // The Windows frozen executable can choose its legacy output code page despite
+    // PYTHONIOENCODING/PYTHONUTF8. Its machine-readable paths must match the Unicode
+    // filenames on disk, including finished media and caption paths.
+    let mut args: Vec<String> = vec!["--no-colors".into(), "--ignore-config".into(), "--encoding".into(), "utf-8".into()];
 
     match settings.cookie_source.kind.as_str() {
         "browser" => {

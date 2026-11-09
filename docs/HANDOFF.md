@@ -2,7 +2,17 @@
 
 Everything a new session (human or AI) needs to pick this project up. Lives at `docs/HANDOFF.md`. Last updated 2026-11-09.
 
-## Current release: 1.0.6 (2026-11-09)
+## Current release: 1.0.7 — Unicode finished-path correction (2026-11-09)
+
+The owner hit “yt-dlp reported a finished file outside the download's work folder” with a Unicode X video title. Read-only inspection found both completed MP4 files still inside their own `.claws-work` folders. A disposable-copy reproduction with the installed Windows yt-dlp showed that `PYTHONIOENCODING`/`PYTHONUTF8` do not prevent the frozen executable from printing a legacy-code-page, lossy finished path.
+
+`tools::common_args` now explicitly sets `--encoding utf-8` for all production yt-dlp calls. The ownership/canonicalization guard is unchanged. A real-tool regression in `download_tests.rs` exercises production command setup and arguments, an already-completed Unicode file, owned-path validation and final publication without contacting any site. Diagnostic/progress lines may still use the legacy code page; the production reader decodes them lossily, while printed finished paths now arrive intact. After installing 1.0.7, use Try Again on retained failed jobs. No installed app, user queue or downloaded file was modified during testing.
+
+All five version files are synchronized to 1.0.7; application identifier and queue schema remain unchanged. Fresh validation passed 410 Rust tests, feature-enabled Clippy with warnings denied, production frontend/font checks, optimized NSIS build and exact archive/payload/asset checks. Live installation/upgrade and editor import remain manual acceptance limits. Release notes: `docs/releases/1.0.7.md`. Release target: `v1.0.7`, Latest standard release; older release assets remain unchanged.
+
+Installer: `installers/Claws_1.0.7_x64-setup.exe`, 2,968,145 bytes, SHA-256 `4d08d7bd79ab10566bb79ecedbc958b4d053fd0b8c9d5c616efb8c5861ca4c20`; checksum and source/asset build record are alongside it.
+
+## Historical release: 1.0.6 (2026-11-09)
 
 The owner requested moving the approved 1.0.0 Beta to version 1.0.6 and adding it to the project and GitHub Releases. All five version files are synchronized to 1.0.6. The feature code, application identifier, schema-3 queue and existing data locations are unchanged from approved commit `356569d`. The installer, checksum and build record are under `installers/Claws_1.0.6_x64-setup.exe*`; current evidence and limits are in `docs/releases/1.0.6.md`. The release tag is `v1.0.6`, targeting the new version/preparation commit, and is intended as GitHub's Latest standard release. Earlier artifact records below are historical.
 
