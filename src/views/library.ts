@@ -2,6 +2,8 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { api, errorMessage, type HistoryItem } from "../api";
 import { formatBytes, formatDate, formatDuration } from "../format";
+import { keptClearWarning, keptLabel, keptOutcome, keptRemovalWarning, repairNote } from "../kept-files";
+import { TileCache, reconcileChildren } from "../library-cache";
 import { store } from "../store";
 import { button, confirmSheet, toast } from "../ui/components";
 import { h, replace } from "../ui/dom";
@@ -11,21 +13,45 @@ import type { MountView } from "./shell";
 
 const fail = (error: unknown) => toast(errorMessage(error), { tone: "error" });
 
+/** Opens the folder of an entry's kept subtitle files and says what happened, success or not. */
+export async function showKept(id: string) {
+  try {
+    const outcome = keptOutcome(await api.showKeptFiles(id));
+    toast(outcome.text, { tone: outcome.tone });
+  } catch (error) {
+    fail(error);
+  }
+}
+
 function thumbSrc(item: HistoryItem): string | null {
   return item.thumbnailLocal ? convertFileSrc(item.thumbnailLocal) : item.thumbnail;
 }
 
+/**
+ * An entry can take its file along only when Claws recorded proof that the file at that path
+ * is the one it saved. Older entries have none: they can leave the Library, and the file is
+ * left for the user to deal with through Show in Folder.
+ */
 async function confirmRemove(item: HistoryItem) {
-  const choice = await confirmSheet(
-    "Remove from Library?",
-    `“${item.title}” will leave your library. You can also delete the file from your disk.`,
-    [
-      { label: "Remove from Library", value: "remove", variant: "primary" },
-      ...(item.filePath ? [{ label: "Delete File Too", value: "delete", variant: "danger" as const }] : []),
-    ],
-  );
+  const hasFile = Boolean(item.filePath);
+  const provable = hasFile && Boolean(item.fileIdentity);
+  const base = provable
+    ? `“${item.title}” will leave your library. You can also delete the file from your disk.`
+    : hasFile
+      ? `“${item.title}” will leave your library. This download was saved by an older version of Claws, which did not record enough to prove the file at that location is still the one it saved, so Claws will not delete it from your disk. Use Show in Folder to find it.`
+      : `“${item.title}” will leave your library.`;
+  const message = [base, keptRemovalWarning(item)].filter(Boolean).join(" ");
+  const choice = await confirmSheet("Remove from Library?", message, [
+    { label: "Remove from Library", value: "remove", variant: "primary" },
+    ...(provable ? [{ label: "Delete File Too", value: "delete", variant: "danger" as const }] : []),
+    ...(hasFile && !provable ? [{ label: "Show in Folder", value: "reveal", variant: "secondary" as const }] : []),
+  ]);
   if (!choice) return;
   try {
+    if (choice === "reveal") {
+      await api.revealDownload(item.id);
+      return;
+    }
     await api.deleteHistory(item.id, choice === "delete");
     await store.refreshHistory();
   } catch (error) {
@@ -45,6 +71,7 @@ function tile(item: HistoryItem): HTMLElement {
   thumb.addEventListener("error", () => thumb.replaceWith(h("div", { class: "tile-img thumb-fallback" }, icon(modeIcon(item), 26))));
   const duration = formatDuration(item.duration);
   const meta = [item.quality, formatBytes(item.fileSize)].filter(Boolean).join("  ·  ");
+  const kept = keptLabel(item);
   return h(
     "li",
     { class: "tile glass" },
@@ -69,6 +96,8 @@ function tile(item: HistoryItem): HTMLElement {
       item.uploader ? h("span", { class: "tile-sub", text: item.uploader }) : null,
       h("span", { class: "tile-sub", text: meta }),
       h("span", { class: "tile-date", text: formatDate(item.finishedAt) }),
+      // Always visible (the hover actions are not): a kept file must stay findable.
+      kept ? h("div", { class: "tile-kept" }, button({ icon: "captions", label: kept, title: "Show kept files", variant: "secondary", size: "small", onClick: () => void showKept(item.id) })) : null,
     ),
   );
 }
@@ -84,7 +113,8 @@ export const mountLibrary: MountView = (container, ctx) => {
     variant: "secondary",
     size: "small",
     onClick: async () => {
-      const choice = await confirmSheet("Clear the whole library?", "This removes every entry from the library. Downloaded files stay on your disk.", [
+      const message = ["This removes every entry from the library. Downloaded files stay on your disk.", keptClearWarning(store.history)].filter(Boolean).join(" ");
+      const choice = await confirmSheet("Clear the whole library?", message, [
         { label: "Clear Library", value: "clear", variant: "danger" },
       ]);
       if (choice !== "clear") return;
@@ -98,31 +128,54 @@ export const mountLibrary: MountView = (container, ctx) => {
   });
   ctx.setActions([searchBox, clearAll]);
 
+  // Folders that could not be checked for kept subtitle files of older downloads, with a retry.
+  const keptNote = h("div", { class: "kept-note glass", attrs: { role: "status" } });
+  keptNote.hidden = true;
+  const paintKeptNote = (report: Parameters<typeof repairNote>[0]) => {
+    const text = repairNote(report);
+    keptNote.hidden = text === null;
+    if (text === null) return;
+    const retry = button({
+      label: "Check Again",
+      variant: "secondary",
+      size: "small",
+      onClick: () => {
+        retry.disabled = true;
+        void api
+          .repairKeptFiles()
+          .then((next) => {
+            paintKeptNote(next);
+            if (next.attached > 0) void store.refreshHistory();
+          })
+          .catch(fail)
+          .finally(() => (retry.disabled = false));
+      },
+    });
+    replace(keptNote, icon("alert", 15), h("span", { class: "kept-note-text", text }), retry);
+  };
+  // Read again whenever the Library changes: the startup look runs in the background and may
+  // finish after this view opened.
+  const readReport = () => void api.keptFilesReport().then(paintKeptNote).catch(() => {});
+  readReport();
+
   const grid = h("ul", { class: "tiles", attrs: { "aria-label": "Downloaded videos" } });
   const note = h("div", { class: "empty" });
-  container.append(grid, note);
+  container.append(keptNote, grid, note);
 
-  // Reused by id so a search keystroke moves cards instead of rebuilding them.
-  const built = new Map<string, { key: string; el: HTMLElement }>();
-  const tileFor = (item: HistoryItem) => {
-    const key = `${item.title}|${item.thumbnailLocal ?? item.thumbnail}|${item.fileSize}`;
-    const cached = built.get(item.id);
-    if (cached && cached.key === key) return cached.el;
-    const el = tile(item);
-    built.set(item.id, { key, el });
-    return el;
-  };
+  // Reused by id so a search keystroke moves cards instead of rebuilding them. A tile is rebuilt
+  // once when a value it shows or acts on changed (library-cache.ts), and never for anything else.
+  const tiles = new TileCache<HTMLElement>();
+  const tileFor = (item: HistoryItem) => tiles.get(item, () => tile(item));
 
   const render = () => {
     const query = search.value.trim().toLowerCase();
     const items = store.history.filter(
       (i) => !query || i.title.toLowerCase().includes(query) || (i.uploader ?? "").toLowerCase().includes(query),
     );
-    const live = new Set(store.history.map((i) => i.id));
-    for (const id of built.keys()) if (!live.has(id)) built.delete(id);
+    tiles.prune(new Set(store.history.map((i) => i.id)));
     clearAll.disabled = store.history.length === 0;
     searchBox.hidden = store.history.length === 0;
-    grid.replaceChildren(...items.map(tileFor));
+    reconcileChildren(grid, items.map(tileFor)); // tiles that stay are left in place, with their focus
     grid.hidden = items.length === 0;
     note.hidden = items.length > 0;
     if (items.length === 0) {
@@ -144,7 +197,11 @@ export const mountLibrary: MountView = (container, ctx) => {
     window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(render, 90);
   });
-  const off = store.on("history", render);
+  const offHistory = store.on("history", render);
+  const offReport = store.on("history", readReport);
   render();
-  return off;
+  return () => {
+    offHistory();
+    offReport();
+  };
 };

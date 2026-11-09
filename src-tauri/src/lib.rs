@@ -14,6 +14,7 @@ mod error;
 mod estimate;
 mod file_drag;
 mod history;
+mod history_mutation;
 #[cfg(test)]
 mod lifecycle_tests;
 mod links;
@@ -81,7 +82,20 @@ pub fn run() {
             // An exit in the middle of a tool install can leave a half-swapped tool.
             tools::recover_bin(&data_dir.join("bin"));
             let history: Vec<HistoryItem> = store::load_or_recover(&data_dir.join("history.json"), "library", &mut notices);
-            let queue: Vec<Job> = queue_writer::load(&data_dir.join("queue.json"), &mut notices);
+            let queue_path = data_dir.join("queue.json");
+            let queue: Vec<Job> = queue_writer::load(&queue_path, &mut notices).map_err(|error| {
+                // The normal notice channel is not running yet. Explain the preservation
+                // failure before stopping, including in a release build without a console.
+                let message = format!("Claws could not safely load your download queue. Your saved queue has not been replaced.\n\n{error}\n\nCheck available disk space, folder permissions and apps locking the queue, then start Claws again.\n\n{}", queue_path.display());
+                eprintln!("{message}");
+                #[cfg(windows)]
+                unsafe {
+                    use windows::core::HSTRING;
+                    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_OK, MB_ICONERROR};
+                    MessageBoxW(None, &HSTRING::from(message), &HSTRING::from("Claws — Queue could not be loaded"), MB_OK | MB_ICONERROR);
+                }
+                error
+            })?;
             let pending_cleanup: Vec<PendingCleanup> = store::load_or_recover(&data_dir.join("cleanup.json"), "cleanup list", &mut notices);
 
             let queue_writer = downloader::start_queue_writer(app.handle());
@@ -89,6 +103,10 @@ pub fn run() {
             let start_hidden = settings.keep_running && std::env::args().any(|a| a == desktop::BACKGROUND_ARG);
             app.manage(AppState::new(data_dir, settings.clone(), history, pending_cleanup, queue_writer, start_hidden));
             let _recovery = downloader::restore_queue(app.handle(), queue);
+            // Finishes any "Delete File Too" an earlier run left half done.
+            let _history_recovery = history_mutation::reconcile(app.handle());
+            // Finds side files that downloads of older versions kept, bounded, off this path.
+            let _kept_repair = history::start_kept_repair(app.handle());
             let state = app.state::<AppState>();
             probe::prune_cache(&state.probe_cache_dir());
             links::prune(&links::cache_dir(&state.data_dir));
@@ -134,6 +152,9 @@ pub fn run() {
             commands::list_history,
             commands::open_download,
             commands::reveal_download,
+            commands::show_kept_files,
+            commands::repair_kept_files,
+            commands::kept_files_report,
             commands::drag_download,
             commands::open_output_dir,
             commands::delete_history,

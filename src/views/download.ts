@@ -14,22 +14,27 @@ import {
   type ParsedInput,
 } from "../download-input";
 import { formatDate, formatDuration, folderName } from "../format";
+import { fastSaveHint } from "../processing-options";
 import { VIDEO_PRESETS, capChoices, hasExactSizes, keptQuality, qualityChoices } from "../resolution";
 import {
   TRANSCRIPT_FORMATS,
   captionChoices,
   captionKey,
   defaultCaption,
-  keptCaption,
+  refreshSignature,
+  refreshTrackChoices,
+  subtitleLimitHint,
   transcriptOptions,
   type CaptionChoices,
 } from "../transcript-options";
-import { store, type BatchChoices, type BatchSession } from "../store";
-import { button, chipCheck, chipRadio, segmented, toast, toggle } from "../ui/components";
+import { CHECK_INTERRUPTED, estimatesStillApply } from "../preview-session";
+import { store, type BatchChoices, type BatchSession, type EstimateItem } from "../store";
+import { button, chipRadio, segmented, toast, toggle } from "../ui/components";
 import { append, clear, h, replace } from "../ui/dom";
 import { icon } from "../ui/icons";
 import { group, progressBar, row, sectionTitle, setProgress, spinner } from "../ui/layout";
 import { settleIn } from "../ui/motion";
+import { subtitleChips } from "../ui/subtitle-chips";
 import type { MountView } from "./shell";
 
 type Phase = "idle" | "loading" | "result" | "error" | "batch";
@@ -125,13 +130,6 @@ function batchOptions(choices: BatchChoices): DownloadOptions {
   };
 }
 
-/** One item to estimate, with the choices it was asked for. */
-interface EstimateItem {
-  url: string;
-  playlistIndex: number | null;
-  options: DownloadOptions;
-}
-
 type EstimateLine = {
   root: HTMLElement;
   text: HTMLElement;
@@ -139,27 +137,51 @@ type EstimateLine = {
   detail: HTMLElement;
   /** Visually hidden; written only when an estimate starts or settles, never per step. */
   status: HTMLElement;
+  /** Asks again for what failed; shown only then. It never blocks Download. */
+  retry: HTMLButtonElement;
   busy: boolean;
 };
 
-/** The size and free-space lines of an estimate, separate so neither hides the other. */
-function estimateLine(): EstimateLine {
+/**
+ * The size and free-space lines of an estimate, separate so neither hides the other, and the
+ * button that asks again for an estimate that failed (`onRetry`; the estimate state itself
+ * enforces one retry at a time through the shared call limit).
+ */
+function estimateLine(onRetry: () => void, retryLabel = "Retry", retryTitle = "Asks again for this size. Download is not affected."): EstimateLine {
   const size = h("span", { class: "estimate-size" });
   const detail = h("span", { class: "estimate-detail" });
+  const retry = button({
+    label: retryLabel,
+    variant: "plain",
+    size: "small",
+    title: retryTitle,
+    onClick: () => {
+      onRetry();
+      // The button hides while the retry runs; keep keyboard focus beside it. The paragraph
+      // keeps the global :focus-visible ring, so a keyboard user still sees where focus is.
+      text.focus({ preventScroll: true });
+    },
+  });
+  retry.hidden = true;
+  retry.style.alignSelf = "flex-start";
   // Not a live region itself: it is rewritten for every step of a run and every frame of
   // the batch counts, which a screen reader would read out again and again.
   const text = h(
     "p",
     {
       class: "estimate",
-      attrs: { title: "Estimated from what the site reports. Claws checks the actual free space again when each download starts." },
+      attrs: {
+        title: "Estimated from what the site reports. Claws checks the actual free space again when each download starts.",
+        tabindex: "-1",
+      },
     },
     size,
     detail,
+    retry,
   );
   text.hidden = true;
   const status = h("span", { class: "visually-hidden", attrs: { role: "status", "aria-live": "polite" } });
-  return { root: h("div", { class: "estimate-wrap" }, text, status), text, size, detail, status, busy: false };
+  return { root: h("div", { class: "estimate-wrap" }, text, status), text, size, detail, status, retry, busy: false };
 }
 
 function setText(el: HTMLElement, text: string) {
@@ -171,7 +193,8 @@ function setText(el: HTMLElement, text: string) {
  * Download button below does not move each time an estimate starts and settles. A screen
  * reader hears the outcome once it settles (and, with `announceStart`, that it started).
  */
-function paintLine(line: EstimateLine, size: string, detail: string, busy = false, announceStart = false) {
+function paintLine(line: EstimateLine, size: string, detail: string, busy = false, announceStart = false, canRetry = false) {
+  line.retry.hidden = !canRetry;
   setText(line.size, size);
   setText(line.detail, detail || "\u00a0");
   line.detail.dataset.empty = String(!detail);
@@ -278,7 +301,11 @@ export const mountDownload: MountView = (container, ctx) => {
   /** Saved details shown while a fresh lookup runs ("checking"), or after it failed ("stale"). */
   let freshness: "fresh" | "checking" | "stale" = "fresh";
   let staleReason = "";
+  /** What a refresh could not keep of the choices made (transcript-options.ts refreshTrackChoices). */
+  let refreshNotices: string[] = [];
   let freshnessEl: HTMLElement | null = null;
+  /** The link the queue has accepted; its details are never kept for a return to this view. */
+  let enqueuedResult: ProbeResult | null = null;
 
   // ---- Size previews (display only; the download checks free space when it starts) ----
   /** One link: follows the choices, debounced, latest answer only. */
@@ -288,7 +315,16 @@ export const mountDownload: MountView = (container, ctx) => {
       const [url, options] = JSON.parse(key) as [string, DownloadOptions];
       return api.estimate(url, null, options);
     },
-    { calls: estimateCalls, onChange: () => paintPreviewEstimate() },
+    {
+      calls: estimateCalls,
+      onChange: () => {
+        // A finished estimate is kept for these exact choices, so coming back or choosing them
+        // again shows it without asking (preview-session.ts).
+        const { status, estimate } = preview.state;
+        if (status === "done" && estimate && preview.currentKey) store.previews.remember(preview.currentKey, estimate);
+        paintPreviewEstimate();
+      },
+    },
   );
   const estimateItem = (item: EstimateItem) => api.estimate(item.url, item.playlistIndex, item.options);
   // Repeats are dropped by the queue's identity (enqueue adds each item once).
@@ -408,6 +444,7 @@ export const mountDownload: MountView = (container, ctx) => {
   /** Shows a lookup result with every option back at its default. */
   function showResult(next: ProbeResult) {
     result = next;
+    store.previews.begin(next.url); // a new link replaces the one kept, with its choices and estimates
     mode = "video";
     height = null;
     videoPreset = "compatible";
@@ -417,44 +454,34 @@ export const mountDownload: MountView = (container, ctx) => {
     fastSave = false;
     caption = defaultCaption(captionChoices(next), navigator.languages ?? []);
     transcriptFormat = "txt";
+    refreshNotices = [];
     selected = new Set(next.entries.map((_, i) => i));
     phase = "result";
     preview.cancel();
     listRun.reset();
   }
 
-  /** When this is unchanged, a refresh redraws nothing. */
-  const shape = (r: ProbeResult) =>
-    JSON.stringify([
-      r.title,
-      r.thumbnail,
-      r.duration,
-      r.uploader,
-      r.heights,
-      r.resolutions ?? null,
-      r.subtitles.map((s) => s.code),
-      r.captions?.map(captionKey) ?? null,
-      r.entries.map((e) => e.url + e.title),
-    ]);
-
   /** Takes refreshed details while keeping the choices already made. */
   function adoptRefresh(next: ProbeResult) {
     const before = result;
     result = next;
-    subs = new Set([...subs].filter((code) => next.subtitles.some((s) => s.code === code)));
+    store.previews.rekey(next.url); // the session is the link's, wherever the lookup settled
+    // A subtitle or caption stays chosen only while the refresh still offers that same track
+    // (code and kind); otherwise it is dropped and the notice says so. Nothing else changes.
+    const kept = refreshTrackChoices({ mode, subs, caption }, before, next, navigator.languages ?? []);
+    ({ mode, subs, caption } = kept.choices);
+    refreshNotices = kept.notices;
     // A size the refresh no longer offers (or a cap read from heights saved before exact
     // sizes, which for portrait video were the longer side) goes back to Best, so the cap
     // sent is always the chip shown as chosen.
     height = keptQuality(height, qualityChoices(next, next.kind === "playlist"));
-    // A caption track the refresh no longer offers goes back to the default; with no
-    // captions left, a transcript is no longer possible.
-    const captions = captionChoices(next);
-    caption = keptCaption(caption, captions, navigator.languages ?? []);
-    if (mode === "transcript" && !captions.available) mode = "video";
     if (!before || before.entries.length !== next.entries.length) selected = new Set(next.entries.map((_, i) => i));
-    // Sizes estimated for other videos do not describe these.
-    const urls = (r: ProbeResult) => JSON.stringify(r.entries.map((e) => [e.url, e.playlistIndex]));
-    if (!before || urls(before) !== urls(next)) listRun.reset();
+    // Sizes estimated for other videos, or read before the sizes offered changed, do not describe
+    // these: the kept estimates go (a new generation), and a playlist's run is forgotten.
+    if (!estimatesStillApply(before, next)) {
+      store.previews.refreshed();
+      listRun.reset();
+    }
   }
 
   function showError(title: string, text: string, retry = true) {
@@ -515,13 +542,14 @@ export const mountDownload: MountView = (container, ctx) => {
       const probed = await api.probe(url);
       if (mine !== ticket) return;
       if (cached && phase === "result" && result) {
-        const changed = shape(result) !== shape(probed);
+        const changed = refreshSignature(result) !== refreshSignature(probed);
         freshness = "fresh";
         if (changed) {
           adoptRefresh(probed);
           render();
         } else {
           result = probed;
+          store.previews.rekey(probed.url);
           paintFreshness();
           scheduleEstimate(); // the lookup is cached now, so the preview needs no network
         }
@@ -612,22 +640,26 @@ export const mountDownload: MountView = (container, ctx) => {
       return;
     }
     if (!result || result.kind !== "video" || freshness === "checking") return;
-    // The settings the backend reads are part of the key, so a change of them asks again.
-    preview.request(JSON.stringify([result.url, currentOptions(), ...estimateSettings()]));
+    // The settings the backend reads are part of the key, so a change of them asks again, and so
+    // is the refresh generation, so details that changed are never answered from an old estimate.
+    const key = JSON.stringify([result.url, currentOptions(), ...estimateSettings(), store.previews.generation]);
+    const kept = store.previews.recall(key);
+    if (kept && preview.currentKey !== key) preview.restore(key, kept);
+    else preview.request(key);
   }
 
   function paintPreviewEstimate() {
     if (!previewLine) return;
     if (mode === "transcript") return paintLine(previewLine, TEXT_ONLY, "");
     const { size, detail } = describeSingle(preview.state);
-    paintLine(previewLine, size, detail, preview.state.status === "loading");
+    paintLine(previewLine, size, detail, preview.state.status === "loading", false, preview.failed);
   }
 
   /** The line under a list, and its button, for a run of estimates. */
   function paintRun(run: EstimateRun<EstimateItem>, line: EstimateLine, btn: HTMLButtonElement, count: number) {
     const s = run.state;
     const finished = run.key !== null && !s.running && s.done > 0;
-    paintLine(line, describeRun(run), finished ? (aggregate(s.results).tempText ?? "") : "", s.running, true);
+    paintLine(line, describeRun(run), finished ? (aggregate(s.results).tempText ?? "") : "", s.running, true, run.canRetry);
     // Named apart from the batch's own Stop (which stops reading links).
     setText(btn.querySelector("span")!, s.running ? "Stop Estimating" : "Estimate Sizes");
     const title = s.running
@@ -645,6 +677,7 @@ export const mountDownload: MountView = (container, ctx) => {
     if (!result || enqueuing) return;
     enqueuing = true;
     const mine = ticket;
+    const sent = result;
     if (trigger) trigger.disabled = true;
     const items =
       result.kind === "playlist"
@@ -669,9 +702,12 @@ export const mountDownload: MountView = (container, ctx) => {
           ];
     try {
       // The looked-up link, so its details are saved in the link cache.
+      store.previews.adding(sent.url); // a view left from here is not shown as new on a return
       const added = await api.enqueue(items, currentOptions(), lastUrl || result.url);
       // Usually already applied from the jobs-added event; the revisions make this a no-op.
       store.addJobs(added);
+      enqueuedResult = sent;
+      store.previews.clearFor(sent.url); // added to the queue: its details and estimates are done with
       const jobs = added.jobs;
       if (trigger) {
         trigger.classList.add("confirmed");
@@ -690,6 +726,7 @@ export const mountDownload: MountView = (container, ctx) => {
       phase = store.batch ? "batch" : "idle";
       render();
     } catch (error) {
+      store.previews.addFailed(sent.url);
       toast(errorMessage(error), { tone: "error" });
       if (trigger) trigger.disabled = false;
     } finally {
@@ -728,6 +765,13 @@ export const mountDownload: MountView = (container, ctx) => {
     return section;
   }
 
+  /** The user has chosen again, so what a refresh said about their old choices no longer applies. */
+  function dismissRefreshNotices() {
+    if (refreshNotices.length === 0) return;
+    refreshNotices = [];
+    paintFreshness();
+  }
+
   function paintFreshness() {
     if (!freshnessEl || !result) return;
     const r = result;
@@ -737,11 +781,12 @@ export const mountDownload: MountView = (container, ctx) => {
     const parts = [
       previous ? `${previous.mode === "transcript" ? "Transcript saved" : "Downloaded"} ${formatDate(previous.finishedAt)}` : null,
       freshness === "checking" ? "Checking for changes…" : null,
-      freshness === "stale" ? `Couldn't check for changes: ${staleReason}` : null,
+      freshness === "stale" ? (staleReason === CHECK_INTERRUPTED ? staleReason : `Couldn't check for changes: ${staleReason}`) : null,
+      ...refreshNotices,
     ].filter(Boolean) as string[];
     freshnessEl.textContent = parts.join("  ·  ");
     freshnessEl.hidden = parts.length === 0;
-    freshnessEl.dataset.tone = freshness === "stale" ? "warn" : "";
+    freshnessEl.dataset.tone = freshness === "stale" || refreshNotices.length > 0 ? "warn" : "";
   }
 
   function renderEntries(r: ProbeResult): HTMLElement {
@@ -749,7 +794,7 @@ export const mountDownload: MountView = (container, ctx) => {
     const list = h("div", { class: "entries", attrs: { role: "group", "aria-label": "Videos in this playlist" } });
     // Created with a label: an icon-only button is a fixed 28 px wide.
     const downloadBtn: HTMLButtonElement = button({ label: "Download", icon: "download", variant: "primary", onClick: () => void startDownload(downloadBtn) });
-    const listLine = estimateLine();
+    const listLine = estimateLine(() => void listRun.retryFailed(listKey()), "Retry Failed", "Asks again only for the videos whose size could not be estimated. Sizes already read stay. Download is not affected.");
     const listItems = (): EstimateItem[] => {
       const options = currentOptions();
       return r.entries.filter((_, i) => selected.has(i)).map((e) => ({ url: e.url, playlistIndex: e.playlistIndex, options }));
@@ -849,6 +894,7 @@ export const mountDownload: MountView = (container, ctx) => {
       mode,
       (next) => {
         mode = next;
+        dismissRefreshNotices();
         paint();
       },
     );
@@ -873,6 +919,7 @@ export const mountDownload: MountView = (container, ctx) => {
             "Captions",
             captionSelect(captions, caption, (key) => {
               caption = key;
+              dismissRefreshNotices();
             }),
             "Made from the site's own captions; Claws does not recognise speech. Automatic captions are generated by the site and can contain errors.",
           ),
@@ -907,17 +954,10 @@ export const mountDownload: MountView = (container, ctx) => {
           }),
         );
         if (r.subtitles.length > 0) {
-          rows.push(
-            row(
-              "Subtitles",
-              chipCheck(
-                "Subtitles",
-                r.subtitles.slice(0, 14).map((s) => ({ value: s.code, label: s.name })),
-                subs,
-                () => paint(),
-              ),
-            ),
-          );
+          rows.push(row("Subtitles", subtitleChips(r.subtitles, subs, () => {
+            dismissRefreshNotices();
+            paint();
+          }), subtitleLimitHint(subs.size)));
           if (subs.size > 0) {
             rows.push(
               row(
@@ -951,19 +991,16 @@ export const mountDownload: MountView = (container, ctx) => {
       scheduleEstimate();
     };
 
-    // Fast Save names exactly what it changes for these choices; it never changes the
-    // video or audio that is downloaded.
+    // Fast Save names exactly what it changes for these choices (processing-options.ts, the
+    // mirror of the Rust ProcessingPolicy); it never changes the video or audio downloaded.
     const fastSaveRow = () => {
-      const metadata = store.settings.embedMetadata;
-      const embeddedSubs = mode === "video" && subs.size > 0 && embedSubs;
-      const skipped = [metadata ? "writing title, uploader and date into the file" : null, embeddedSubs ? "embedding subtitles (they are saved as .srt files instead)" : null].filter(Boolean);
-      const hint = skipped.length === 0
-        ? "Nothing to skip with these choices: the file is not rewritten after it downloads."
-        : fastSave
-          ? `Skips ${skipped.join(" and ")}. The video and audio are the same.`
-          : metadata && embeddedSubs
-            ? "Embedding metadata and subtitles each rewrite the whole file after it downloads. Fast Save skips both."
-            : `Skips ${skipped.join(" and ")}, which rewrites the whole file after it downloads.`;
+      const hint = fastSaveHint({
+        mode: mode === "audio" ? "audio" : "video",
+        audioFormat,
+        metadata: store.settings.embedMetadata,
+        embeddedSubs: mode === "video" && subs.size > 0 && embedSubs,
+        fastSave,
+      });
       return row(
         "Fast Save",
         toggle("Fast Save", fastSave, (v) => {
@@ -987,7 +1024,7 @@ export const mountDownload: MountView = (container, ctx) => {
     if (r.kind === "playlist") {
       wrap.append(renderEntries(r));
     } else {
-      previewLine = estimateLine();
+      previewLine = estimateLine(() => preview.retry());
       paintPreviewEstimate();
       wrap.append(
         previewLine.root,
@@ -1029,6 +1066,7 @@ export const mountDownload: MountView = (container, ctx) => {
     const summary = await sending;
     batchView?.refresh();
     if (!summary) return;
+    if (summary.added > 0 && store.batch === session) session.estimate = null; // sized links are in the queue now
     toast(describeEnqueue(summary), {
       tone: summary.added === 0 && summary.failed > 0 ? "error" : "info",
       action: summary.added > 0 ? { label: "View Queue", run: () => store.go("queue") } : undefined,
@@ -1139,7 +1177,7 @@ export const mountDownload: MountView = (container, ctx) => {
       },
     });
     const selectedNote = h("span", { class: "save-to" });
-    const batchLine = estimateLine();
+    const batchLine = estimateLine(() => void batchRun.retryFailed(batchKey()), "Retry Failed", "Asks again only for the videos whose size could not be estimated. Sizes already read stay. Download is not affected.");
     // The items a download would send now: a row partly queued already counts only the rest.
     const batchItems = (): EstimateItem[] => {
       const options = batchOptions(session.choices);
@@ -1517,11 +1555,62 @@ export const mountDownload: MountView = (container, ctx) => {
   });
   const offBatchRow = store.on("batchRow", (detail) => batchView?.paintRow(detail as BatchRow<ProbeResult>));
 
+  // Back from another view: the link's details, the choices made over them and the estimates
+  // already read come back as they were left. Nothing that was still running is revived.
+  const returning = store.previews.take();
+  if (returning) {
+    result = returning.result;
+    lastUrl = returning.typedUrl;
+    input.value = returning.typedUrl; // the link field shows the link the details are for
+    fitInput();
+    ({ mode, height, videoPreset, audioFormat, embedSubs, fastSave, caption, transcriptFormat } = returning.choices);
+    subs = new Set(returning.choices.subs);
+    selected = new Set(returning.selected);
+    freshness = returning.freshness;
+    staleReason = returning.staleReason;
+    refreshNotices = returning.notices;
+    if (returning.list) listRun.restore(returning.list);
+    phase = "result";
+  }
+  // The batch's own sizes, only when its list is what opens (a link's details drawn over a kept
+  // batch forget its run, as they always did).
+  if (phase === "batch" && store.batch?.estimate) {
+    batchRun.restore(store.batch.estimate); // checked against the rows and choices when it paints
+    store.batch.estimate = null;
+  }
+
+  /** Leaving the view: keeps what a return needs, as plain data, and stops what is running. */
+  function saveSession() {
+    if (phase === "result" && result && result !== enqueuedResult) {
+      listRun.cancel(); // what it read stays; the calls still on their way are ignored
+      const checking = freshness === "checking";
+      store.previews.save({
+        url: result.url,
+        typedUrl: lastUrl || result.url,
+        result,
+        choices: { mode, height, videoPreset, audioFormat, subs: [...subs], embedSubs, fastSave, caption, transcriptFormat },
+        selected: [...selected].sort((a, b) => a - b),
+        // The check for changes is dropped with the view, so it cannot be shown as still running.
+        freshness: freshness === "checking" ? "stale" : freshness,
+        staleReason: checking ? CHECK_INTERRUPTED : staleReason,
+        notices: refreshNotices,
+        list: listRun.snapshot(),
+      });
+    } else {
+      store.previews.clear(); // a loading or failed lookup, a batch or an added link: nothing to come back to
+    }
+    if (store.batch && phase === "batch") {
+      batchRun.cancel();
+      store.batch.estimate = batchRun.snapshot();
+    }
+  }
+
   render();
   input.focus();
   takePaste();
 
   return () => {
+    saveSession();
     offPaste();
     offFocus();
     offTools.forEach((off) => off());

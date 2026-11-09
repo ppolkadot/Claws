@@ -70,14 +70,26 @@ fn write_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(result?)
 }
 
+fn is_transient_rename_error(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        return true;
+    }
+    #[cfg(windows)]
+    if matches!(error.raw_os_error(), Some(5 | 32)) {
+        return true;
+    }
+    false
+}
+
 /// A rename that tolerates a moment's lock: an antivirus or indexer opening the freshly
 /// written file (or the one it replaces) makes Windows refuse the rename with "access
-/// denied" for a few milliseconds. Lasting failures are still returned, after about 300 ms.
-fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
+/// denied" or a sharing violation for a few milliseconds. Lasting failures are still
+/// returned, after about 300 ms.
+pub(crate) fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
     let mut attempt = 0;
     loop {
         match fs::rename(from, to) {
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && attempt < 6 => {
+            Err(e) if is_transient_rename_error(&e) && attempt < 6 => {
                 attempt += 1;
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
@@ -172,6 +184,34 @@ mod tests {
         assert_eq!(value.len(), 50);
         let leftovers = fs::read_dir(&dir).unwrap().flatten().count();
         assert_eq!(leftovers, 1, "no temp files should remain");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rename_retrying_waits_out_a_transient_sharing_lock_and_fails_on_a_persistent_one() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = temp_dir("rename-retry");
+        let from = dir.join("from.json");
+        let to = dir.join("to.json");
+        fs::write(&from, b"payload").unwrap();
+
+        let held = fs::OpenOptions::new().read(true).share_mode(1).open(&from).unwrap();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            drop(held);
+        });
+        rename_retrying(&from, &to).expect("transient lock should be retried");
+        releaser.join().unwrap();
+        assert!(!from.exists() && to.exists());
+
+        let locked = dir.join("locked.json");
+        let dest = dir.join("dest.json");
+        fs::write(&locked, b"keep").unwrap();
+        let persistent = fs::OpenOptions::new().read(true).share_mode(1).open(&locked).unwrap();
+        assert!(rename_retrying(&locked, &dest).is_err());
+        assert!(locked.exists() && !dest.exists());
+        drop(persistent);
         let _ = fs::remove_dir_all(dir);
     }
 }

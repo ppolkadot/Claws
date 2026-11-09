@@ -200,6 +200,16 @@ html[data-backdrop="none"][data-theme="dark"] .glass {
   background: var(--blue-fill);
   color: #fff;
 }
+/* aria-disabled: a choice at its limit; still focusable so focus is not lost when it changes. */
+.chip[aria-disabled="true"],
+.chip[aria-disabled="true"]:hover {
+  background: var(--fill);
+  opacity: 0.55;
+  cursor: default;
+}
+.chip[aria-disabled="true"]:active {
+  transform: none;
+}
 
 .switch {
   position: relative;

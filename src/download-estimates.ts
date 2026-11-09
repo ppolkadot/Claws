@@ -6,6 +6,10 @@
 // The numbers come from the backend (estimate.rs), which re-runs the download's own format
 // selection over the cached lookup. They are display only: the download still checks the
 // actual free space when it starts. A size that is not known is never counted as zero.
+//
+// An estimate is available (a size), unknown (the site gives none) or failed (the tool did not
+// run, timed out or said nothing usable). A failure can be retried by the user, only for the
+// items that failed and through the same shared call limit; nothing is retried automatically.
 
 /** Backend calls at once when estimating many items; each one is a yt-dlp process. */
 export const ESTIMATE_CONCURRENCY = 3;
@@ -15,6 +19,12 @@ export const ESTIMATE_CAP = 200;
 export const ESTIMATE_DEBOUNCE_MS = 250;
 
 export type Confidence = "exact" | "approximate" | "unknown";
+
+/**
+ * Whether a figure could be had: available (a size), unknown (the site gives none) or failed
+ * (the estimate could not be made, so trying again may work). Older responses lack it.
+ */
+export type EstimateState = "available" | "unknown" | "failed";
 
 /** One selected stream (estimate.rs EstimatePart). */
 export interface EstimatePart {
@@ -49,6 +59,72 @@ export interface DownloadEstimate {
   /** The kept file is a conversion (an audio target): its size and container are not the download's. */
   converted: boolean;
   unknownReason: string | null;
+  /** Absent in older-shaped responses: read it through `estimateState`. */
+  state?: EstimateState;
+  /** For a failed estimate, a short single-line reason that is safe to show. */
+  diagnostic?: string | null;
+}
+
+/**
+ * The state of an estimate, whatever shape it arrived in. Only a response that says so is
+ * failed; an older one is available when it has a size and unknown when it has none. A failure
+ * has no size, and a state that says available without one is not a size either.
+ */
+export function estimateState(estimate: DownloadEstimate | null | undefined): EstimateState {
+  if (estimate?.state === "failed") return "failed";
+  return known(estimate?.downloadBytes) !== null ? "available" : "unknown";
+}
+
+/** The longest failure reason shown, in characters. */
+const FAILURE_LIMIT = 240;
+const NO_REASON = "The estimate could not be made.";
+
+/**
+ * A word that names a place on the machine: a `file:` link, a drive, rooted or backslashed
+ * path, a drive letter inside a word (`--cookies=C:/x`), or a relative path with two or more
+ * slashes. A web link is not one.
+ */
+function isPath(word: string): boolean {
+  const bare = word.replace(/^["'(\[<]+|["')\]>,;]+$/g, "");
+  const rooted = (w: string) => /^\/./.test(w);
+  const eq = bare.indexOf("=");
+  return (
+    /(^|[^A-Za-z0-9])[A-Za-z]:(\\|\/(?!\/))/.test(bare) ||
+    bare.includes("\\") ||
+    /^file:/i.test(bare) ||
+    rooted(bare) ||
+    (eq >= 0 && rooted(bare.slice(eq + 1))) ||
+    (!bare.includes("://") && (bare.match(/\//g)?.length ?? 0) >= 2)
+  );
+}
+
+/** A rejected call as one short line that is safe to show: no local paths, bounded. */
+export function describeFailure(error: unknown): string {
+  const raw = typeof error === "string" ? error : error instanceof Error ? error.message : "";
+  const line = raw
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => (isPath(word) ? "<path>" : word))
+    .join(" ");
+  if (!line) return NO_REASON;
+  return line.length > FAILURE_LIMIT ? `${line.slice(0, FAILURE_LIMIT)}\u2026` : line;
+}
+
+/** An estimate that could not be made (a call that threw, or one that said so). */
+export function failedEstimate(diagnostic: string): DownloadEstimate {
+  return {
+    downloadBytes: null,
+    confidence: "unknown",
+    parts: [],
+    container: null,
+    peakTempBytes: null,
+    requiredFreeBytes: null,
+    outputBytes: null,
+    converted: false,
+    unknownReason: diagnostic,
+    state: "failed",
+    diagnostic,
+  };
 }
 
 /** A usable size: positive and finite. Anything else is unknown, never zero. */
@@ -82,7 +158,10 @@ const items = (n: number) => `${n} ${n === 1 ? "item" : "items"}`;
 export interface Aggregate {
   items: number;
   knownCount: number;
+  /** Items the site gives no size for (not those whose estimate failed). */
   unknownCount: number;
+  /** Items whose estimate could not be made, worth retrying; never counted as sizes. */
+  failedCount: number;
   /** Sum of the known sizes; null when none is known. */
   knownBytes: number | null;
   /** Some known size is an estimate. */
@@ -103,9 +182,16 @@ export interface Aggregate {
   tempText: string | null;
 }
 
-/** Totals for items estimated (null: the estimate failed, so that item is unknown). */
+const unknownItems = (n: number) => (n === 1 ? "1 item has an unknown size" : `${n} items have unknown sizes`);
+const failedItems = (n: number) => (n === 1 ? "the estimate failed for 1 item" : `the estimates failed for ${n} items`);
+
+/**
+ * Totals for items estimated. A failed estimate is counted apart from an item with no size,
+ * and neither adds anything to the total. (null is an older "no answer", counted as unknown.)
+ */
 export function aggregate(estimates: (DownloadEstimate | null)[]): Aggregate {
   let knownCount = 0;
+  let failedCount = 0;
   let knownBytes = 0;
   let approximate = false;
   let need: number | null = null;
@@ -115,7 +201,9 @@ export function aggregate(estimates: (DownloadEstimate | null)[]): Aggregate {
   let outputKnownCount = 0;
   let outputBytes = 0;
   for (const estimate of estimates) {
-    const bytes = known(estimate?.downloadBytes);
+    const failed = estimateState(estimate) === "failed";
+    if (failed) failedCount += 1;
+    const bytes = failed ? null : known(estimate?.downloadBytes);
     if (bytes !== null) {
       knownCount += 1;
       knownBytes += bytes;
@@ -135,19 +223,20 @@ export function aggregate(estimates: (DownloadEstimate | null)[]): Aggregate {
     }
   }
   const count = estimates.length;
-  const unknownCount = count - knownCount;
+  const unknownCount = count - knownCount - failedCount;
+  const missing = [unknownCount > 0 ? unknownItems(unknownCount) : "", failedCount > 0 ? failedItems(failedCount) : ""].filter(Boolean).join("; ");
 
   let text: string;
   if (count === 0) text = "";
-  else if (knownCount === 0) text = count === 1 ? "Size unknown" : `Sizes unknown for all ${count} items`;
-  else {
+  else if (knownCount === 0) {
+    if (failedCount === 0) text = count === 1 ? "Size unknown" : `Sizes unknown for all ${count} items`;
+    else if (unknownCount === 0) text = count === 1 ? "Size estimate failed" : `Size estimates failed for all ${count} items`;
+    else text = missing.charAt(0).toUpperCase() + missing.slice(1);
+  } else {
     const size = formatSize(knownBytes);
-    if (unknownCount === 0) text = `${approximate ? "About" : "Exactly"} ${size}`;
-    else {
-      const rest = unknownCount === 1 ? "1 item has an unknown size" : `${unknownCount} items have unknown sizes`;
-      // An exact total covers only the items it counts; say which.
-      text = approximate ? `About ${size}; ${rest}` : `Exactly ${size} for ${items(knownCount)}; ${rest}`;
-    }
+    if (missing === "") text = `${approximate ? "About" : "Exactly"} ${size}`;
+    // An exact total covers only the items it counts; say which.
+    else text = approximate ? `About ${size}; ${missing}` : `Exactly ${size} for ${items(knownCount)}; ${missing}`;
   }
 
   // One set of choices converts every item alike; an item whose estimate failed has an
@@ -180,6 +269,7 @@ export function aggregate(estimates: (DownloadEstimate | null)[]): Aggregate {
     items: count,
     knownCount,
     unknownCount,
+    failedCount,
     knownBytes: knownCount > 0 ? knownBytes : null,
     approximate,
     requiredFreeBytes: need,
@@ -200,7 +290,11 @@ export type PreviewStatus = "idle" | "loading" | "done" | "failed";
 export interface PreviewState {
   status: PreviewStatus;
   estimate?: DownloadEstimate;
+  /** Why a failed preview failed: one short line that is safe to show. */
+  diagnostic?: string;
 }
+
+const FAILED_SIZE = "Size estimate failed";
 
 /** The two lines a single link's preview shows. */
 export function describeSingle(state: PreviewState): { size: string; detail: string } {
@@ -210,9 +304,10 @@ export function describeSingle(state: PreviewState): { size: string; detail: str
     case "loading":
       return { size: "Estimating size…", detail: "" };
     case "failed":
-      return { size: "Size unknown", detail: "" };
+      return { size: FAILED_SIZE, detail: state.diagnostic ?? "" };
     case "done": {
       const estimate = state.estimate!;
+      if (estimateState(estimate) === "failed") return { size: FAILED_SIZE, detail: estimate.diagnostic ?? estimate.unknownReason ?? "" };
       const sum = aggregate([estimate]);
       if (sum.knownCount === 0) return { size: sum.text, detail: estimate.unknownReason ?? "" };
       if (sum.converted) {
@@ -287,7 +382,8 @@ const realTimers: Timers = {
 /**
  * One link's preview. Each change of choices is a new key; the estimate is asked for once
  * the choices have settled for ESTIMATE_DEBOUNCE_MS, and only the latest key's answer is
- * kept. A failure is an unknown size, not an error.
+ * kept. A failure (a call that threw, or an answer that says it failed) is a failed preview,
+ * not an error and not an unknown size; `retry` asks again once, when the user asks.
  *
  * At most one backend call runs at a time (each is a yt-dlp process that cannot be
  * stopped from here): a settled key that arrives while one runs waits for it, and only
@@ -348,8 +444,13 @@ export class PreviewEstimator {
         this.pump();
       };
       reply.then(
-        (estimate) => settle({ status: "done", estimate }),
-        () => settle({ status: "failed" }),
+        (estimate) =>
+          settle(
+            estimateState(estimate) === "failed"
+              ? { status: "failed", diagnostic: describeFailure(estimate.diagnostic ?? estimate.unknownReason) }
+              : { status: "done", estimate },
+          ),
+        (error) => settle({ status: "failed", diagnostic: describeFailure(error) }),
       );
     };
     this.timer = this.timers.set(() => {
@@ -357,6 +458,37 @@ export class PreviewEstimator {
       this.waiting = launch;
       this.pump();
     }, this.delay);
+  }
+
+  /** The choices the preview shows or is asking for; null when it shows nothing. */
+  get currentKey(): string | null {
+    return this.key;
+  }
+
+  /**
+   * Shows an estimate already made for these choices, asking nothing. An answer still on its
+   * way for other choices is ignored.
+   */
+  restore(key: string, estimate: DownloadEstimate) {
+    this.stop();
+    this.key = key;
+    this.set({ status: "done", estimate });
+  }
+
+  /** The last estimate could not be made, so Retry applies. */
+  get failed(): boolean {
+    return this.state.status === "failed";
+  }
+
+  /**
+   * Asks again for the choices whose estimate failed, once per call: a failure is never
+   * retried by itself. It goes through the same debounce and shared call limit as a request.
+   */
+  retry() {
+    if (this.state.status !== "failed" || this.key === null) return;
+    const key = this.key;
+    this.key = null;
+    this.request(key);
   }
 
   /** Forgets the preview; an answer still on its way is ignored. */
@@ -394,8 +526,31 @@ export interface RunState {
   notEstimated: number;
   /** Items selected after the run started; it does not cover them (see `follow`). */
   notCovered: number;
-  /** Finished estimates; null where the backend call failed. */
-  results: (DownloadEstimate | null)[];
+  /**
+   * Finished estimates, a failed call being a failed estimate (estimateState), one for each
+   * item and in the order the items first answered; a retry replaces an item's in place.
+   */
+  results: DownloadEstimate[];
+  /** A retry of the failed items is running (`running` is true too). */
+  retrying: boolean;
+  retryTotal: number;
+  retryDone: number;
+}
+
+/**
+ * A finished run as plain data, so it can wait while another view is open and come back
+ * (EstimateRun.snapshot / restore). It holds no calls and no callbacks.
+ */
+export interface RunSnapshot<T> {
+  key: string;
+  /** Ids of the items the run was asked for. */
+  asked: string[];
+  total: number;
+  requested: number;
+  done: number;
+  cancelled: boolean;
+  notEstimated: number;
+  settled: { item: T; result: DownloadEstimate }[];
 }
 
 const emptyRun = (): RunState => ({
@@ -407,6 +562,9 @@ const emptyRun = (): RunState => ({
   notEstimated: 0,
   notCovered: 0,
   results: [],
+  retrying: false,
+  retryTotal: 0,
+  retryDone: 0,
 });
 
 /**
@@ -426,6 +584,8 @@ export class EstimateRun<T> {
   private queue: T[] = [];
   /** Ids of the items the run was asked for. */
   private asked = new Set<string>();
+  /** What each answered item came to, by id, so a retry can ask for the failures alone. */
+  private settled = new Map<string, { item: T; result: DownloadEstimate }>();
   private readonly calls: CallLimit;
   private readonly cap: number;
   private readonly id: (item: T) => string;
@@ -462,6 +622,7 @@ export class EstimateRun<T> {
     const unique = this.distinct(list);
     this.key = key;
     this.asked = new Set(unique.map(this.id));
+    this.settled = new Map();
     this.queue = unique.slice(0, this.cap);
     this.state = {
       ...emptyRun(),
@@ -497,15 +658,104 @@ export class EstimateRun<T> {
     return true;
   }
 
-  /** Stops asking; what was estimated stays, the rest is named as not estimated. */
+  /**
+   * Stops asking; what was estimated stays, the rest is named as not estimated. Stopping a
+   * retry leaves the items that failed failed (and retryable): it is not a stopped run.
+   */
   cancel() {
     if (!this.state.running) return;
     this.generation += 1;
     this.queue = [];
     this.calls.leave(this.pump);
     this.state.running = false;
-    this.state.cancelled = true;
-    this.state.notEstimated = this.state.total - this.state.done;
+    if (this.state.retrying) this.state.retrying = false;
+    else {
+      this.state.cancelled = true;
+      this.state.notEstimated = this.state.total - this.state.done;
+    }
+    this.onChange();
+  }
+
+  /** Items whose estimate failed, in the order they were asked. */
+  private failures(): T[] {
+    return [...this.settled.values()].filter((entry) => estimateState(entry.result) === "failed").map((entry) => entry.item);
+  }
+
+  /** How many items failed; Retry asks again for those and no others. */
+  get failedCount(): number {
+    return this.failures().length;
+  }
+
+  /** There are failures to retry and nothing is running. */
+  get canRetry(): boolean {
+    return this.key !== null && !this.state.running && this.failures().length > 0;
+  }
+
+  /**
+   * Asks again for the items that failed, once each and only when called (never by itself),
+   * through the shared call limit. Estimates that are fine are kept as they are. `key` is the
+   * choices now on screen: with other choices the run no longer applies, so it is reset and
+   * nothing is asked. False when nothing was started.
+   */
+  retryFailed(key: string): boolean {
+    if (this.key === null || this.state.running) return false;
+    if (key !== this.key) {
+      this.reset();
+      return false;
+    }
+    const failed = this.failures();
+    if (failed.length === 0) return false;
+    this.generation += 1; // a reply still on its way from before is not part of this pass
+    this.queue = failed;
+    this.state.running = true;
+    this.state.retrying = true;
+    this.state.retryTotal = failed.length;
+    this.state.retryDone = 0;
+    this.onChange();
+    this.pump();
+    return true;
+  }
+
+  /**
+   * The finished run as plain data, or null when there is none to keep. A run still going has
+   * no snapshot: its calls are not data. Stop it first (`cancel`) to keep what it has read.
+   */
+  snapshot(): RunSnapshot<T> | null {
+    if (this.key === null || this.state.running) return null;
+    const s = this.state;
+    return {
+      key: this.key,
+      asked: [...this.asked],
+      total: s.total,
+      requested: s.requested,
+      done: s.done,
+      cancelled: s.cancelled,
+      notEstimated: s.notEstimated,
+      settled: [...this.settled.values()].map(({ item, result }) => ({ item, result })),
+    };
+  }
+
+  /**
+   * Takes a saved run back, as a run that is not going: nothing is asked and a failure in it can
+   * still be retried by the user. Keeps the cap; a reply from any earlier run is ignored.
+   */
+  restore(snapshot: RunSnapshot<T>) {
+    this.generation += 1;
+    this.queue = [];
+    this.calls.leave(this.pump);
+    const settled = snapshot.settled.slice(0, this.cap);
+    this.key = snapshot.key;
+    this.asked = new Set(snapshot.asked);
+    this.settled = new Map(settled.map((entry) => [this.id(entry.item), entry]));
+    this.state = {
+      ...emptyRun(),
+      total: snapshot.total,
+      requested: Math.min(snapshot.requested, this.cap),
+      done: Math.min(snapshot.done, settled.length),
+      cancelled: snapshot.cancelled,
+      notEstimated: snapshot.notEstimated,
+      results: settled.map((entry) => entry.result),
+    };
     this.onChange();
   }
 
@@ -516,6 +766,7 @@ export class EstimateRun<T> {
     this.calls.leave(this.pump);
     this.key = null;
     this.asked = new Set();
+    this.settled = new Map();
     this.state = emptyRun();
     this.onChange();
   }
@@ -529,6 +780,7 @@ export class EstimateRun<T> {
 
   private launch(item: T) {
     const generation = this.generation;
+    const retry = this.state.retrying;
     this.calls.take();
     let reply: Promise<DownloadEstimate>;
     try {
@@ -536,17 +788,29 @@ export class EstimateRun<T> {
     } catch (error) {
       reply = Promise.reject(error);
     }
-    const settle = (result: DownloadEstimate | null) => {
+    const settle = (result: DownloadEstimate) => {
       if (generation === this.generation) {
-        this.state.results.push(result);
-        this.state.done += 1;
-        if (this.state.done === this.state.requested) this.state.running = false;
+        this.settled.set(this.id(item), { item, result });
+        this.state.results = [...this.settled.values()].map((entry) => entry.result);
+        if (retry) {
+          this.state.retryDone += 1;
+          if (this.state.retryDone === this.state.retryTotal) {
+            this.state.running = false;
+            this.state.retrying = false;
+          }
+        } else {
+          this.state.done += 1;
+          if (this.state.done === this.state.requested) this.state.running = false;
+        }
         this.onChange();
       }
       this.calls.give(); // wakes whichever run or preview waits for a slot
       this.pump();
     };
-    reply.then(settle, () => settle(null));
+    reply.then(
+      (result) => settle(result && typeof result === "object" ? result : failedEstimate(NO_REASON)),
+      (error) => settle(failedEstimate(describeFailure(error))),
+    );
   }
 }
 
@@ -558,6 +822,9 @@ export function describeRun<T>(run: EstimateRun<T>): string {
     s.notCovered > 0
       ? `${s.notCovered} ${s.notCovered === 1 ? "item" : "items"} selected after estimating began ${s.notCovered === 1 ? "is" : "are"} not included`
       : "";
+  if (s.running && s.retrying) {
+    return `Retrying ${s.retryTotal} failed ${s.retryTotal === 1 ? "estimate" : "estimates"}… ${s.retryDone} of ${s.retryTotal}${later ? `; ${later}` : ""}`;
+  }
   if (s.running) return `Estimating sizes… ${s.done} of ${s.requested}${later ? `; ${later}` : ""}`;
   const sum = aggregate(s.results);
   const lines = [sum.text, sum.outputText ?? ""].filter(Boolean);

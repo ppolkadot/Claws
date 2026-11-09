@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use futures_util::StreamExt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
@@ -175,7 +174,9 @@ pub fn js_runtime() -> Option<&'static str> {
 }
 
 /// Exclusive use of the engine for an install. Fails at once, rather than waiting for
-/// downloads that may run for an hour, when anything is using yt-dlp.
+/// downloads that may run for an hour, when anything is using yt-dlp. An install takes it
+/// briefly before downloading, so a busy engine is reported before a long transfer, and
+/// again for the swap, which is the check that counts.
 fn reserve_engine(state: &AppState) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>> {
     state.engine.try_write().map_err(|_| {
         AppError::msg(
@@ -224,15 +225,158 @@ fn emit_progress(app: &AppHandle, tool: &'static str, received: u64, total: u64,
     );
 }
 
-/// Streams a URL to `dest`, reporting progress, and returns the SHA-256 of what was written.
-async fn download_to(
-    app: &AppHandle,
+/// How long a network step may take. Production values are `TIMING`; tests inject short ones.
+#[derive(Clone, Copy)]
+struct Timing {
+    /// Longest wait for response headers or for the next piece of a body.
+    idle: Duration,
+    /// Longest a whole archive transfer may take, from request to last byte.
+    artifact_total: Duration,
+    /// The same for checksum listings and release information.
+    text_total: Duration,
+}
+
+const TIMING: Timing = Timing {
+    idle: Duration::from_secs(30),
+    artifact_total: Duration::from_secs(15 * 60),
+    text_total: Duration::from_secs(60),
+};
+
+/// Limits for one transfer.
+#[derive(Clone, Copy)]
+struct Bounds {
+    idle: Duration,
+    total: Duration,
+    max_bytes: u64,
+}
+
+/// Compressed download caps, far above the real archives (about 20 MB and 150 MB).
+const YTDLP_ZIP_MAX: u64 = 256 * 1024 * 1024;
+const FFMPEG_ZIP_MAX: u64 = 512 * 1024 * 1024;
+const CHECKSUM_MAX: u64 = 1024 * 1024;
+const RELEASE_JSON_MAX: u64 = 2 * 1024 * 1024;
+
+/// Where one tool comes from.
+struct Release<'a> {
     tool: &'static str,
+    archive_url: &'a str,
+    sums_url: &'a str,
+    archive_name: &'a str,
+    archive_max: u64,
+}
+
+const YTDLP_RELEASE: Release<'static> = Release {
+    tool: "ytdlp",
+    archive_url: YTDLP_ZIP_URL,
+    sums_url: YTDLP_SUMS_URL,
+    archive_name: YTDLP_ZIP_NAME,
+    archive_max: YTDLP_ZIP_MAX,
+};
+
+const FFMPEG_RELEASE: Release<'static> = Release {
+    tool: "ffmpeg",
+    archive_url: FFMPEG_URL,
+    sums_url: FFMPEG_SUMS_URL,
+    archive_name: FFMPEG_ZIP_NAME,
+    archive_max: FFMPEG_ZIP_MAX,
+};
+
+fn size_text(bytes: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    if bytes >= MIB && bytes % MIB == 0 {
+        format!("{} MiB", bytes / MIB)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+fn too_big(max_bytes: u64) -> AppError {
+    AppError::msg(format!(
+        "The server sent more data than allowed (over {}), so the transfer was stopped.",
+        size_text(max_bytes)
+    ))
+}
+
+fn stalled(idle: Duration) -> AppError {
+    AppError::msg(format!(
+        "The connection stalled (no data for {idle:?}), so the transfer was stopped. Try again later."
+    ))
+}
+
+fn too_slow(total: Duration) -> AppError {
+    AppError::msg(format!(
+        "The transfer took longer than {total:?} in total, so it was stopped. Try again later."
+    ))
+}
+
+/// A request error without its address: after a redirect that is a signed download link.
+fn net_error(error: reqwest::Error) -> AppError {
+    AppError::from(error.without_url())
+}
+
+/// Adds a chunk to the running byte count, refusing a total over `max` (or one that
+/// would overflow) before the chunk is used.
+fn add_received(received: u64, chunk: usize, max: u64) -> Result<u64> {
+    u64::try_from(chunk)
+        .ok()
+        .and_then(|chunk| received.checked_add(chunk))
+        .filter(|total| *total <= max)
+        .ok_or_else(|| too_big(max))
+}
+
+/// Waits for one step of a response (headers or the next piece of the body).
+async fn within_idle<T>(idle: Duration, step: impl std::future::Future<Output = reqwest::Result<T>>) -> Result<T> {
+    tokio::time::timeout(idle, step).await.map_err(|_| stalled(idle))?.map_err(net_error)
+}
+
+/// Sends the request and checks the status and any declared length against the cap.
+async fn open_response(client: &reqwest::Client, url: &str, accept: Option<&str>, bounds: Bounds) -> Result<reqwest::Response> {
+    let mut request = client.get(url);
+    if let Some(accept) = accept {
+        request = request.header("Accept", accept);
+    }
+    let response = within_idle(bounds.idle, request.send()).await?;
+    let response = response.error_for_status().map_err(net_error)?;
+    if response.content_length().is_some_and(|declared| declared > bounds.max_bytes) {
+        return Err(too_big(bounds.max_bytes));
+    }
+    Ok(response)
+}
+
+/// Streams a URL to `dest`, reporting progress, and returns the SHA-256 of what was
+/// written. The whole transfer has a deadline, every wait has an idle deadline, and the
+/// size is capped; on any failure the partial file is removed.
+async fn fetch_to_file(
+    client: &reqwest::Client,
     url: &str,
     dest: &Path,
+    bounds: Bounds,
+    progress: &mut (dyn FnMut(u64, u64) + Send),
 ) -> Result<String> {
-    let state = app.state::<AppState>();
-    let response = state.http.get(url).send().await?.error_for_status()?;
+    let outcome = tokio::time::timeout(bounds.total, stream_to_file(client, url, dest, bounds, progress)).await;
+    match outcome {
+        Ok(Ok(digest)) => Ok(digest),
+        failed => {
+            // The transfer future is gone by now. Its file handle is normally closed too;
+            // if a write is still finishing on the blocking pool the removal can fail, and
+            // the attempt folder's cleanup (or the startup sweep) removes what is left.
+            let _ = tokio::fs::remove_file(dest).await;
+            match failed {
+                Ok(Err(e)) => Err(e),
+                _ => Err(too_slow(bounds.total)),
+            }
+        }
+    }
+}
+
+async fn stream_to_file(
+    client: &reqwest::Client,
+    url: &str,
+    dest: &Path,
+    bounds: Bounds,
+    progress: &mut (dyn FnMut(u64, u64) + Send),
+) -> Result<String> {
+    let mut response = open_response(client, url, None, bounds).await?;
     let total = response.content_length().unwrap_or(0);
 
     if let Some(parent) = dest.parent() {
@@ -242,20 +386,18 @@ async fn download_to(
     let mut hasher = Sha256::new();
     let mut received = 0u64;
     let mut last_emit = Instant::now();
-    let mut stream = response.bytes_stream();
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
+    while let Some(chunk) = within_idle(bounds.idle, response.chunk()).await? {
+        received = add_received(received, chunk.len(), bounds.max_bytes)?;
         hasher.update(&chunk);
         file.write_all(&chunk).await?;
-        received += chunk.len() as u64;
         if last_emit.elapsed() >= Duration::from_millis(120) {
-            emit_progress(app, tool, received, total, "download");
+            progress(received, total);
             last_emit = Instant::now();
         }
     }
     file.flush().await?;
-    emit_progress(app, tool, received, total.max(received), "download");
+    progress(received, total.max(received));
     Ok(hasher
         .finalize()
         .iter()
@@ -263,18 +405,26 @@ async fn download_to(
         .collect())
 }
 
+/// Fetches a small document under the same deadlines and a byte cap.
+async fn fetch_capped(client: &reqwest::Client, url: &str, accept: Option<&str>, bounds: Bounds) -> Result<Vec<u8>> {
+    let read = async {
+        let mut response = open_response(client, url, accept, bounds).await?;
+        let mut body: Vec<u8> = Vec::new();
+        while let Some(chunk) = within_idle(bounds.idle, response.chunk()).await? {
+            add_received(body.len() as u64, chunk.len(), bounds.max_bytes)?;
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
+    };
+    tokio::time::timeout(bounds.total, read).await.unwrap_or_else(|_| Err(too_slow(bounds.total)))
+}
+
 /// Looks up `file_name` in a "<sha256>  <name>" checksum listing.
-async fn expected_checksum(app: &AppHandle, sums_url: &str, file_name: &str) -> Result<String> {
-    let state = app.state::<AppState>();
-    let text = state
-        .http
-        .get(sums_url)
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
-    text.lines()
+async fn expected_checksum(client: &reqwest::Client, sums_url: &str, file_name: &str, timing: Timing) -> Result<String> {
+    let bounds = Bounds { idle: timing.idle, total: timing.text_total, max_bytes: CHECKSUM_MAX };
+    let bytes = fetch_capped(client, sums_url, None, bounds).await?;
+    String::from_utf8_lossy(&bytes)
+        .lines()
         .filter_map(|line| {
             let mut parts = line.split_whitespace();
             let hash = parts.next()?;
@@ -285,66 +435,127 @@ async fn expected_checksum(app: &AppHandle, sums_url: &str, file_name: &str) -> 
         .ok_or_else(|| AppError::msg(format!("No published checksum for {file_name}.")))
 }
 
-pub async fn latest_ytdlp_version(app: &AppHandle) -> Result<String> {
-    let state = app.state::<AppState>();
-    let release: serde_json::Value = state
-        .http
-        .get(YTDLP_LATEST_API)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+async fn latest_version_from(client: &reqwest::Client, url: &str, timing: Timing) -> Result<String> {
+    let bounds = Bounds { idle: timing.idle, total: timing.text_total, max_bytes: RELEASE_JSON_MAX };
+    let bytes = fetch_capped(client, url, Some("application/vnd.github+json"), bounds).await?;
+    let release: serde_json::Value = serde_json::from_slice(&bytes)?;
     release["tag_name"]
         .as_str()
         .map(str::to_string)
         .ok_or_else(|| AppError::msg("Could not read the latest yt-dlp version."))
 }
 
-pub async fn install_ytdlp(app: &AppHandle) -> Result<()> {
+pub async fn latest_ytdlp_version(app: &AppHandle) -> Result<String> {
     let state = app.state::<AppState>();
-    let _engine = reserve_engine(&state)?;
-    let bin = state.bin_dir();
-    let zip_path = bin.join("yt-dlp.zip.part");
+    latest_version_from(&state.http, YTDLP_LATEST_API, TIMING).await
+}
 
-    let expected = expected_checksum(app, YTDLP_SUMS_URL, YTDLP_ZIP_NAME).await?;
-    let actual = match download_to(app, "ytdlp", YTDLP_ZIP_URL, &zip_path).await {
-        Ok(actual) => actual,
-        Err(e) => {
-            let _ = tokio::fs::remove_file(&zip_path).await;
-            return Err(e);
-        }
-    };
-    if actual != expected {
-        let _ = tokio::fs::remove_file(&zip_path).await;
-        return Err(AppError::msg(
-            "The downloaded yt-dlp did not match its published checksum, so it was discarded.",
-        ));
+/// Prefix of the private folder one install attempt works in, inside the tools folder so
+/// that finished files can be renamed into place.
+const ATTEMPT_PREFIX: &str = ".install-";
+
+/// One install attempt's own folder: the archive, its extracted files and any staged
+/// executables live here, never under a name another attempt could share. Removed when the
+/// attempt ends by any route (success, failure or cancellation); `recover_bin` sweeps what
+/// a crash leaves.
+struct Attempt {
+    dir: PathBuf,
+}
+
+impl Attempt {
+    async fn create(bin: &Path) -> Result<Self> {
+        let dir = bin.join(format!("{ATTEMPT_PREFIX}{}", uuid::Uuid::new_v4().simple()));
+        tokio::fs::create_dir_all(&dir).await?;
+        Ok(Self { dir })
     }
+}
 
-    emit_progress(app, "ytdlp", 0, 0, "extract");
-    let bin_for_task = bin.clone();
-    let zip_for_task = zip_path.clone();
-    let result = tokio::task::spawn_blocking(move || -> Result<()> {
-        let staging = bin_for_task.join("yt-dlp.new");
-        let _ = std::fs::remove_dir_all(&staging);
-        std::fs::create_dir_all(&staging)?;
-        if let Err(e) = extract_all(&zip_for_task, &staging, &YTDLP_LIMITS) {
-            let _ = std::fs::remove_dir_all(&staging);
-            return Err(e);
-        }
-        let target = bin_for_task.join("yt-dlp");
-        swap_in(&staging, &target, &backup_of(&target))?;
-        // The single-file build from older versions is no longer needed.
-        let _ = std::fs::remove_file(bin_for_task.join("yt-dlp.exe"));
-        Ok(())
+impl Drop for Attempt {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// One install at a time. Fails at once when another is running; nothing ever waits on
+/// this lock, so it cannot deadlock with the engine lock.
+fn reserve_install(state: &AppState) -> Result<tokio::sync::MutexGuard<'_, ()>> {
+    state
+        .tool_install
+        .try_lock()
+        .map_err(|_| AppError::msg("A tool install is already running. Wait for it to finish, then try again."))
+}
+
+/// Downloads the archive into `archive` and checks it against the published checksum.
+/// Touches nothing outside the attempt folder, so it needs no engine lock.
+async fn fetch_verified(
+    app: &AppHandle,
+    release: &Release<'_>,
+    timing: Timing,
+    label: &str,
+    archive: &Path,
+) -> Result<()> {
+    let state = app.state::<AppState>();
+    let expected = expected_checksum(&state.http, release.sums_url, release.archive_name, timing).await?;
+    let bounds = Bounds { idle: timing.idle, total: timing.artifact_total, max_bytes: release.archive_max };
+    let actual = fetch_to_file(&state.http, release.archive_url, archive, bounds, &mut |received, total| {
+        emit_progress(app, release.tool, received, total, "download")
+    })
+    .await?;
+    if actual != expected {
+        let _ = tokio::fs::remove_file(archive).await;
+        return Err(AppError::msg(format!(
+            "The downloaded {label} did not match its published checksum, so it was discarded."
+        )));
+    }
+    Ok(())
+}
+
+fn blocking_failed(error: tokio::task::JoinError) -> AppError {
+    AppError::msg(error.to_string())
+}
+
+pub async fn install_ytdlp(app: &AppHandle) -> Result<()> {
+    install_ytdlp_from(app, &YTDLP_RELEASE, TIMING).await
+}
+
+/// The network transfer, checksum and extraction run beside the engine, in the attempt's
+/// folder; only the final swap takes the engine, and fails at once rather than wait.
+async fn install_ytdlp_from(app: &AppHandle, release: &Release<'_>, timing: Timing) -> Result<()> {
+    let state = app.state::<AppState>();
+    let _install = reserve_install(&state)?;
+    drop(reserve_engine(&state)?);
+    let bin = state.bin_dir();
+    let attempt = Attempt::create(&bin).await?;
+    let archive = attempt.dir.join("archive.zip.part");
+
+    fetch_verified(app, release, timing, "yt-dlp", &archive).await?;
+
+    emit_progress(app, release.tool, 0, 0, "extract");
+    let staging = attempt.dir.join("yt-dlp.new");
+    let (archive_for_task, staging_for_task) = (archive.clone(), staging.clone());
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        std::fs::create_dir_all(&staging_for_task)?;
+        extract_all(&archive_for_task, &staging_for_task, &YTDLP_LIMITS)
     })
     .await
-    .map_err(|e| AppError::msg(e.to_string()))?;
+    .map_err(blocking_failed)??;
+    let _ = tokio::fs::remove_file(&archive).await;
 
-    let _ = tokio::fs::remove_file(&zip_path).await;
-    result
+    let _engine = reserve_engine(&state)?;
+    tokio::task::spawn_blocking(move || commit_ytdlp(&bin, &staging)).await.map_err(blocking_failed)?
+}
+
+/// The swap, with the engine held: checks the prepared files are still there, then
+/// replaces the live folder, keeping the old one until the new one is in place.
+fn commit_ytdlp(bin: &Path, staging: &Path) -> Result<()> {
+    if !staging.join("yt-dlp.exe").is_file() {
+        return Err(AppError::msg("The prepared yt-dlp files are gone, so nothing was changed. Try again."));
+    }
+    let target = bin.join("yt-dlp");
+    swap_in(staging, &target, &backup_of(&target))?;
+    // The single-file build from older versions is no longer needed.
+    let _ = std::fs::remove_file(bin.join("yt-dlp.exe"));
+    Ok(())
 }
 
 /// What a tool archive may contain. The archives are checksum-verified before they are
@@ -445,10 +656,10 @@ fn discard(staged: &[(PathBuf, PathBuf)]) {
     }
 }
 
-/// Unpacks `ffmpeg.exe` and `ffprobe.exe` to temporary names beside their final ones,
-/// returning `(temporary, final)` pairs for `replace_all`. Nothing else in the archive is
-/// read, and a failure leaves no temporary files behind.
-fn stage_ffmpeg(zip_path: &Path, bin: &Path, entry_limit: u64) -> Result<Vec<(PathBuf, PathBuf)>> {
+/// Unpacks `ffmpeg.exe` and `ffprobe.exe` to temporary names in `staging` (on the same
+/// volume as `bin`), returning `(temporary, final)` pairs for `replace_all`. Nothing else
+/// in the archive is read, and a failure leaves no temporary files behind.
+fn stage_ffmpeg(zip_path: &Path, staging: &Path, bin: &Path, entry_limit: u64) -> Result<Vec<(PathBuf, PathBuf)>> {
     let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path)?)?;
     let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
     for index in 0..archive.len() {
@@ -474,7 +685,7 @@ fn stage_ffmpeg(zip_path: &Path, bin: &Path, entry_limit: u64) -> Result<Vec<(Pa
             discard(&staged);
             return Err(e);
         }
-        let tmp = bin.join(format!("{file_name}.part"));
+        let tmp = staging.join(format!("{file_name}.part"));
         let copied = std::fs::File::create(&tmp)
             .map_err(AppError::from)
             .and_then(|mut f| copy_limited(&mut entry, &mut f, entry_limit));
@@ -494,48 +705,49 @@ fn stage_ffmpeg(zip_path: &Path, bin: &Path, entry_limit: u64) -> Result<Vec<(Pa
 
 /// Installs ffmpeg and ffprobe from the yt-dlp project's own FFmpeg builds.
 pub async fn install_ffmpeg(app: &AppHandle) -> Result<()> {
+    install_ffmpeg_from(app, &FFMPEG_RELEASE, TIMING).await
+}
+
+async fn install_ffmpeg_from(app: &AppHandle, release: &Release<'_>, timing: Timing) -> Result<()> {
     let state = app.state::<AppState>();
-    let _engine = reserve_engine(&state)?;
+    let _install = reserve_install(&state)?;
+    drop(reserve_engine(&state)?);
     let bin = state.bin_dir();
-    let zip_path = bin.join("ffmpeg.zip.part");
+    let attempt = Attempt::create(&bin).await?;
+    let archive = attempt.dir.join("archive.zip.part");
 
-    let expected = expected_checksum(app, FFMPEG_SUMS_URL, FFMPEG_ZIP_NAME).await?;
-    let actual = match download_to(app, "ffmpeg", FFMPEG_URL, &zip_path).await {
-        Ok(actual) => actual,
-        Err(e) => {
-            let _ = tokio::fs::remove_file(&zip_path).await;
-            return Err(e);
-        }
-    };
-    if actual != expected {
-        let _ = tokio::fs::remove_file(&zip_path).await;
-        return Err(AppError::msg(
-            "The downloaded ffmpeg did not match its published checksum, so it was discarded.",
-        ));
-    }
+    fetch_verified(app, release, timing, "ffmpeg", &archive).await?;
 
-    emit_progress(app, "ffmpeg", 0, 0, "extract");
-    let bin_for_task = bin.clone();
-    let zip_for_task = zip_path.clone();
-    let extracted = tokio::task::spawn_blocking(move || -> Result<()> {
-        let staged = stage_ffmpeg(&zip_for_task, &bin_for_task, FFMPEG_ENTRY_BYTES)?;
-        if let Err(e) = replace_all(&staged) {
-            discard(&staged);
-            return Err(AppError::msg(format!(
-                "Could not install ffmpeg because a file is in use ({e}). The previous copy was kept."
-            )));
-        }
-        Ok(())
+    emit_progress(app, release.tool, 0, 0, "extract");
+    let (archive_for_task, staging_for_task, bin_for_task) = (archive.clone(), attempt.dir.clone(), bin.clone());
+    let staged = tokio::task::spawn_blocking(move || {
+        stage_ffmpeg(&archive_for_task, &staging_for_task, &bin_for_task, FFMPEG_ENTRY_BYTES)
     })
     .await
-    .map_err(|e| AppError::msg(e.to_string()))?;
+    .map_err(blocking_failed)??;
+    let _ = tokio::fs::remove_file(&archive).await;
 
-    let _ = tokio::fs::remove_file(&zip_path).await;
-    extracted
+    let _engine = reserve_engine(&state)?;
+    tokio::task::spawn_blocking(move || commit_ffmpeg(&staged)).await.map_err(blocking_failed)?
+}
+
+/// The swap, with the engine held: checks the staged files are still there, then
+/// replaces both tools as one unit.
+fn commit_ffmpeg(staged: &[(PathBuf, PathBuf)]) -> Result<()> {
+    if staged.iter().any(|(tmp, _)| !tmp.is_file()) {
+        return Err(AppError::msg("The prepared ffmpeg files are gone, so nothing was changed. Try again."));
+    }
+    if let Err(e) = replace_all(staged) {
+        discard(staged);
+        return Err(AppError::msg(format!(
+            "Could not install ffmpeg because a file is in use ({e}). The previous copy was kept."
+        )));
+    }
+    Ok(())
 }
 
 /// Startup repair after an exit mid-install: restores a tool left as `.old` and
-/// removes `.part` leftovers.
+/// removes `.part` leftovers and abandoned install-attempt folders.
 pub fn recover_bin(bin: &Path) {
     for name in ["yt-dlp", "ffmpeg.exe", "ffprobe.exe"] {
         let target = bin.join(name);
@@ -547,8 +759,11 @@ pub fn recover_bin(bin: &Path) {
     let _ = std::fs::remove_dir_all(bin.join("yt-dlp.new"));
     if let Ok(entries) = std::fs::read_dir(bin) {
         for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().ends_with(".part") {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".part") {
                 let _ = std::fs::remove_file(entry.path());
+            } else if name.starts_with(ATTEMPT_PREFIX) {
+                let _ = std::fs::remove_dir_all(entry.path());
             }
         }
     }
@@ -689,6 +904,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn swap_keeps_the_old_copy_when_its_folder_is_in_use() {
+        let dir = temp_dir("swap-locked");
+        let (staging, target, backup) = (dir.join("new"), dir.join("cur"), dir.join("old"));
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("yt-dlp.exe"), b"new").unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("yt-dlp.exe"), b"old").unwrap();
+        // Windows refuses to rename a folder while a file inside it is open: the same thing
+        // a running yt-dlp does.
+        let in_use = std::fs::File::open(target.join("yt-dlp.exe")).unwrap();
+        let err = swap_in(&staging, &target, &backup).unwrap_err();
+        assert!(err.to_string().contains("in use"), "{err}");
+        drop(in_use);
+        assert_eq!(std::fs::read(target.join("yt-dlp.exe")).unwrap(), b"old");
+        assert!(!backup.exists(), "no backup may be left behind");
+        assert!(!staging.exists(), "the discarded staging folder must be removed");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn opts() -> zip::write::SimpleFileOptions {
         zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated)
     }
@@ -810,7 +1046,7 @@ mod tests {
             file(w, "build/bin/ffplay.exe", b"ffplay");
             file(w, "build/doc/ffmpeg.exe", b"decoy");
         });
-        let staged = stage_ffmpeg(&archive, &dir, 1024).unwrap();
+        let staged = stage_ffmpeg(&archive, &dir, &dir, 1024).unwrap();
         assert_eq!(staged.len(), 2);
         for (tmp, target) in &staged {
             assert!(tmp.is_file());
@@ -827,7 +1063,7 @@ mod tests {
             file(w, "build/bin/ffmpeg.exe", b"ffmpeg");
             file(w, "build/bin/ffprobe.exe", &vec![0u8; 4096]);
         });
-        assert!(stage_ffmpeg(&archive, &dir, 1024).is_err());
+        assert!(stage_ffmpeg(&archive, &dir, &dir, 1024).is_err());
         let leftovers: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .flatten()
@@ -841,8 +1077,695 @@ mod tests {
     fn ffmpeg_archive_missing_a_tool_is_an_error() {
         let dir = temp_dir("ffmpeg-missing");
         let archive = make_zip(&dir, |w| file(w, "build/bin/ffmpeg.exe", b"ffmpeg"));
-        assert!(stage_ffmpeg(&archive, &dir, 1024).is_err());
+        assert!(stage_ffmpeg(&archive, &dir, &dir, 1024).is_err());
         assert!(!dir.join("ffmpeg.exe.part").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ---- Network bounds and install serialization (R11) ---------------------------------
+    //
+    // Local HTTP fixtures only; the deadlines are injected short so nothing waits for a
+    // production interval.
+
+    use std::future::Future;
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use crate::download_tests::names;
+    use crate::lifecycle_tests::TestApp;
+
+    const MIB: u64 = 1024 * 1024;
+
+    enum Route {
+        /// A complete answer.
+        Body(Vec<u8>),
+        /// Accepts the request and never answers.
+        Silent,
+        /// Sends headers declaring this many bytes, then nothing.
+        HeadersThenStall(u64),
+        /// Sends `sent`, declares `declared`, then stalls.
+        StallMidBody { sent: Vec<u8>, declared: u64 },
+        /// No Content-Length: streams this many bytes, then closes.
+        Unbounded(usize),
+        /// Declares this length and sends nothing.
+        Declared(u64),
+        /// Declares this length and sends one byte every 50 ms.
+        Trickle(u64),
+        /// Waits for the gate to open, then answers with the body.
+        Gated(Vec<u8>, Arc<AtomicBool>),
+        /// An error status.
+        Status(u16),
+    }
+
+    struct Server {
+        base: String,
+        stop: Arc<AtomicBool>,
+        requests: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Server {
+        fn url(&self, path: &str) -> String {
+            format!("{}{path}", self.base)
+        }
+        fn requested(&self, path: &str) -> bool {
+            self.requests.lock().unwrap().iter().any(|p| p == path)
+        }
+    }
+
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn serve(routes: Vec<(&str, Route)>) -> Server {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let routes: Arc<Vec<(String, Route)>> = Arc::new(routes.into_iter().map(|(p, r)| (p.to_string(), r)).collect());
+        let (accept_stop, accept_requests) = (stop.clone(), requests.clone());
+        std::thread::spawn(move || {
+            while !accept_stop.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let (routes, stop, requests) = (routes.clone(), accept_stop.clone(), accept_requests.clone());
+                        std::thread::spawn(move || handle(stream, &routes, &stop, &requests));
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        });
+        Server { base, stop, requests }
+    }
+
+    fn handle(mut stream: TcpStream, routes: &[(String, Route)], stop: &AtomicBool, requests: &Mutex<Vec<String>>) {
+        let _ = stream.set_nonblocking(false);
+        let mut request = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+            match stream.read(&mut buf) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => request.extend_from_slice(&buf[..n]),
+            }
+        }
+        let text = String::from_utf8_lossy(&request).into_owned();
+        let target = text.split_whitespace().nth(1).unwrap_or("/");
+        let path = target.split('?').next().unwrap_or("/").to_string();
+        requests.lock().unwrap().push(path.clone());
+        let hold = || {
+            while !stop.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let head = |stream: &mut TcpStream, status: &str, length: Option<u64>| {
+            let length = length.map(|n| format!("Content-Length: {n}\r\n")).unwrap_or_default();
+            let _ = write!(stream, "HTTP/1.1 {status}\r\n{length}Connection: close\r\n\r\n");
+            let _ = stream.flush();
+        };
+        let Some((_, route)) = routes.iter().find(|(p, _)| *p == path) else {
+            head(&mut stream, "404 Not Found", Some(0));
+            return;
+        };
+        match route {
+            Route::Body(bytes) => {
+                head(&mut stream, "200 OK", Some(bytes.len() as u64));
+                let _ = stream.write_all(bytes);
+            }
+            Route::Silent => hold(),
+            Route::HeadersThenStall(n) | Route::Declared(n) => {
+                head(&mut stream, "200 OK", Some(*n));
+                hold();
+            }
+            Route::StallMidBody { sent, declared } => {
+                head(&mut stream, "200 OK", Some(*declared));
+                let _ = stream.write_all(sent);
+                let _ = stream.flush();
+                hold();
+            }
+            Route::Unbounded(total) => {
+                head(&mut stream, "200 OK", None);
+                let block = vec![b'x'; 64 * 1024];
+                let mut sent = 0usize;
+                while sent < *total {
+                    let n = block.len().min(*total - sent);
+                    if stream.write_all(&block[..n]).is_err() {
+                        return;
+                    }
+                    sent += n;
+                }
+            }
+            Route::Trickle(n) => {
+                head(&mut stream, "200 OK", Some(*n));
+                while !stop.load(Ordering::SeqCst) {
+                    if stream.write_all(b"x").and_then(|_| stream.flush()).is_err() {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+            Route::Gated(bytes, gate) => {
+                while !gate.load(Ordering::SeqCst) && !stop.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                head(&mut stream, "200 OK", Some(bytes.len() as u64));
+                let _ = stream.write_all(bytes);
+            }
+            Route::Status(code) => head(&mut stream, &format!("{code} Error"), Some(0)),
+        }
+    }
+
+    /// Fails the test, instead of hanging it, when an operation is not bounded.
+    async fn within<T>(seconds: u64, what: &str, future: impl Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(seconds), future)
+            .await
+            .unwrap_or_else(|_| panic!("{what} was still running after {seconds}s: it is not bounded"))
+    }
+
+    fn bounds(idle_ms: u64, total_ms: u64, max_bytes: u64) -> Bounds {
+        Bounds { idle: Duration::from_millis(idle_ms), total: Duration::from_millis(total_ms), max_bytes }
+    }
+
+    fn quick() -> Timing {
+        Timing { idle: Duration::from_secs(1), artifact_total: Duration::from_secs(5), text_total: Duration::from_secs(5) }
+    }
+
+    fn plain_client() -> reqwest::Client {
+        reqwest::Client::builder().no_proxy().build().unwrap()
+    }
+
+    async fn fetch(url: &str, dest: &Path, bounds: Bounds) -> Result<String> {
+        fetch_to_file(&plain_client(), url, dest, bounds, &mut |_, _| {}).await
+    }
+
+    fn sha_hex(bytes: &[u8]) -> String {
+        Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn tool_install_policy_constants_match_the_plan() {
+        assert_eq!(TIMING.idle, Duration::from_secs(30));
+        assert_eq!(TIMING.artifact_total, Duration::from_secs(15 * 60));
+        assert_eq!(YTDLP_ZIP_MAX, 256 * MIB);
+        assert_eq!(FFMPEG_ZIP_MAX, 512 * MIB);
+        assert_eq!(CHECKSUM_MAX, MIB);
+        assert_eq!(RELEASE_JSON_MAX, 2 * MIB);
+        assert_eq!(YTDLP_RELEASE.archive_max, YTDLP_ZIP_MAX);
+        assert_eq!(FFMPEG_RELEASE.archive_max, FFMPEG_ZIP_MAX);
+    }
+
+    #[test]
+    fn tool_install_byte_counter_never_wraps() {
+        assert_eq!(add_received(5, 5, 10).unwrap(), 10);
+        assert!(add_received(5, 6, 10).is_err());
+        assert!(add_received(u64::MAX - 1, 10, u64::MAX).is_err(), "an overflowing count must be refused");
+    }
+
+    #[tokio::test]
+    async fn tool_install_fetch_returns_the_digest_of_what_it_wrote() {
+        let server = serve(vec![("/a", Route::Body(b"hello".to_vec()))]);
+        let dir = temp_dir("fetch-ok");
+        let dest = dir.join("a.part");
+        let digest = within(10, "fetch", fetch(&server.url("/a"), &dest, bounds(3000, 5000, MIB))).await.unwrap();
+        assert_eq!(digest, sha_hex(b"hello"));
+        assert_eq!(std::fs::read(&dest).unwrap(), b"hello");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn tool_install_fetch_stops_a_server_that_never_answers() {
+        let server = serve(vec![("/a", Route::Silent)]);
+        let dir = temp_dir("fetch-silent");
+        let dest = dir.join("a.part");
+        let started = Instant::now();
+        let err = within(10, "fetch", fetch(&server.url("/a"), &dest, bounds(300, 5000, MIB))).await.unwrap_err();
+        assert!(err.to_string().contains("stalled"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(!dest.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn tool_install_fetch_stops_a_stall_after_the_headers() {
+        let server = serve(vec![("/a", Route::HeadersThenStall(100))]);
+        let dir = temp_dir("fetch-headers");
+        let dest = dir.join("a.part");
+        let started = Instant::now();
+        let err = within(10, "fetch", fetch(&server.url("/a"), &dest, bounds(300, 5000, MIB))).await.unwrap_err();
+        assert!(err.to_string().contains("stalled"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(!dest.exists(), "the partial file must be removed");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn tool_install_fetch_stops_a_stall_between_chunks() {
+        let server = serve(vec![("/a", Route::StallMidBody { sent: vec![7u8; 100], declared: 1000 })]);
+        let dir = temp_dir("fetch-mid");
+        let dest = dir.join("a.part");
+        let started = Instant::now();
+        let err = within(10, "fetch", fetch(&server.url("/a"), &dest, bounds(300, 5000, MIB))).await.unwrap_err();
+        assert!(err.to_string().contains("stalled"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(!dest.exists(), "the partial file must be removed");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn tool_install_fetch_enforces_the_total_deadline_on_a_slow_trickle() {
+        let server = serve(vec![("/a", Route::Trickle(1_000_000))]);
+        let dir = temp_dir("fetch-total");
+        let dest = dir.join("a.part");
+        let started = Instant::now();
+        let err = within(10, "fetch", fetch(&server.url("/a"), &dest, bounds(2000, 700, MIB))).await.unwrap_err();
+        assert!(err.to_string().contains("took longer"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(4));
+        assert!(!dest.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn tool_install_fetch_counts_a_stream_with_no_declared_length() {
+        let server = serve(vec![("/a", Route::Unbounded(8 * MIB as usize))]);
+        let dir = temp_dir("fetch-stream");
+        let dest = dir.join("a.part");
+        let err = within(20, "fetch", fetch(&server.url("/a"), &dest, bounds(5000, 15000, MIB))).await.unwrap_err();
+        assert!(err.to_string().contains("more data than allowed"), "{err}");
+        assert!(!dest.exists(), "the oversized partial file must be removed");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn tool_install_fetch_refuses_a_declared_length_over_the_cap_before_reading() {
+        let server = serve(vec![("/a", Route::Declared(10 * MIB))]);
+        let dir = temp_dir("fetch-declared");
+        let dest = dir.join("a.part");
+        let started = Instant::now();
+        let err = within(10, "fetch", fetch(&server.url("/a"), &dest, bounds(5000, 15000, MIB))).await.unwrap_err();
+        assert!(err.to_string().contains("more data than allowed"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(2), "the header alone is enough to refuse it");
+        assert!(!dest.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn tool_install_fetch_errors_do_not_expose_the_address() {
+        let server = serve(vec![("/s", Route::Status(500))]);
+        let dir = temp_dir("fetch-url");
+        let dest = dir.join("a.part");
+        let url = server.url("/s?sig=secret-token");
+        let err = within(10, "fetch", fetch(&url, &dest, bounds(300, 5000, MIB))).await.unwrap_err();
+        let text = err.to_string();
+        assert!(!text.contains("secret-token") && !text.contains("127.0.0.1"), "{text}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn tool_install_small_documents_are_bounded_too() {
+        let server = serve(vec![
+            ("/ok", Route::Body(b"fine".to_vec())),
+            ("/declared", Route::Body(vec![b'x'; 4096])),
+            ("/stream", Route::Unbounded(100_000)),
+            ("/silent", Route::Silent),
+        ]);
+        let client = plain_client();
+        let small = bounds(1000, 5000, 1024);
+        let ok = within(10, "document", fetch_capped(&client, &server.url("/ok"), None, small)).await.unwrap();
+        assert_eq!(ok, b"fine");
+        for path in ["/declared", "/stream"] {
+            let err = within(10, "document", fetch_capped(&client, &server.url(path), None, small)).await.unwrap_err();
+            assert!(err.to_string().contains("more data than allowed"), "{path}: {err}");
+        }
+        let err = within(10, "document", fetch_capped(&client, &server.url("/silent"), None, small)).await.unwrap_err();
+        assert!(err.to_string().contains("stalled"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn tool_install_release_information_is_capped_and_bounded() {
+        let json = br#"{"tag_name":"2099.01.01"}"#.to_vec();
+        let mut huge = br#"{"tag_name":"2099.01.01","body":""#.to_vec();
+        huge.extend(std::iter::repeat_n(b'a', RELEASE_JSON_MAX as usize));
+        huge.extend_from_slice(br#""}"#);
+        let server = serve(vec![
+            ("/ok", Route::Body(json)),
+            ("/huge", Route::Body(huge)),
+            ("/stream", Route::Unbounded(3 * MIB as usize)),
+            ("/silent", Route::Silent),
+        ]);
+        let client = plain_client();
+        let version = within(10, "version", latest_version_from(&client, &server.url("/ok"), quick())).await.unwrap();
+        assert_eq!(version, "2099.01.01");
+        for path in ["/huge", "/stream"] {
+            let err = within(20, "version", latest_version_from(&client, &server.url(path), quick())).await.unwrap_err();
+            assert!(err.to_string().contains("more data than allowed"), "{path}: {err}");
+        }
+        let err = within(10, "version", latest_version_from(&client, &server.url("/silent"), quick())).await.unwrap_err();
+        assert!(err.to_string().contains("stalled"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn tool_install_checksum_listing_is_capped() {
+        let server = serve(vec![("/sums", Route::Unbounded(3 * MIB as usize))]);
+        let err = within(20, "checksum", expected_checksum(&plain_client(), &server.url("/sums"), "x.zip", quick()))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("more data than allowed"), "{err}");
+    }
+
+    // ---- Installs through the real app state ---------------------------------------------
+
+    struct Rig {
+        app: TestApp,
+        bin: PathBuf,
+    }
+
+    fn rig(tag: &str) -> Rig {
+        let dir = temp_dir(tag);
+        let app = TestApp::with_data(dir.clone(), dir.join("out"), Vec::new());
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(bin.join("yt-dlp")).unwrap();
+        std::fs::write(bin.join("yt-dlp").join("yt-dlp.exe"), b"known-good").unwrap();
+        Rig { app, bin }
+    }
+
+    fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, data) in entries {
+            writer.start_file(*name, opts()).unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn ytdlp_zip(exe: &[u8]) -> Vec<u8> {
+        zip_bytes(&[("yt-dlp.exe", exe), ("lib/python.dll", b"dll")])
+    }
+
+    fn ffmpeg_zip() -> Vec<u8> {
+        zip_bytes(&[("build/bin/ffmpeg.exe", b"new-ffmpeg"), ("build/bin/ffprobe.exe", b"new-ffprobe")])
+    }
+
+    fn sums(name: &str, archive: &[u8]) -> Vec<u8> {
+        format!("{}  {name}\n", sha_hex(archive)).into_bytes()
+    }
+
+    fn archive_server(name: &str, archive: Vec<u8>) -> Server {
+        serve(vec![("/sums", Route::Body(sums(name, &archive))), ("/archive", Route::Body(archive))])
+    }
+
+    async fn ytdlp_install(app: &TestApp, server: &Server, archive_max: u64) -> Result<()> {
+        let (archive, sums) = (server.url("/archive"), server.url("/sums"));
+        let release = Release { tool: "ytdlp", archive_url: &archive, sums_url: &sums, archive_name: YTDLP_ZIP_NAME, archive_max };
+        install_ytdlp_from(app.handle(), &release, quick()).await
+    }
+
+    async fn ffmpeg_install(app: &TestApp, server: &Server, archive_max: u64) -> Result<()> {
+        let (archive, sums) = (server.url("/archive"), server.url("/sums"));
+        let release = Release { tool: "ffmpeg", archive_url: &archive, sums_url: &sums, archive_name: FFMPEG_ZIP_NAME, archive_max };
+        install_ffmpeg_from(app.handle(), &release, quick()).await
+    }
+
+    fn live_ytdlp(rig: &Rig) -> Vec<u8> {
+        std::fs::read(rig.bin.join("yt-dlp").join("yt-dlp.exe")).unwrap()
+    }
+
+    fn only_known_good(rig: &Rig) {
+        assert_eq!(live_ytdlp(rig), b"known-good", "the known-good install must be preserved");
+        assert_eq!(names(&rig.bin), vec!["yt-dlp"], "no staging or partial file may remain");
+    }
+
+    #[test]
+    fn tool_install_replaces_the_tool_and_leaves_nothing_behind() {
+        let rig = rig("ti-ok");
+        let server = archive_server(YTDLP_ZIP_NAME, ytdlp_zip(b"new-ytdlp"));
+        tauri::async_runtime::block_on(within(20, "install", ytdlp_install(&rig.app, &server, MIB))).unwrap();
+        assert_eq!(live_ytdlp(&rig), b"new-ytdlp");
+        assert_eq!(names(&rig.bin), vec!["yt-dlp"]);
+    }
+
+    #[test]
+    fn tool_install_stalled_archive_is_stopped_and_the_engine_stays_free() {
+        let rig = rig("ti-stall");
+        let archive = ytdlp_zip(b"new");
+        let server = serve(vec![("/sums", Route::Body(sums(YTDLP_ZIP_NAME, &archive))), ("/archive", Route::HeadersThenStall(5000))]);
+        let started = Instant::now();
+        let err = tauri::async_runtime::block_on(within(15, "install", ytdlp_install(&rig.app, &server, MIB))).unwrap_err();
+        assert!(err.to_string().contains("stalled"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(rig.app.state().engine.try_write().is_ok(), "the engine must be free again");
+        only_known_good(&rig);
+    }
+
+    #[test]
+    fn tool_install_oversized_archive_is_rejected_and_cleaned_up() {
+        let rig = rig("ti-big");
+        let server = serve(vec![
+            ("/sums", Route::Body(sums(YTDLP_ZIP_NAME, b"whatever"))),
+            ("/archive", Route::Unbounded(8 * MIB as usize)),
+        ]);
+        let err = tauri::async_runtime::block_on(within(30, "install", ytdlp_install(&rig.app, &server, MIB))).unwrap_err();
+        assert!(err.to_string().contains("more data than allowed"), "{err}");
+        only_known_good(&rig);
+    }
+
+    #[test]
+    fn tool_install_oversized_checksum_listing_never_reaches_the_download() {
+        let rig = rig("ti-bigsums");
+        let server = serve(vec![
+            ("/sums", Route::Unbounded(3 * MIB as usize)),
+            ("/archive", Route::Body(ytdlp_zip(b"new"))),
+        ]);
+        let err = tauri::async_runtime::block_on(within(30, "install", ytdlp_install(&rig.app, &server, MIB))).unwrap_err();
+        assert!(err.to_string().contains("more data than allowed"), "{err}");
+        assert!(!server.requested("/archive"));
+        only_known_good(&rig);
+    }
+
+    #[test]
+    fn tool_install_bad_checksum_is_discarded_and_the_old_copy_kept() {
+        let rig = rig("ti-badsum");
+        let archive = ytdlp_zip(b"new");
+        let server = serve(vec![("/sums", Route::Body(sums(YTDLP_ZIP_NAME, b"a different archive"))), ("/archive", Route::Body(archive))]);
+        let err = tauri::async_runtime::block_on(within(20, "install", ytdlp_install(&rig.app, &server, MIB))).unwrap_err();
+        assert!(err.to_string().contains("checksum"), "{err}");
+        only_known_good(&rig);
+    }
+
+    #[test]
+    fn tool_install_unusable_archive_keeps_the_old_copy() {
+        let rig = rig("ti-badzip");
+        let server = archive_server(YTDLP_ZIP_NAME, zip_bytes(&[("readme.txt", b"no exe here")]));
+        let err = tauri::async_runtime::block_on(within(20, "install", ytdlp_install(&rig.app, &server, MIB))).unwrap_err();
+        assert!(err.to_string().contains("yt-dlp.exe"), "{err}");
+        only_known_good(&rig);
+    }
+
+    #[test]
+    fn tool_install_readers_are_not_blocked_while_the_archive_downloads() {
+        let rig = rig("ti-reader");
+        let archive = ytdlp_zip(b"new-ytdlp");
+        let gate = Arc::new(AtomicBool::new(false));
+        let server = serve(vec![("/sums", Route::Body(sums(YTDLP_ZIP_NAME, &archive))), ("/archive", Route::Gated(archive, gate.clone()))]);
+        tauri::async_runtime::block_on(within(30, "install", async {
+            let install = ytdlp_install(&rig.app, &server, MIB);
+            let driver = async {
+                while !server.requested("/archive") {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                let state = rig.app.state();
+                let reader = tokio::time::timeout(Duration::from_millis(500), state.engine.read())
+                    .await
+                    .expect("a probe or download must not wait for an install's network transfer");
+                for name in names(&rig.bin) {
+                    assert!(name == "yt-dlp" || name.starts_with(".install-"), "in-progress files belong in a private attempt folder, found {name}");
+                }
+                drop(reader);
+                gate.store(true, Ordering::SeqCst);
+            };
+            let (result, ()) = tokio::join!(install, driver);
+            result.unwrap();
+        }));
+        assert_eq!(live_ytdlp(&rig), b"new-ytdlp");
+        assert_eq!(names(&rig.bin), vec!["yt-dlp"]);
+    }
+
+    #[test]
+    fn tool_install_busy_swap_keeps_the_old_copy_and_a_retry_succeeds() {
+        let rig = rig("ti-busy");
+        let archive = ytdlp_zip(b"new-ytdlp");
+        let gate = Arc::new(AtomicBool::new(false));
+        let server = serve(vec![("/sums", Route::Body(sums(YTDLP_ZIP_NAME, &archive))), ("/archive", Route::Gated(archive, gate.clone()))]);
+        tauri::async_runtime::block_on(within(30, "install", async {
+            let state = rig.app.state();
+            // The engine is free when the install starts and taken during the download, so
+            // only the commit-time reservation can catch it.
+            let install = ytdlp_install(&rig.app, &server, MIB);
+            let driver = async {
+                while !server.requested("/archive") {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                let reader = state.engine.read().await;
+                gate.store(true, Ordering::SeqCst);
+                reader
+            };
+            let (result, reader) = tokio::join!(install, driver);
+            let err = result.unwrap_err();
+            assert!(err.to_string().contains("in use"), "{err}");
+            only_known_good(&rig);
+            drop(reader);
+            ytdlp_install(&rig.app, &server, MIB).await.unwrap();
+        }));
+        assert_eq!(live_ytdlp(&rig), b"new-ytdlp");
+        assert_eq!(names(&rig.bin), vec!["yt-dlp"]);
+    }
+
+    #[test]
+    fn tool_install_busy_engine_fails_before_any_download() {
+        let rig = rig("ti-busy-early");
+        let server = archive_server(YTDLP_ZIP_NAME, ytdlp_zip(b"new-ytdlp"));
+        tauri::async_runtime::block_on(within(30, "install", async {
+            let state = rig.app.state();
+            let reader = state.engine.read().await;
+            let started = Instant::now();
+            let err = ytdlp_install(&rig.app, &server, MIB).await.unwrap_err();
+            assert!(err.to_string().contains("in use"), "{err}");
+            assert!(started.elapsed() < Duration::from_secs(2), "a busy engine must be reported at once");
+            assert!(!server.requested("/sums") && !server.requested("/archive"), "nothing may be downloaded while the engine is busy");
+            only_known_good(&rig);
+            drop(reader);
+            ytdlp_install(&rig.app, &server, MIB).await.unwrap();
+        }));
+        assert_eq!(live_ytdlp(&rig), b"new-ytdlp");
+    }
+
+    #[test]
+    fn tool_install_a_second_install_fails_promptly_while_one_runs() {
+        let rig = rig("ti-second");
+        let archive = ytdlp_zip(b"new-ytdlp");
+        let gate = Arc::new(AtomicBool::new(false));
+        let server = serve(vec![("/sums", Route::Body(sums(YTDLP_ZIP_NAME, &archive))), ("/archive", Route::Gated(archive, gate.clone()))]);
+        let other = serve(vec![("/sums", Route::Body(sums(FFMPEG_ZIP_NAME, &ffmpeg_zip()))), ("/archive", Route::Body(ffmpeg_zip()))]);
+        tauri::async_runtime::block_on(within(30, "install", async {
+            let install = ytdlp_install(&rig.app, &server, MIB);
+            let driver = async {
+                while !server.requested("/archive") {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                let started = Instant::now();
+                for second in [ytdlp_install(&rig.app, &server, MIB).await, ffmpeg_install(&rig.app, &other, MIB).await] {
+                    let err = second.unwrap_err();
+                    assert!(err.to_string().contains("already"), "{err}");
+                }
+                assert!(started.elapsed() < Duration::from_secs(2), "a second install must not wait");
+                assert!(!other.requested("/archive"), "the refused install must not start downloading");
+                gate.store(true, Ordering::SeqCst);
+            };
+            let (result, ()) = tokio::join!(install, driver);
+            result.unwrap();
+        }));
+        assert_eq!(live_ytdlp(&rig), b"new-ytdlp");
+        assert_eq!(names(&rig.bin), vec!["yt-dlp"]);
+    }
+
+    #[test]
+    fn tool_install_ffmpeg_replaces_both_files_and_leaves_nothing_behind() {
+        let rig = rig("ti-ffmpeg");
+        std::fs::write(rig.bin.join("ffmpeg.exe"), b"old-ffmpeg").unwrap();
+        std::fs::write(rig.bin.join("ffprobe.exe"), b"old-ffprobe").unwrap();
+        let server = archive_server(FFMPEG_ZIP_NAME, ffmpeg_zip());
+        tauri::async_runtime::block_on(within(20, "install", ffmpeg_install(&rig.app, &server, MIB))).unwrap();
+        assert_eq!(std::fs::read(rig.bin.join("ffmpeg.exe")).unwrap(), b"new-ffmpeg");
+        assert_eq!(std::fs::read(rig.bin.join("ffprobe.exe")).unwrap(), b"new-ffprobe");
+        assert_eq!(names(&rig.bin), vec!["ffmpeg.exe", "ffprobe.exe", "yt-dlp"]);
+    }
+
+    #[test]
+    fn tool_install_ffmpeg_busy_swap_keeps_the_previous_files() {
+        let rig = rig("ti-ffmpeg-busy");
+        std::fs::write(rig.bin.join("ffmpeg.exe"), b"old-ffmpeg").unwrap();
+        std::fs::write(rig.bin.join("ffprobe.exe"), b"old-ffprobe").unwrap();
+        let archive = ffmpeg_zip();
+        let gate = Arc::new(AtomicBool::new(false));
+        let server = serve(vec![("/sums", Route::Body(sums(FFMPEG_ZIP_NAME, &archive))), ("/archive", Route::Gated(archive, gate.clone()))]);
+        tauri::async_runtime::block_on(within(30, "install", async {
+            let state = rig.app.state();
+            let install = ffmpeg_install(&rig.app, &server, MIB);
+            let driver = async {
+                while !server.requested("/archive") {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                let reader = state.engine.read().await;
+                gate.store(true, Ordering::SeqCst);
+                reader
+            };
+            let (result, reader) = tokio::join!(install, driver);
+            let err = result.unwrap_err();
+            assert!(err.to_string().contains("in use"), "{err}");
+            drop(reader);
+        }));
+        assert_eq!(std::fs::read(rig.bin.join("ffmpeg.exe")).unwrap(), b"old-ffmpeg");
+        assert_eq!(std::fs::read(rig.bin.join("ffprobe.exe")).unwrap(), b"old-ffprobe");
+        assert_eq!(names(&rig.bin), vec!["ffmpeg.exe", "ffprobe.exe", "yt-dlp"]);
+    }
+
+    #[test]
+    fn tool_install_ffmpeg_busy_engine_fails_before_any_download() {
+        let rig = rig("ti-ffmpeg-busy-early");
+        let server = archive_server(FFMPEG_ZIP_NAME, ffmpeg_zip());
+        tauri::async_runtime::block_on(within(30, "install", async {
+            let state = rig.app.state();
+            let reader = state.engine.read().await;
+            let err = ffmpeg_install(&rig.app, &server, MIB).await.unwrap_err();
+            assert!(err.to_string().contains("in use"), "{err}");
+            assert!(!server.requested("/sums") && !server.requested("/archive"));
+            drop(reader);
+        }));
+        assert_eq!(names(&rig.bin), vec!["yt-dlp"]);
+    }
+
+    #[test]
+    fn tool_install_ffmpeg_stalled_archive_leaves_nothing_behind() {
+        let rig = rig("ti-ffmpeg-stall");
+        let archive = ffmpeg_zip();
+        let server = serve(vec![("/sums", Route::Body(sums(FFMPEG_ZIP_NAME, &archive))), ("/archive", Route::StallMidBody { sent: archive[..10].to_vec(), declared: archive.len() as u64 })]);
+        let err = tauri::async_runtime::block_on(within(15, "install", ffmpeg_install(&rig.app, &server, MIB))).unwrap_err();
+        assert!(err.to_string().contains("stalled"), "{err}");
+        assert!(rig.app.state().engine.try_write().is_ok());
+        only_known_good(&rig);
+    }
+
+    #[test]
+    fn recover_bin_removes_abandoned_install_attempts() {
+        let dir = temp_dir("recover-attempt");
+        std::fs::create_dir_all(dir.join(".install-abc").join("yt-dlp.new")).unwrap();
+        std::fs::write(dir.join(".install-abc").join("archive.zip.part"), b"x").unwrap();
+        std::fs::create_dir_all(dir.join("yt-dlp")).unwrap();
+        recover_bin(&dir);
+        assert_eq!(names(&dir), vec!["yt-dlp"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn replace_all_restores_earlier_files_when_a_backup_cannot_be_made() {
+        let dir = temp_dir("set-backup");
+        for name in ["ffmpeg.exe", "ffprobe.exe"] {
+            std::fs::write(dir.join(name), format!("old-{name}")).unwrap();
+            std::fs::write(dir.join(format!("{name}.part")), format!("new-{name}")).unwrap();
+        }
+        // A non-empty folder where the second backup belongs: renaming onto it fails after
+        // the first file was already replaced.
+        std::fs::create_dir_all(dir.join("ffprobe.exe.old")).unwrap();
+        std::fs::write(dir.join("ffprobe.exe.old").join("keep"), b"x").unwrap();
+        let pairs = vec![
+            (dir.join("ffmpeg.exe.part"), dir.join("ffmpeg.exe")),
+            (dir.join("ffprobe.exe.part"), dir.join("ffprobe.exe")),
+        ];
+        assert!(replace_all(&pairs).is_err());
+        assert_eq!(std::fs::read(dir.join("ffmpeg.exe")).unwrap(), b"old-ffmpeg.exe");
+        assert_eq!(std::fs::read(dir.join("ffprobe.exe")).unwrap(), b"old-ffprobe.exe");
+        assert!(!dir.join("ffmpeg.exe.old").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

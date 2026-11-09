@@ -1,30 +1,4 @@
-//! Native outgoing file drag (Windows), through the `drag` crate 2.1.1 (CrabNebula,
-//! Apache-2.0 OR MIT, https://github.com/crabnebula-dev/drag-rs).
-//!
-//! The page sends a Library id. The path comes only from the saved Library entry and is
-//! checked here; the drag offers a copy only, so no receiver can move or delete the file.
-//!
-//! What drag 2.1.1 does on Windows (read from its source, `platform_impl/windows/mod.rs`):
-//! - `start_drag` runs OLE `DoDragDrop` synchronously on the calling thread, which must be
-//!   the window's OLE apartment (the main thread). Its own `IDropSource` cancels on Escape
-//!   and drops as soon as the left button is up, so a drag that begins after the button was
-//!   released drops at once, wherever the cursor is.
-//! - The data object is the Shell's own (`IShellItemArray` bound to `BHID_DataObject`),
-//!   which carries CF_HDROP and the Shell ID list. `DragMode::Copy` offers DROPEFFECT_COPY
-//!   only.
-//! - Its callback runs before `start_drag` returns. It reports `Dropped` for any release
-//!   (DRAGDROP_S_DROP) and discards the receiver's effect, so "dropped" means released over
-//!   a window, never that a copy or an import happened. After `DoDragDrop` returns it still
-//!   calls `GetCursorPos(..)?`, so an error can come back after a drop that happened.
-//! - It canonicalizes again with dunce and `unwrap`s the Shell's parse of the result. A path
-//!   dunce leaves verbatim (`\\?\`: over 260 characters, a reserved name, or any network
-//!   share, `\\?\UNC\`) or a file that vanished parses to NULL and would panic, which aborts
-//!   a release build. All of these are refused before the crate sees them.
-//!
-//! A drop on Claws itself is recognised from Claws' own drop target (wry reports it as
-//! `WindowEvent::DragDrop(Drop)`, see `note_window_drop`), not from where the cursor is after
-//! the drag: a receiver may show a dialog before `DoDragDrop` returns, and the cursor can be
-//! anywhere by then.
+//! Copy-only Windows file drag on a dedicated OLE apartment, never the window thread.
 use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -35,8 +9,7 @@ use crate::{AppHandle, WebviewWindow};
 const MOVED: &str = "The file has been moved or deleted.";
 const UNREADABLE: &str =
     "Windows cannot find the file to drag. It may have been moved or deleted, or its folder may be offline.";
-const NETWORK: &str =
-    "Files on a network location cannot be dragged from Claws yet. Use Show in folder and drag it from there.";
+
 
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -51,7 +24,7 @@ pub enum DragOutcome {
     NotStarted,
 }
 
-/// What a finished drag means, from the crate's result and whether Claws' own window
+/// What a finished drag means, from the OLE result and whether Claws' own window
 /// received the drop.
 pub fn outcome(dropped: bool, on_claws: bool) -> DragOutcome {
     match (dropped, on_claws) {
@@ -72,7 +45,7 @@ pub fn note_window_drop() {
     DROPPED_ON_CLAWS.store(true, Ordering::SeqCst);
 }
 
-/// Forgets earlier drops. Main thread, just before a drag begins.
+/// Forgets earlier drops just before a drag begins.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn forget_window_drops() {
     DROPPED_ON_CLAWS.store(false, Ordering::SeqCst);
@@ -102,14 +75,9 @@ pub fn recorded_file(items: &[HistoryItem], id: &str) -> Result<PathBuf> {
     draggable_file(&recorded_location(items, id)?)
 }
 
-/// A regular file (not a folder or a link), in exactly the form drag 2.1.1 will give the
-/// Shell. Blocking: a network location can take a while to answer.
+/// A regular file (not a folder or a link) in the form Windows Shell accepts.
+/// Blocking: a network location can take a while to answer.
 pub fn draggable_file(path: &Path) -> Result<PathBuf> {
-    // Refused below in any case (the crate cannot drag them); refusing first avoids waiting
-    // for an offline share to time out.
-    if is_network_path(path) {
-        return Err(AppError::msg(NETWORK));
-    }
     let metadata = std::fs::symlink_metadata(path).map_err(|e| unreachable_file(&e))?;
     // A symbolic link or junction. Other reparse points, such as OneDrive's cloud files,
     // are ordinary files to the Shell and stay draggable.
@@ -127,18 +95,7 @@ pub fn draggable_file(path: &Path) -> Result<PathBuf> {
             "Windows cannot give a draggable location for files on this drive ({e}). Use Show in folder and drag it from there."
         ))
     })?;
-    // dunce strips `\\?\` only from short, ordinary drive paths, never from network ones.
-    match shell_path.components().next() {
-        Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::VerbatimUNC(..)) => {
-            return Err(AppError::msg(NETWORK))
-        }
-        Some(Component::Prefix(prefix)) if prefix.kind().is_verbatim() => {
-            return Err(AppError::msg(
-                "The file's location is too long for Windows to drag (over 260 characters) or uses a name Windows reserves. Use Show in folder instead.",
-            ))
-        }
-        _ => {}
-    }
+    let shell_path = shell_location(&shell_path)?;
     #[cfg(windows)]
     if !shell_can_parse(&shell_path) {
         return Err(AppError::msg(UNREADABLE));
@@ -146,13 +103,32 @@ pub fn draggable_file(path: &Path) -> Result<PathBuf> {
     Ok(shell_path)
 }
 
-/// `\\server\share\…`, plain or verbatim. A mapped drive letter is caught after
-/// canonicalization, which resolves it to `\\?\UNC\…`.
-fn is_network_path(path: &Path) -> bool {
-    matches!(
-        path.components().next(),
-        Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::UNC(..) | Prefix::VerbatimUNC(..))
-    )
+/// Remove the filesystem-only prefix for Shell APIs, retaining UNC paths and long names.
+fn shell_location(path: &Path) -> Result<PathBuf> {
+    // Reserved/trailing-dot names must not resolve to a different ordinary file.
+    for part in path.components() {
+        if let Component::Normal(name) = part {
+            let name = name.to_string_lossy();
+            // Win32 strips spaces left before the extension, so "NUL .mp4" still names the device.
+            let stem = name.split('.').next().unwrap_or("").trim_end_matches(' ').to_ascii_uppercase();
+            // COM/LPT take one ASCII digit 1-9 or a superscript 1, 2 or 3 (U+00B9, U+00B2, U+00B3).
+            let mut suffix = stem.strip_prefix("COM").or_else(|| stem.strip_prefix("LPT")).unwrap_or("").chars();
+            let numbered = matches!((suffix.next(), suffix.next()), (Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None));
+            let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered;
+            if reserved || name.ends_with(['.', ' ']) {
+                return Err(AppError::msg("This file uses a name Windows reserves. Use Show in folder instead."));
+            }
+        }
+    }
+    let text = path.as_os_str().to_string_lossy();
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") { return Ok(PathBuf::from(format!(r"\\{unc}"))); }
+    if let Some(local) = text.strip_prefix(r"\\?\") {
+        if matches!(path.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::VerbatimDisk(_))) {
+            return Ok(PathBuf::from(local));
+        }
+        return Err(AppError::msg("This device path cannot be dragged. Use Show in folder instead."));
+    }
+    Ok(path.to_path_buf())
 }
 
 /// Only "not found" means moved or deleted. Anything else (an offline network drive, no
@@ -167,28 +143,25 @@ fn unreachable_file(error: &std::io::Error) -> AppError {
     }
 }
 
-/// Whether the Shell can turn `path` into an item ID list, the call drag 2.1.1 unwraps.
+/// Fallibly check that Windows Shell can resolve a parsing name.
 #[cfg(windows)]
 pub fn shell_can_parse(path: &Path) -> bool {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
-    use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree};
+    use windows::Win32::UI::Shell::{SHParseDisplayName, ILFree};
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-    // SAFETY: `wide` is NUL-terminated and outlives the call; the list is freed once.
     unsafe {
-        let pidl = ILCreateFromPathW(PCWSTR(wide.as_ptr()));
-        if pidl.is_null() {
-            return false;
-        }
-        ILFree(Some(pidl));
+        let mut pidl = std::ptr::null_mut();
+        let result = SHParseDisplayName(PCWSTR(wide.as_ptr()), None, &mut pidl, 0, None);
+        if !pidl.is_null() { ILFree(Some(pidl)); }
+        result.is_ok()
     }
-    true
 }
 
 /// Drags `path` (from `draggable_file`) out of `window` and reports how it ended.
 #[cfg(all(windows, not(test)))]
-pub async fn start(app: &AppHandle, window: WebviewWindow, path: PathBuf) -> Result<DragOutcome> {
-    // The first drag holds the main thread until it ends; a second request is refused.
+pub async fn start(app: &AppHandle, _window: WebviewWindow, path: PathBuf) -> Result<DragOutcome> {
+    // At most one OLE worker may exist, including a receiver call stuck past timeout.
     static DRAGGING: AtomicBool = AtomicBool::new(false);
     struct Busy;
     impl Drop for Busy {
@@ -199,15 +172,18 @@ pub async fn start(app: &AppHandle, window: WebviewWindow, path: PathBuf) -> Res
     if DRAGGING.swap(true, Ordering::SeqCst) {
         return Err(AppError::msg("A file drag is already in progress."));
     }
-    let _busy = Busy;
+    let busy = Busy;
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    // Called from an async command (a tokio thread), this posts the task to the event loop,
-    // so the drag's modal loop starts in a fresh turn rather than inside a WebView2 callback.
-    // If the task never runs, the closure (and `sender`) is dropped and the receiver says so.
-    app.run_on_main_thread(move || {
-        let _ = sender.send(native::drag(&window, path));
-    })?;
-    let ended = receiver.await.map_err(|_| AppError::msg("The drag was interrupted."))??;
+    // All OLE objects are created and destroyed on the dedicated STA thread.
+    std::thread::Builder::new().name("claws-file-drag".into()).spawn(move || {
+        // Ownership stays here even if the caller times out: never spawn an unbounded
+        // number of stuck receiver calls. Do not terminate a thread owning COM objects.
+        let _busy = busy;
+        let _ = sender.send(native::drag(path));
+    }).map_err(|e| AppError::msg(e.to_string()))?;
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(65), receiver).await
+        .map_err(|_| AppError::msg("The receiving app has not finished the drag. Claws remains usable; check the receiver before trying again."))?
+        .map_err(|_| AppError::msg("The drag was interrupted."))??;
     let Some(dropped) = ended else { return Ok(DragOutcome::NotStarted) };
     if !dropped {
         return Ok(DragOutcome::Cancelled);
@@ -227,53 +203,60 @@ pub async fn start(_app: &AppHandle, _window: WebviewWindow, _path: PathBuf) -> 
     Err(AppError::msg("Native file dragging requires the Windows app."))
 }
 
-#[cfg(all(windows, not(test)))]
+#[cfg(windows)]
 mod native {
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
-    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
-
-    use super::{forget_window_drops, shell_can_parse, UNREADABLE};
+    use std::{path::PathBuf, time::{Duration, Instant}};
+    use windows::core::{implement, BOOL, HRESULT, PCWSTR};
+    use windows::Win32::{Foundation::{S_OK, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS}, System::{Com::IDataObject,
+        Ole::{OleInitialize, OleUninitialize, DoDragDrop, IDropSource, IDropSource_Impl,
+            DROPEFFECT, DROPEFFECT_COPY},
+        SystemServices::{MODIFIERKEYS_FLAGS, MK_LBUTTON, MK_RBUTTON}},
+        UI::{Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON},
+            WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON},
+            Shell::{SHParseDisplayName, SHCreateShellItemArrayFromIDLists, ILFree, BHID_DataObject}}};
     use crate::error::{AppError, Result};
-    use crate::WebviewWindow;
 
-    /// Main thread only. Blocks it (and so Claws' window) until the drag ends. `None`: the
-    /// drag never began; otherwise whether it ended in a drop (anywhere, Claws included).
-    pub fn drag(window: &WebviewWindow, path: PathBuf) -> Result<Option<bool>> {
-        // SAFETY: plain Win32 queries without pointers into Rust memory.
-        let primary = if unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0 { VK_RBUTTON } else { VK_LBUTTON };
-        // Released while the request travelled here: the crate would drop at once, wherever
-        // the cursor is, so nothing starts. (GetAsyncKeyState reads the physical button.)
-        if unsafe { GetAsyncKeyState(i32::from(primary.0)) } >= 0 {
-            return Ok(None);
+    #[implement(IDropSource)]
+    struct Source { started: Instant, primary: MODIFIERKEYS_FLAGS }
+    impl IDropSource_Impl for Source_Impl {
+        fn QueryContinueDrag(&self, escape: BOOL, keys: MODIFIERKEYS_FLAGS) -> HRESULT {
+            if escape.as_bool() || self.started.elapsed() > Duration::from_secs(60) { DRAGDROP_S_CANCEL }
+            else if (keys & self.primary).0 == 0 { DRAGDROP_S_DROP } else { S_OK }
         }
-        // Again here, on this thread, the moment before the crate unwraps the same parse.
-        if !shell_can_parse(&path) {
-            return Err(AppError::msg(UNREADABLE));
+        fn GiveFeedback(&self, _: DROPEFFECT) -> HRESULT { DRAGDROP_S_USEDEFAULTCURSORS }
+    }
+
+    /// Fallible Shell parsing: disappearing files never reach an unwrap.
+    pub(super) unsafe fn data_object(path: &std::path::Path) -> windows::core::Result<IDataObject> {
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut pidl = std::ptr::null_mut();
+        SHParseDisplayName(PCWSTR(wide.as_ptr()), None, &mut pidl, 0, None)?;
+        let items = SHCreateShellItemArrayFromIDLists(&[pidl]);
+        ILFree(Some(pidl));
+        items?.BindToHandler(None, &BHID_DataObject)
+    }
+
+    pub fn drag(path: PathBuf) -> Result<Option<bool>> {
+        unsafe {
+            OleInitialize(None).map_err(|e| AppError::msg(e.to_string()))?;
+            struct Apartment;
+            impl Drop for Apartment { fn drop(&mut self) { unsafe { OleUninitialize(); } } }
+            let _apartment = Apartment;
+            let swapped = GetSystemMetrics(SM_SWAPBUTTON) != 0;
+            let primary = if swapped { VK_RBUTTON } else { VK_LBUTTON };
+            if GetAsyncKeyState(i32::from(primary.0)) >= 0 { return Ok(None); }
+            let data = data_object(&path).map_err(|e| AppError::msg(format!("Windows cannot prepare this file for dragging ({e}). Use Show in folder instead.")))?;
+            // Recheck after Shell preparation, which may hydrate a cloud/network file.
+            if GetAsyncKeyState(i32::from(primary.0)) >= 0 { return Ok(None); }
+            super::forget_window_drops();
+            let source: IDropSource = Source { started: Instant::now(), primary: if swapped { MK_RBUTTON } else { MK_LBUTTON } }.into();
+            let mut effect = DROPEFFECT::default();
+            let status = DoDragDrop(&data, &source, DROPEFFECT_COPY, &mut effect);
+            if status == DRAGDROP_S_CANCEL { return Ok(Some(false)); }
+            status.ok().map_err(|e| AppError::msg(format!("Windows reported a drag problem ({e}); check the receiver before retrying.")))?;
+            Ok(Some(status == DRAGDROP_S_DROP && (effect & DROPEFFECT_COPY).0 != 0))
         }
-        // Any drop Claws' window reports from now on belongs to this drag.
-        forget_window_drops();
-        let dropped = Arc::new(AtomicBool::new(false));
-        let seen = dropped.clone();
-        drag::start_drag(
-            window,
-            drag::DragItem::Files(vec![path]),
-            drag::Image::Raw(include_bytes!("../icons/32x32.png").to_vec()),
-            // Runs before start_drag returns.
-            move |result, _| seen.store(matches!(result, drag::DragResult::Dropped), Ordering::SeqCst),
-            drag::Options { mode: drag::DragMode::Copy, ..Default::default() },
-        )
-        // The crate can fail before the drag begins or after the drop (it reads the cursor
-        // position last), so this must not claim that nothing happened.
-        .map_err(|e| {
-            AppError::msg(format!(
-                "Windows reported a problem with the drag ({e}). If you released it over a folder or an app, check there before trying again."
-            ))
-        })?;
-        Ok(Some(dropped.load(Ordering::SeqCst)))
     }
 }
 
@@ -306,7 +289,7 @@ mod tests {
             let file = dir.join(name);
             std::fs::write(&file, b"media").unwrap();
             let resolved = recorded_file(&[entry("saved", Some(&file))], "saved").unwrap();
-            // Exactly what drag 2.1.1 hands the Shell after its own dunce canonicalization.
+            // Ordinary paths retain their canonical spelling.
             assert_eq!(resolved, dunce::canonicalize(&file).unwrap(), "{name}");
             assert!(!is_verbatim(&resolved), "{name}: {resolved:?}");
             #[cfg(windows)]
@@ -333,11 +316,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// drag 2.1.1 re-canonicalizes with dunce, which keeps `\\?\` past 260 characters; the
-    /// Shell cannot parse that form and the crate `unwrap`s the result, aborting a release
-    /// build. Such a location must be refused with a message instead.
+    /// Long paths need Shell parsing names rather than filesystem-only prefixes.
     #[test]
-    fn locations_too_long_for_the_shell_are_refused_instead_of_crashing() {
+    fn long_locations_prepare_without_crashing() {
         let dir = crate::download_tests::temp_dir("drag-long");
         let deep = dir.join("a".repeat(60)).join("b".repeat(60)).join("c".repeat(60)).join("d".repeat(60));
         std::fs::create_dir_all(&deep).unwrap();
@@ -347,19 +328,18 @@ mod tests {
         let canonical = dunce::canonicalize(&file).unwrap();
         assert!(is_verbatim(&canonical), "dunce keeps the verbatim form: {canonical:?}");
         #[cfg(windows)]
-        assert!(!shell_can_parse(&canonical), "the Shell cannot parse it, so the crate would panic");
-        let error = message(recorded_file(&[entry("long", Some(&file))], "long"));
-        assert!(error.contains("too long"), "{error}");
+        assert!(shell_can_parse(&shell_location(&canonical).unwrap()), "the Shell accepts the normal long path");
+        let resolved = recorded_file(&[entry("long", Some(&file))], "long").unwrap();
+        assert!(!is_verbatim(&resolved));
         assert_eq!(std::fs::read(&file).unwrap(), b"media");
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// dunce never strips `\\?\UNC\`, and the Shell cannot parse that form, so drag 2.1.1
-    /// would abort on any file stored on a network share. Uses this machine's loopback
-    /// administrative share when it is reachable.
+    /// Network sources retain UNC semantics after removing the filesystem prefix.
+    /// Uses the loopback administrative share only when it is reachable.
     #[cfg(windows)]
     #[test]
-    fn files_on_a_network_share_are_refused_with_a_network_message() {
+    fn files_on_a_reachable_network_share_prepare_without_crashing() {
         let dir = crate::download_tests::temp_dir("drag-network");
         let file = dir.join("shared clip.mp4");
         std::fs::write(&file, b"media").unwrap();
@@ -376,9 +356,8 @@ mod tests {
         }
         let canonical = dunce::canonicalize(&unc).unwrap();
         assert!(canonical.as_os_str().to_string_lossy().starts_with(r"\\?\UNC\"), "{canonical:?}");
-        assert!(!shell_can_parse(&canonical), "the crate would unwrap a NULL parse");
-        let error = message(recorded_file(&[entry("shared", Some(&unc))], "shared"));
-        assert!(error.contains("network"), "{error}");
+        assert!(shell_can_parse(&shell_location(&canonical).unwrap()));
+        assert!(recorded_file(&[entry("shared", Some(&unc))], "shared").is_ok());
         assert_eq!(std::fs::read(&file).unwrap(), b"media");
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -410,7 +389,7 @@ mod tests {
         let path = dunce::canonicalize(&file).unwrap();
         assert!(shell_can_parse(&path));
         std::fs::remove_file(&file).unwrap();
-        assert!(!shell_can_parse(&path), "a NULL parse is what the crate would unwrap");
+        assert!(!shell_can_parse(&path), "a vanished file must fail parsing");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -460,18 +439,49 @@ mod tests {
         }
     }
 
-    /// A share path is refused before any file-system access, so an offline server cannot
-    /// hold the request for the network timeout.
+    #[test]
+    fn shell_paths_keep_long_and_network_locations_without_filesystem_prefixes() {
+        assert_eq!(shell_location(Path::new(r"\\?\UNC\server\share\file.mp4")).unwrap(), PathBuf::from(r"\\server\share\file.mp4"));
+        assert_eq!(shell_location(Path::new(r"\\?\C:\media\file.mp4")).unwrap(), PathBuf::from(r"C:\media\file.mp4"));
+        for path in [r"C:\media\NUL.mp4", r"C:\media\file.", r"C:\media\file "] {
+            assert!(shell_location(Path::new(path)).is_err());
+        }
+    }
+
+    #[test]
+    fn reserved_com_and_lpt_names_include_superscript_digits_but_not_neighbors() {
+        for name in ["COM1", "lpt9", "COM1.txt", "com9.MP4", "COM\u{b9}.txt", "com\u{b2}", "LPT\u{b3}", "lpt\u{b9}.mp4", "COM1 .txt", "NUL  .mp4", "com\u{b9} .mp4"] {
+            let path = Path::new(r"C:\media").join(name);
+            assert!(shell_location(&path).is_err(), "{name} is a reserved device name");
+        }
+        for name in ["COM0", "COM10", "LPT0.txt", "COM\u{b9}-title.mp4", "COMx", "COM", "LPT\u{b9}0", "COM\u{2074}", "xCOM1.mp4", "COM1 x.mp4", "COM 1.mp4"] {
+            let path = Path::new(r"C:\media").join(name);
+            assert_eq!(shell_location(&path).unwrap(), path, "{name} is an ordinary file name");
+        }
+        // A reserved component anywhere in the path is refused, and long/UNC forms still normalize.
+        assert!(shell_location(&Path::new(r"C:\").join("COM\u{b2}").join("file.mp4")).is_err());
+        assert!(shell_location(&Path::new(r"\\?\C:\media").join("LPT\u{b3}.txt")).is_err());
+        assert_eq!(shell_location(Path::new(r"\\?\UNC\server\share\COM10.mp4")).unwrap(), PathBuf::from(r"\\server\share\COM10.mp4"));
+    }
+
     #[cfg(windows)]
     #[test]
-    fn network_share_paths_are_refused_before_touching_the_network() {
-        for path in [r"\\claws-offline.invalid\share\clip.mp4", r"\\?\UNC\claws-offline.invalid\share\clip.mp4"] {
-            let started = std::time::Instant::now();
-            let error = message(draggable_file(Path::new(path)));
-            assert!(error.contains("network"), "{path}: {error}");
-            assert!(started.elapsed() < std::time::Duration::from_millis(500), "{path} waited for the network");
+    fn native_data_object_is_fallible_for_a_disappearing_file() {
+        let dir = crate::download_tests::temp_dir("drag-com");
+        let deep = dir.join("a".repeat(60)).join("b".repeat(60)).join("c".repeat(60)).join("d".repeat(60));
+        std::fs::create_dir_all(&deep).unwrap();
+        unsafe {
+            windows::Win32::System::Ole::OleInitialize(None).unwrap();
+            for file in [dir.join("日本語 saved.mp4"), deep.join("日本語 long.mp4")] {
+                std::fs::write(&file, b"media").unwrap();
+                let path = shell_location(&dunce::canonicalize(&file).unwrap()).unwrap();
+                let data = super::native::data_object(&path).unwrap();
+                drop(data);
+                std::fs::remove_file(&file).unwrap();
+                assert!(super::native::data_object(&path).is_err());
+            }
+            windows::Win32::System::Ole::OleUninitialize();
         }
-        assert!(!is_network_path(Path::new(r"C:\Users\clip.mp4")));
-        assert!(!is_network_path(Path::new(r"\\?\C:\Users\clip.mp4")));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

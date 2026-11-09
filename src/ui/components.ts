@@ -1,6 +1,6 @@
-import { h } from "./dom";
-import { icon, type IconName } from "./icons";
-import { canAnimate } from "./motion";
+import { h } from "./dom.js";
+import { icon, type IconName } from "./icons.js";
+import { canAnimate } from "./motion.js";
 
 interface ButtonOptions {
   label?: string;
@@ -119,7 +119,11 @@ export interface ChipOption<T extends string | number> {
   hint?: string;
 }
 
-/** A single-choice row of pill buttons (radio semantics). */
+/**
+ * A single-choice row of pill buttons (radio semantics). Like a native radio group it is
+ * one Tab stop: the checked chip (or the first, when nothing is checked) takes Tab, and
+ * the arrow keys, Home and End move the choice, focus included.
+ */
 export function chipRadio<T extends string | number>(
   label: string,
   options: ChipOption<T>[],
@@ -127,25 +131,61 @@ export function chipRadio<T extends string | number>(
   onChange: (value: T) => void,
 ): HTMLElement {
   const group = h("div", { class: "chips", attrs: { role: "radiogroup", "aria-label": label } });
-  const chips = options.map((option) =>
+  const choose = (index: number) => {
+    mark(options[index].value);
+    onChange(options[index].value);
+  };
+  const chips = options.map((option, index) =>
     h(
       "button",
       {
         class: "chip",
         attrs: { type: "button", role: "radio", title: option.hint },
-        on: {
-          click: () => {
-            mark(option.value);
-            onChange(option.value);
-          },
-        },
+        on: { click: () => choose(index) },
       },
       option.label,
     ),
   );
   function mark(current: T) {
-    chips.forEach((chip, i) => chip.setAttribute("aria-checked", String(options[i].value === current)));
+    const checked = options.findIndex((option) => option.value === current);
+    chips.forEach((chip, i) => {
+      chip.setAttribute("aria-checked", String(i === checked));
+      chip.tabIndex = i === (checked >= 0 ? checked : 0) ? 0 : -1;
+    });
   }
+  group.addEventListener("keydown", (event) => {
+    if (chips.length === 0 || event.altKey || event.ctrlKey || event.metaKey) return;
+    const checked = chips.findIndex((chip) => chip.getAttribute("aria-checked") === "true");
+    const focused = chips.indexOf(event.target as HTMLButtonElement);
+    const from = focused >= 0 ? focused : checked;
+    let next: number;
+    switch (event.key) {
+      case "ArrowRight":
+      case "ArrowDown":
+        next = from < 0 ? 0 : (from + 1) % chips.length;
+        break;
+      case "ArrowLeft":
+      case "ArrowUp":
+        next = from < 0 ? chips.length - 1 : (from - 1 + chips.length) % chips.length;
+        break;
+      case "Home":
+        next = 0;
+        break;
+      case "End":
+        next = chips.length - 1;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    // Landing on the chip that is already the choice is not a change.
+    if (next === checked) {
+      chips[next].focus();
+      return;
+    }
+    choose(next);
+    chips[next].focus();
+  });
   chips.forEach((c) => group.appendChild(c));
   mark(value);
   return group;
@@ -291,53 +331,69 @@ export interface SheetAction {
 /**
  * A modal sheet. Destructive choices need protected focus, so this one blurs
  * the whole window behind it. Resolves to the chosen action's value, or null.
+ *
+ * The first decision wins. Once it is made the sheet is closing: every action is
+ * disabled, and a later click, Escape or close request changes nothing, so dismissing
+ * the sheet can never be turned into a confirmation (or the reverse) during the
+ * short departure animation.
  */
 export function confirmSheet(title: string, message: string, actions: SheetAction[]): Promise<string | null> {
   return new Promise((resolve) => {
     const dialog = h("dialog", { class: "sheet", attrs: { "aria-labelledby": "sheet-title" } });
     let result: string | null = null;
+    let closing = false;
+    let settled = false;
+    const decide = (value: string | null) => {
+      if (closing) return;
+      closing = true;
+      result = value;
+      for (const control of controls) control.disabled = true;
+      dismiss();
+    };
     // The safe choice takes focus, so Enter never confirms something destructive.
-    const cancel = button({ label: "Cancel", variant: "plain", onClick: () => dialog.close() });
+    const cancel = button({ label: "Cancel", variant: "plain", onClick: () => decide(null) });
     cancel.autofocus = true;
+    const controls = [
+      ...actions.map((action) =>
+        button({
+          label: action.label,
+          variant: action.variant ?? "secondary",
+          onClick: () => decide(action.value),
+        }),
+      ),
+      cancel,
+    ];
     const body = h(
       "div",
       { class: "sheet-body" },
       h("h2", { class: "sheet-title", text: title, attrs: { id: "sheet-title" } }),
       h("p", { class: "sheet-message", text: message }),
-      h(
-        "div",
-        { class: "sheet-actions" },
-        ...actions.map((action) =>
-          button({
-            label: action.label,
-            variant: action.variant ?? "secondary",
-            onClick: () => {
-              result = action.value;
-              dialog.close();
-            },
-          }),
-        ),
-        cancel,
-      ),
+      h("div", { class: "sheet-actions" }, ...controls),
     );
     dialog.appendChild(body);
     dialog.addEventListener("close", () => {
       dialog.remove();
+      if (settled) return;
+      settled = true;
       resolve(result);
     });
-    const close = dialog.close.bind(dialog);
-    dialog.close = () => {
+    function dismiss() {
       // No departure with reduced motion or in a hidden window: the sheet just closes.
-      if (!canAnimate()) return close();
+      if (!canAnimate()) return dialog.close();
       const out = dialog.animate([{ opacity: 1, transform: "none" }, { opacity: 0, transform: "scale(0.96)" }], {
         duration: 160,
         easing: "cubic-bezier(0.4, 0, 1, 1)",
       });
-      out.onfinish = () => close();
-    };
+      // A cancelled animation never finishes, and a paused one (a window hidden mid-way)
+      // may never end; neither may leave the sheet stuck open with its actions disabled.
+      const fallback = window.setTimeout(() => dialog.close(), 400);
+      dialog.addEventListener("close", () => window.clearTimeout(fallback));
+      out.onfinish = () => dialog.close();
+      out.oncancel = () => dialog.close();
+    }
     dialog.addEventListener("cancel", (event) => {
       event.preventDefault();
-      dialog.close();
+      decide(null);
     });
     document.body.appendChild(dialog);
     dialog.showModal();

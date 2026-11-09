@@ -1,6 +1,8 @@
 import {
   api,
   errorMessage,
+  type DownloadMode,
+  type DownloadOptions,
   type HistoryItem,
   type Job,
   type JobEvent,
@@ -10,9 +12,12 @@ import {
   type Settings,
   type ToolProgress,
   type ToolsStatus,
+  type TranscriptFormat,
   type VideoPreset,
 } from "./api";
+import type { RunSnapshot } from "./download-estimates";
 import { LinkBatch, type ParsedInput } from "./download-input";
+import { PreviewMemory } from "./preview-session";
 import { JobTable } from "./queue-events";
 
 export type Route = "download" | "queue" | "library" | "settings";
@@ -25,11 +30,36 @@ export interface BatchChoices {
   audioFormat: string;
 }
 
+/** One item whose download size is estimated, with the choices it was asked for. */
+export interface EstimateItem {
+  url: string;
+  playlistIndex: number | null;
+  options: DownloadOptions;
+}
+
+/** The choices made over one link's details, as plain data (the sets the view uses are arrays). */
+export interface PreviewChoices {
+  mode: DownloadMode;
+  height: number | null;
+  videoPreset: VideoPreset;
+  audioFormat: string;
+  subs: string[];
+  embedSubs: boolean;
+  fastSave: boolean;
+  caption: string | null;
+  transcriptFormat: TranscriptFormat;
+}
+
 /** Several links pasted at once, being looked up or waiting to be added to the queue. */
 export interface BatchSession {
   /** The submitted text's parse, kept for its skipped lines and repeats. */
   parsed: ParsedInput;
   choices: BatchChoices;
+  /**
+   * The batch's finished estimate run, saved while another view is open and taken back once
+   * when the Download view returns. Never a run still going.
+   */
+  estimate: RunSnapshot<EstimateItem> | null;
 }
 
 type Topic =
@@ -105,6 +135,13 @@ class Store {
   private lastWarning: string | null = null;
 
   private pastedLink: string | null = null;
+
+  /**
+   * The single link being worked on in the Download view: its details, choices and estimates,
+   * kept while Queue or Settings is open. Replaced by another link or a batch, and ended when the
+   * link is added to the queue (preview-session.ts).
+   */
+  readonly previews = new PreviewMemory<ProbeResult, PreviewChoices, EstimateItem>();
 
   /**
    * The current batch. It lives here, not in the Download view, so its lookups carry on
@@ -264,7 +301,8 @@ class Store {
 
   /** Replaces any batch with these links and starts looking them up (never downloading). */
   startBatch(parsed: ParsedInput) {
-    this.batch = { parsed, choices: { mode: "video", maxHeight: null, videoPreset: "compatible", audioFormat: "mp3" } };
+    this.previews.clear(); // the list replaces any single link's details
+    this.batch = { parsed, choices: { mode: "video", maxHeight: null, videoPreset: "compatible", audioFormat: "mp3" }, estimate: null };
     this.links.start(parsed.links);
     this.emit("batch");
   }

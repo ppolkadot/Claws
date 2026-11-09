@@ -1,7 +1,7 @@
 {
   "name": "claws",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,9 +10,9 @@
     "test:fonts": "node --test scripts/tests/font-bundle.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test:queue": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .test-build src/queue-events.ts && node --test scripts/tests/queue-events.test.mjs",
-    "test:logic": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .test-build src/download-input.ts src/download-estimates.ts src/resolution.ts src/transcript-options.ts && node --test scripts/tests/download-input.test.mjs scripts/tests/download-estimates.test.mjs scripts/tests/resolution.test.mjs scripts/tests/transcript-options.test.mjs",
-    "test:motion": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --rootDir src --outDir .test-build src/ui/motion.ts src/ui/drag-gesture.ts src/ui/job-status.ts src/ui/dom.ts src/ui/layout.ts src/ui/progress-motion.ts src/ui/row-order.ts && node --test scripts/tests/motion-feedback.test.mjs scripts/tests/file-drag-gesture.test.mjs scripts/tests/dom-attributes.test.mjs scripts/tests/progress-motion.test.mjs"
+    "test:queue": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .test-build src/queue-events.ts && node --test scripts/tests/queue-events.test.mjs scripts/tests/status-transitions.test.mjs",
+    "test:logic": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --outDir .test-build src/download-input.ts src/download-estimates.ts src/resolution.ts src/transcript-options.ts src/processing-options.ts src/kept-files.ts src/library-cache.ts src/preview-session.ts && node --test scripts/tests/download-input.test.mjs scripts/tests/download-estimates.test.mjs scripts/tests/resolution.test.mjs scripts/tests/transcript-options.test.mjs scripts/tests/processing-options.test.mjs scripts/tests/kept-files.test.mjs scripts/tests/library-cache.test.mjs scripts/tests/preview-session.test.mjs",
+    "test:motion": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --rootDir src --outDir .test-build src/ui/motion.ts src/ui/drag-gesture.ts src/ui/job-status.ts src/ui/dom.ts src/ui/layout.ts src/ui/progress-motion.ts src/ui/row-order.ts src/ui/components.ts src/ui/subtitle-chips.ts && node --test scripts/tests/motion-feedback.test.mjs scripts/tests/file-drag-gesture.test.mjs scripts/tests/dom-attributes.test.mjs scripts/tests/progress-motion.test.mjs scripts/tests/components-dom.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

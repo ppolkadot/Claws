@@ -12,11 +12,15 @@ use crate::settings::Settings;
 pub type FreeSpace = Box<dyn Fn(&std::path::Path) -> std::io::Result<u64> + Send + Sync>;
 
 /// Everything the commands share. Locks are only ever held for short, synchronous
-/// sections and never across an `.await`.
+/// sections and never across an `.await`. The one section that can be slow is
+/// `disk_ledger`, which is held while free space is read (a slow disk or network volume):
+/// it is only ever taken on a blocking thread, never on an async worker.
 ///
-/// Lock order, outermost first: `store`'s write lock, `running`, `jobs`, `live_jobs`.
+/// Lock order, outermost first: the Library mutation lock (`history_mutation`, taken before
+/// anything else it needs), `store`'s write lock, `running`, `jobs`, `live_jobs`.
 /// `settings`, `history`, `probes`, `recent_probes`, `pending_cleanup`, `destinations` and
-/// `disk_ledger` are leaf locks and are never held while another one is taken.
+/// `disk_ledger` are leaf locks and are never held while another one is taken (`history`
+/// is only taken, briefly, inside `store`'s write lock or to copy the list).
 pub struct AppState {
     pub data_dir: PathBuf,
     pub settings: Mutex<Settings>,
@@ -27,6 +31,10 @@ pub struct AppState {
     /// Read by every yt-dlp run, written by tool installs, so a tool is never replaced
     /// while in use.
     pub engine: tokio::sync::RwLock<()>,
+    /// Held for a whole tool install (download, check, extract, swap), so two installs never
+    /// share staging or race over the live tools. Only ever taken with `try_lock`, before
+    /// the engine's write lock is tried, so nothing waits on it.
+    pub tool_install: tokio::sync::Mutex<()>,
     /// Problems found at startup (damaged files, no desktop blur) that the UI shows once.
     pub notices: Mutex<Vec<String>>,
     /// Set as the app exits. Checked under the `running` and `probes` locks before any
@@ -50,8 +58,9 @@ pub struct AppState {
     pub destinations: Mutex<HashSet<String>>,
     /// Bumped after every queue change; the writer saves snapshots in revision order.
     pub queue_revision: AtomicU64,
-    /// Disk space running jobs may still need (see `disk_budget::Ledger`). Leaf lock;
-    /// free space is read while it is held.
+    /// Disk space running jobs may still need (see `disk_budget::Ledger`). Leaf lock; free
+    /// space is read while it is held, so take it only on a blocking thread, through
+    /// `disk_budget::lock` (which also works on a lock a panicking sample poisoned).
     pub disk_ledger: Mutex<crate::disk_budget::Ledger>,
     /// Free bytes on the volume holding a path; replaced in tests.
     pub free_space: FreeSpace,
@@ -81,6 +90,7 @@ impl AppState {
                 .build()
                 .unwrap_or_default(),
             engine: tokio::sync::RwLock::new(()),
+            tool_install: tokio::sync::Mutex::new(()),
             notices: Mutex::new(Vec::new()),
             shutting_down: AtomicBool::new(false),
             workers: AtomicUsize::new(0),

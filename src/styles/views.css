@@ -748,6 +748,34 @@
   font-weight: 600;
   line-height: 1.3;
 }
+.tile-kept {
+  display: flex;
+  min-width: 0;
+  margin-top: 8px;
+}
+.tile-kept .btn {
+  max-width: 100%;
+}
+.tile-kept .btn span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kept-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+.kept-note-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .tile-sub,
 .tile-date {
   overflow: hidden;

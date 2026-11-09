@@ -14,7 +14,13 @@
 //!
 //! ok    two streams (video, audio) with progress, a merge, then CLAWSDONE; exit 0
 //! ok-fast  like ok, but the merge does not pause (for races with a late notification)
+//! ok-subs  like ok-fast, and it leaves caption files `<name>.en.srt` and `<name>.es.srt` next to
+//!          the merged file, as yt-dlp does for `--write-subs`
+//! ok-preconvert  like ok, with a postprocessor that yt-dlp runs before the download first
+//! late-progress  like ok, but the merge is announced on stderr before the last stream's
+//!                progress reaches stdout (pipe reordering); `fixture-late.log` marks it sent
 //! fail  one stream that stops halfway with an ERROR line; exit 1
+//! fail-preconvert  a pre-download postprocessor, then a stream that stops with a network error
 //! hang  starts a stream and then waits forever (for pause/cancel tests)
 //! tree  like hang, but first starts a copy of itself as a child, which also waits
 //!
@@ -108,19 +114,48 @@ fn main() {
     };
 
     match scenario.as_str() {
-        "ok" | "ok-fast" => {
+        "ok" | "ok-fast" | "ok-subs" | "ok-preconvert" | "late-progress" => {
             writeln!(out, "CLAWSFMT|137|{bytes}|NA|140|{}|NA|137+140|NA|NA", bytes / 10).unwrap();
+            if scenario == "ok-preconvert" {
+                // A postprocessor that yt-dlp runs before the download (a subtitle
+                // conversion): the same signal as the merge, but not the final stage.
+                eprintln!("CLAWSPP|started|FFmpegSubtitlesConvertor");
+                std::thread::sleep(Duration::from_millis(200));
+                eprintln!("CLAWSPP|finished|FFmpegSubtitlesConvertor");
+            }
             let video = stream(&mut out, "137", "mp4", bytes, None).unwrap();
-            let audio = stream(&mut out, "140", "m4a", bytes / 10, None).unwrap();
-            eprintln!("CLAWSPP|started|Merger");
+            let audio = if scenario == "late-progress" {
+                // The merge announces itself on stderr; the last stream's transfer lines
+                // then reach stdout after Claws has read that announcement, as buffered
+                // lines of the other pipe can.
+                eprintln!("CLAWSPP|started|Merger");
+                std::thread::sleep(Duration::from_millis(300));
+                let audio = stream(&mut out, "140", "m4a", bytes / 10, None).unwrap();
+                if let Some(output) = dir.parent().and_then(|p| p.parent()) {
+                    let _ = std::fs::write(output.join("fixture-late.log"), b"late transfer lines written");
+                }
+                audio
+            } else {
+                let audio = stream(&mut out, "140", "m4a", bytes / 10, None).unwrap();
+                eprintln!("CLAWSPP|started|Merger");
+                audio
+            };
             // A merge takes a while (ffmpeg reads and writes the whole file).
-            if scenario != "ok-fast" {
+            if scenario != "ok-fast" && scenario != "ok-subs" {
                 std::thread::sleep(Duration::from_millis(1500));
             }
             let merged = dir.join(format!("{name}.{merged_ext}"));
             std::fs::write(&merged, b"merged").unwrap();
             let _ = std::fs::remove_file(video);
             let _ = std::fs::remove_file(audio);
+            if scenario == "ok-subs" {
+                for lang in ["en", "es"] {
+                    std::fs::write(dir.join(format!("{name}.{lang}.srt")), format!("1
+00:00:01,000 --> 00:00:02,000
+fixture {lang}
+")).unwrap();
+                }
+            }
             eprintln!("CLAWSPP|finished|Merger");
             writeln!(out, "CLAWSDONE|{}", merged.display()).unwrap();
         }
@@ -128,6 +163,14 @@ fn main() {
             writeln!(out, "CLAWSFMT|18|{bytes}|NA|NA|NA|NA|18|{bytes}|NA").unwrap();
             stream(&mut out, "18", "mp4", bytes, Some(bytes / 2));
             eprintln!("ERROR: fixture: unable to download video data: HTTP Error 403: Forbidden");
+            std::process::exit(1);
+        }
+        "fail-preconvert" => {
+            writeln!(out, "CLAWSFMT|18|{bytes}|NA|NA|NA|NA|18|{bytes}|NA").unwrap();
+            eprintln!("CLAWSPP|started|FFmpegSubtitlesConvertor");
+            eprintln!("CLAWSPP|finished|FFmpegSubtitlesConvertor");
+            stream(&mut out, "18", "mp4", bytes, Some(bytes / 2));
+            eprintln!("ERROR: fixture: unable to download video data: The read operation timed out");
             std::process::exit(1);
         }
         "hang" | "tree" => {
@@ -162,6 +205,9 @@ fn main() {
                 writeln!(out, "CLAWSCAPTIONS|[]").unwrap();
                 return;
             }
+            // `--convert-subs vtt` is the only postprocessor of a transcript run.
+            eprintln!("CLAWSPP|started|FFmpegSubtitlesConvertor");
+            eprintln!("CLAWSPP|finished|FFmpegSubtitlesConvertor");
             let file = dir.join(format!("{name}.{sub_langs}.vtt"));
             let body = if scenario == "captions-empty" {
                 "WEBVTT\n\n"

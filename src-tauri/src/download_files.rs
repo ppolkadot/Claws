@@ -8,6 +8,12 @@
 //! a marker naming the same job and attempt. Paths reported by tools are untrusted and are
 //! only accepted when they resolve inside the work folder.
 //!
+//! The marker is data, not authority: `verify` binds it to the folders it was read from (its
+//! `workspace` and `destination_root` must be those real folders, and every output and move
+//! must stay below them), and only a manifest bound that way can be written or published.
+//! A file is deleted for a Library entry only through `remove_verified`, which checks the
+//! identity of the object it has open and deletes that same object.
+//!
 //! A cancelled job that is tried again starts a new attempt in a new folder, so a cleanup
 //! still finishing (or retried at the next start) for the cancelled attempt can never
 //! reach the new attempt's files.
@@ -108,6 +114,10 @@ pub struct Manifest {
     pub published: Vec<PathBuf>,
     #[serde(default)]
     pub moves: Vec<Move>,
+    /// Set only by `verify`/`open_workspace`: this manifest's workspace and destination
+    /// root were proven to be the folders it was read from. Never read from disk.
+    #[serde(skip)]
+    bound: bool,
 }
 
 impl Manifest {
@@ -162,19 +172,34 @@ impl Manifest {
 }
 
 pub fn identify(path: &Path) -> io::Result<FileIdentity> {
+    identify_open(&mut fs::File::open(path)?)
+}
+
+/// The identity of an already opened file: its file id where the volume keeps one, else its
+/// size and content hash.
+fn identify_open(file: &mut fs::File) -> io::Result<FileIdentity> {
     #[cfg(windows)]
-    if let Some(identity) = file_id(path)? {
+    if let Some(identity) = file_id_of(file)? {
         return Ok(identity);
     }
-    content_identity(path)
+    content_of(file)
+}
+
+/// Whether the opened file is the object `expected` describes, compared the way `expected`
+/// was taken (a file id never matches a content hash, nor the reverse).
+#[cfg(windows)]
+fn matches_identity(file: &mut fs::File, expected: &FileIdentity) -> io::Result<bool> {
+    Ok(match expected {
+        FileIdentity::FileId { .. } => file_id_of(file)?.as_ref() == Some(expected),
+        FileIdentity::Content { .. } => content_of(file)? == *expected,
+    })
 }
 
 #[cfg(windows)]
-fn file_id(path: &Path) -> io::Result<Option<FileIdentity>> {
+fn file_id_of(file: &fs::File) -> io::Result<Option<FileIdentity>> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{FileIdInfo, GetFileInformationByHandleEx, GetVolumeInformationByHandleW, FILE_ID_INFO};
-    let file = fs::File::open(path)?;
     let handle = HANDLE(file.as_raw_handle());
     let mut name = [0u16; 32];
     unsafe { GetVolumeInformationByHandleW(handle, None, None, None, None, Some(&mut name)) }.map_err(|e| io::Error::other(e.message()))?;
@@ -191,10 +216,14 @@ fn file_id(path: &Path) -> io::Result<Option<FileIdentity>> {
     Ok(Some(FileIdentity::FileId { volume: info.VolumeSerialNumber, id }))
 }
 
+#[cfg(test)]
 pub fn content_identity(path: &Path) -> io::Result<FileIdentity> {
+    content_of(&mut fs::File::open(path)?)
+}
+
+fn content_of(file: &mut fs::File) -> io::Result<FileIdentity> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
-    let mut file = fs::File::open(path)?;
     let mut digest = Sha256::new();
     let mut buffer = vec![0u8; 1 << 20];
     let mut size = 0u64;
@@ -208,6 +237,319 @@ pub fn content_identity(path: &Path) -> io::Result<FileIdentity> {
     }
     let sha256 = digest.finalize().iter().map(|b| format!("{b:02x}")).collect();
     Ok(FileIdentity::Content { size, sha256 })
+}
+
+/// The outcome of deleting a file proven to be the one a download saved.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Removal {
+    Deleted,
+    /// Nothing is at the path any more.
+    Missing,
+}
+
+#[derive(Debug)]
+pub enum RemoveError {
+    /// Something else is at the path now (replaced, a folder, a link): left alone.
+    Replaced,
+    /// This platform cannot delete the verified object itself, so nothing is deleted.
+    #[cfg_attr(windows, allow(dead_code))]
+    Unsupported,
+    /// The file could not be opened or deleted (in use, no permission).
+    Io(io::Error),
+    /// The file was opened but could not be identified (its file id or content could not
+    /// be read), so nothing was deleted. Not the same as a file in use.
+    Unverifiable(io::Error),
+}
+
+impl std::fmt::Display for RemoveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Replaced => f.write_str("it is no longer the file Claws saved"),
+            Self::Unsupported => f.write_str("this system cannot confirm which file would be deleted"),
+            Self::Io(e) => write!(f, "{e}"),
+            Self::Unverifiable(e) => write!(f, "its identity could not be read: {e}"),
+        }
+    }
+}
+
+/// Deletes the file at `path` only if it is the object `expected` describes. The file is
+/// opened once, identified through that open handle (a file id, or a content hash read from
+/// the handle on volumes without ids) and then deleted through the same handle, so a file
+/// swapped into the path after the check can never be the one removed. A comparison
+/// followed by `remove_file(path)` would not give that guarantee. Blocking: it may hash a
+/// large file.
+pub fn remove_verified(path: &Path, expected: &FileIdentity) -> Result<Removal, RemoveError> {
+    remove_verified_with(path, expected, &mut || {})
+}
+
+/// `between` runs after the check and before the deletion; tests swap the path there.
+#[cfg(windows)]
+fn remove_verified_with(path: &Path, expected: &FileIdentity, between: &mut dyn FnMut()) -> Result<Removal, RemoveError> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const DELETE: u32 = 0x0001_0000;
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    let mut file = match fs::OpenOptions::new()
+        .access_mode(GENERIC_READ | DELETE)
+        .share_mode(SHARE_ALL)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Removal::Missing),
+        Err(e) => return Err(RemoveError::Io(e)),
+    };
+    let meta = file.metadata().map_err(RemoveError::Unverifiable)?;
+    if !meta.is_file() || meta.file_type().is_symlink() {
+        return Err(RemoveError::Replaced);
+    }
+    identity_verdict(matches_identity(&mut file, expected))?;
+    between();
+    delete_on_handle(&file).map_err(RemoveError::Io)?;
+    Ok(Removal::Deleted)
+}
+
+/// What the comparison of an opened file with its recorded identity means. A comparison that
+/// could not be made (the file id or the content could not be read) is neither a match nor a
+/// replacement and not a file in use: it is reported as unverifiable.
+#[cfg(windows)]
+fn identity_verdict(compared: io::Result<bool>) -> Result<(), RemoveError> {
+    match compared {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(RemoveError::Replaced),
+        Err(e) => Err(RemoveError::Unverifiable(e)),
+    }
+}
+
+/// Marks the open file for deletion; it goes when the handle closes (at once, by name,
+/// where the file system supports POSIX semantics). A read-only attribute does not keep a
+/// download Claws saved from being deleted, as it did not for `remove_file`.
+#[cfg(windows)]
+fn delete_on_handle(file: &fs::File) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        FileDispositionInfo, FileDispositionInfoEx, SetFileInformationByHandle, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+        FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_DISPOSITION_INFO_EX_FLAGS,
+    };
+    let handle = HANDLE(file.as_raw_handle());
+    let ex = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_INFO_EX_FLAGS(FILE_DISPOSITION_FLAG_DELETE.0 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0 | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE.0),
+    };
+    let tried = unsafe {
+        SetFileInformationByHandle(handle, FileDispositionInfoEx, &ex as *const FILE_DISPOSITION_INFO_EX as *const std::ffi::c_void, std::mem::size_of::<FILE_DISPOSITION_INFO_EX>() as u32)
+    };
+    if tried.is_ok() {
+        return Ok(());
+    }
+    // Older file systems: plain delete-on-close, still on this very handle.
+    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+    unsafe {
+        SetFileInformationByHandle(handle, FileDispositionInfo, &info as *const FILE_DISPOSITION_INFO as *const std::ffi::c_void, std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32)
+    }
+    .map_err(|e| io::Error::other(e.message()))
+}
+
+#[cfg(not(windows))]
+fn remove_verified_with(_path: &Path, _expected: &FileIdentity, _between: &mut dyn FnMut()) -> Result<Removal, RemoveError> {
+    Err(RemoveError::Unsupported)
+}
+
+/// What proves a published download is Claws' to delete: the identity of the media file
+/// and the side files that were really published next to it.
+pub struct Evidence {
+    pub identity: FileIdentity,
+    /// Only moves recorded as done in a verified marker; a side file whose name was taken
+    /// stays the user's.
+    pub sidecars: Vec<Move>,
+}
+
+/// The ownership evidence of a finished download, from its verified work-folder marker.
+/// Nothing is derived from a path that merely exists: a marker without identities (schema
+/// 1), another media path, a missing or refused marker, or a download that did not publish
+/// gives `Ok(None)`: no evidence, and the entry is then never assumed to own the file.
+///
+/// `Err` is only a marker that could not be read *right now* (held by a scanner or indexer),
+/// which says nothing about ownership. It is tried again a few times first; if it still
+/// cannot be read the caller must not save the entry without evidence, or the download
+/// would lose its proof for good. Blocking.
+pub fn evidence(reference: &WorkspaceRef, job_id: &str, media: &Path) -> io::Result<Option<Evidence>> {
+    evidence_pausing(reference, job_id, media, EVIDENCE_ATTEMPTS, || std::thread::sleep(std::time::Duration::from_millis(100)))
+}
+
+const EVIDENCE_ATTEMPTS: u32 = 5;
+
+/// `evidence` with the number of attempts and the wait between them supplied, so a test can
+/// end a lock exactly there instead of racing the clock.
+fn evidence_pausing(reference: &WorkspaceRef, job_id: &str, media: &Path, attempts: u32, mut pause: impl FnMut()) -> io::Result<Option<Evidence>> {
+    let mut attempt = 1;
+    loop {
+        match read_evidence(reference, job_id, media) {
+            Err(_) if attempt < attempts => {
+                pause();
+                attempt += 1;
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Whether a failure to read a file is the kind that passes (another program holds it, an
+/// unreachable or dropped network volume, a refused access, a retryable system condition) as
+/// opposed to a verdict about the file itself (missing, damaged, not this download's).
+///
+/// The verdicts are the narrow set: Claws' own refusals and parse errors (no OS error at
+/// all) and the system saying the file or folder is not there. Any other OS error is
+/// transient, whatever `ErrorKind` it maps to: a share that blips reports NotFound or
+/// Uncategorized, and taking that for "no evidence" would lose the proof for good.
+fn is_transient(error: &io::Error) -> bool {
+    // 2 and 3: file / path not found; 267 (Windows): the directory name is invalid, i.e. not a folder.
+    matches!(error.kind(), io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) || error.raw_os_error().is_some_and(|code| !matches!(code, 2 | 3 | 267))
+}
+
+fn read_evidence(reference: &WorkspaceRef, job_id: &str, media: &Path) -> io::Result<Option<Evidence>> {
+    let manifest = match verify(reference, job_id) {
+        Ok(manifest) => manifest,
+        Err(e) if is_transient(&e) => return Err(e),
+        Err(_) => return Ok(None),
+    };
+    if manifest.state != Publication::Published || manifest.media().as_deref() != Some(media) {
+        return Ok(None);
+    }
+    let Some(first) = manifest.outputs.first() else { return Ok(None) };
+    let Some(done) = manifest.moves.iter().find(|m| m.relative == *first && m.state == MoveState::Done) else { return Ok(None) };
+    let sidecars = manifest
+        .moves
+        .iter()
+        .filter(|m| m.relative != *first && m.state == MoveState::Done && m.destination != media)
+        .cloned()
+        .collect();
+    Ok(Some(Evidence { identity: done.identity.clone(), sidecars }))
+}
+
+/// Side files a finished download left in its work folder because their names were taken in
+/// the output folder. The only durable pointer to them once the job leaves the Queue: saved
+/// with the Library entry. `sources` are plain paths relative to the work folder (never the
+/// occupied destinations), and they are only ever resolved through a verified work folder.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct KeptFiles {
+    pub workspace: WorkspaceRef,
+    pub sources: Vec<String>,
+}
+
+/// The kept side files of a finished download, from its verified work-folder marker: the
+/// moves recorded as withheld whose files are still there. `media`, when given, must be the
+/// media the marker published. None when nothing is kept or the marker proves nothing.
+pub fn kept_files(reference: &WorkspaceRef, job_id: &str, media: Option<&Path>) -> Option<KeptFiles> {
+    let manifest = verify(reference, job_id).ok()?;
+    if manifest.state != Publication::Published || media.is_some_and(|media| !manifest.media().is_some_and(|published| same_path(&published, media))) {
+        return None;
+    }
+    let sources: Vec<String> = withheld_sources(&manifest).into_iter().map(|(relative, _)| relative).collect();
+    (!sources.is_empty()).then(|| KeptFiles { workspace: reference.clone(), sources })
+}
+
+/// Whether the work folder is a finished download's and still holds a side file it kept back. Such a
+/// folder is the only copy of that file: no cleanup may delete it, whatever became of the job.
+pub fn holds_kept_files(reference: &WorkspaceRef, job_id: &str) -> bool {
+    verify(reference, job_id).is_ok_and(|m| m.state == Publication::Published && !withheld_sources(&m).is_empty())
+}
+
+/// The same path as Windows sees it: letter case and the direction of separators do not matter.
+fn same_path(a: &Path, b: &Path) -> bool {
+    let spelled = |p: &Path| p.to_string_lossy().replace('/', "\\").to_lowercase();
+    spelled(a) == spelled(b)
+}
+
+/// The side files a verified marker records as withheld that are still there as plain files
+/// in the work folder: each relative path with its full path. Never a path the marker does
+/// not record, and never one reached through a link.
+fn withheld_sources(manifest: &Manifest) -> Vec<(String, PathBuf)> {
+    manifest
+        .moves
+        .iter()
+        .filter(|m| m.state == MoveState::Withheld)
+        .filter(|m| plain_below(&manifest.workspace, Path::new(&m.relative)).is_ok())
+        .map(|m| (m.relative.clone(), manifest.workspace.join(&m.relative)))
+        .filter(|(_, path)| fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file() && !is_link(&meta)))
+        .collect()
+}
+
+/// Where kept files can be found now.
+#[derive(Debug, PartialEq, Eq)]
+pub enum KeptState {
+    /// The kept files that exist, as paths inside the verified work folder.
+    Available(Vec<PathBuf>),
+    /// The output folder (or its drive) cannot be reached.
+    Offline,
+    /// The output folder is there but the work folder or its files are not.
+    Missing,
+    /// A folder is there but its marker does not prove it is this download's.
+    Unverified,
+}
+
+/// A work folder found in a known output folder whose marker names a job.
+#[derive(Debug)]
+pub struct Found {
+    pub job_id: String,
+    pub reference: WorkspaceRef,
+}
+
+/// The most work folders looked at in one output folder.
+pub const MAX_WORK_FOLDERS: usize = 512;
+
+/// Lists the work folders directly inside `<output_root>/.claws-work`: no other folder of
+/// the output root is entered. `Ok(vec![])` when there is none. Blocking.
+pub fn work_folders(output_root: &Path, limit: usize) -> io::Result<Vec<Found>> {
+    let work = output_root.join(WORK_DIR);
+    match fs::symlink_metadata(&work) {
+        Ok(meta) if meta.is_dir() && !is_link(&meta) => {}
+        Ok(_) => return Ok(Vec::new()), // a link or a file under that name is nothing of ours
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    }
+    let mut found = Vec::new();
+    // Bounded in the entries looked at, not only in those that match.
+    for entry in fs::read_dir(&work)?.flatten().take(limit.saturating_mul(2)) {
+        if found.len() >= limit {
+            break;
+        }
+        let path = entry.path();
+        if plain_dir(&path).is_err() {
+            continue;
+        }
+        let Ok(manifest) = read_manifest(&path) else { continue };
+        found.push(Found { job_id: manifest.job_id, reference: WorkspaceRef { schema_version: WORKSPACE_REF_SCHEMA, path, attempt: manifest.attempt } });
+    }
+    Ok(found)
+}
+
+/// Resolves `kept` through a verified work folder. Blocking.
+pub fn locate_kept(kept: &KeptFiles, job_id: &str) -> KeptState {
+    let path = &kept.workspace.path;
+    let output_root = path.parent().and_then(Path::parent);
+    if output_root.is_none_or(|root| !root.is_dir()) {
+        return KeptState::Offline;
+    }
+    if !path.exists() {
+        return KeptState::Missing;
+    }
+    let Ok(manifest) = verify(&kept.workspace, job_id) else {
+        return KeptState::Unverified;
+    };
+    // Only what the marker itself records as withheld, whatever the saved list says.
+    let found: Vec<PathBuf> = withheld_sources(&manifest)
+        .into_iter()
+        .filter(|(relative, _)| kept.sources.contains(relative))
+        .map(|(_, path)| path)
+        .collect();
+    if found.is_empty() {
+        KeptState::Missing
+    } else {
+        KeptState::Available(found)
+    }
 }
 
 /// The work folder's name: the first 12 hex digits of the job id, then `-<attempt>` from
@@ -289,6 +631,7 @@ pub fn read_manifest(workspace: &Path) -> io::Result<Manifest> {
 }
 
 pub fn write_manifest(manifest: &Manifest) -> io::Result<()> {
+    require_bound(manifest)?;
     write_json(&marker_path(&manifest.workspace), manifest)
 }
 
@@ -324,12 +667,17 @@ pub fn open_workspace(output_dir: &Path, job_id: &str, attempt: u32) -> io::Resu
         outputs: Vec::new(),
         published: Vec::new(),
         moves: Vec::new(),
+        bound: true,
     };
     write_manifest(&manifest)?;
     Ok((reference, manifest))
 }
 
-/// Proves `reference` is this job's work folder and returns its manifest.
+/// Proves `reference` is this job's work folder and returns its manifest, bound to it: the
+/// marker's `workspace` and `destination_root` must be the very folders the reference
+/// implies (the work folder, and the output folder two levels above it), compared as real
+/// paths, and every output and recorded move must stay a plain relative path below them.
+/// A copied or edited marker is refused, never followed. Blocking (it canonicalizes).
 pub fn verify(reference: &WorkspaceRef, job_id: &str) -> io::Result<Manifest> {
     let path = &reference.path;
     let named_for_job = path.file_name().and_then(|n| n.to_str()) == Some(folder_name(job_id, reference.attempt).as_str());
@@ -340,11 +688,57 @@ pub fn verify(reference: &WorkspaceRef, job_id: &str) -> io::Result<Manifest> {
     }
     plain_dir(parent)?;
     plain_dir(path)?;
-    let manifest = read_manifest(path)?;
-    if manifest.job_id != job_id || manifest.attempt != reference.attempt || manifest.schema_version > MANIFEST_SCHEMA {
+    let mut manifest = read_manifest(path)?;
+    let supported = (1..=MANIFEST_SCHEMA).contains(&manifest.schema_version);
+    if manifest.job_id != job_id || manifest.attempt != reference.attempt || !supported {
         return Err(io::Error::other(format!("{} belongs to another download", path.display())));
     }
+    let output_root = parent.parent().ok_or_else(|| io::Error::other("work folder has no output folder"))?;
+    let same_folder = |claimed: &Path, expected: &Path| -> io::Result<bool> { Ok(fs::canonicalize(claimed)? == fs::canonicalize(expected)?) };
+    if !same_folder(&manifest.workspace, path)? || !same_folder(&manifest.destination_root, output_root)? {
+        return Err(io::Error::other(format!("{} names folders that are not this download's", marker_path(path).display())));
+    }
+    for relative in &manifest.outputs {
+        destination(&manifest.destination_root, Path::new(relative))?;
+    }
+    for entry in &manifest.moves {
+        if entry.destination != destination(&manifest.destination_root, Path::new(&entry.relative))? {
+            return Err(io::Error::other(format!("{} records a file outside the output folder", marker_path(path).display())));
+        }
+    }
+    // Proven equal as real paths; from here on use the folders the reference implies, not
+    // the marker's spelling of them (a link could be retargeted after this check).
+    manifest.workspace = path.clone();
+    manifest.destination_root = output_root.to_path_buf();
+    for entry in &mut manifest.moves {
+        entry.destination = destination(&manifest.destination_root, Path::new(&entry.relative))?;
+    }
+    manifest.bound = true;
     Ok(manifest)
+}
+
+/// Fails if an existing folder on the way from `root` to the parent of `relative` is a
+/// link or junction, which could send a move somewhere else.
+fn plain_below(root: &Path, relative: &Path) -> io::Result<()> {
+    let mut current = root.to_path_buf();
+    for part in relative.parent().unwrap_or(Path::new("")).components() {
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.is_dir() && !is_link(&meta) => {}
+            Ok(_) => return Err(io::Error::other(format!("{} is not a plain folder", current.display()))),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+fn require_bound(manifest: &Manifest) -> io::Result<()> {
+    if manifest.bound {
+        Ok(())
+    } else {
+        Err(io::Error::other("the download's marker was not verified against its folders"))
+    }
 }
 
 /// The path of a tool-reported file relative to the work folder, if it is really inside.
@@ -424,6 +818,9 @@ pub struct Published {
     /// Side files that could not be published (a name already taken); still in the work
     /// folder, which is then kept.
     pub skipped: Vec<PathBuf>,
+    /// The part of `skipped` that is recorded in the marker as withheld, so a Library record
+    /// can point at it. The rest has no way back to it.
+    pub kept: Vec<PathBuf>,
 }
 
 /// Publishes the manifest's outputs. Each move's intent and file identity are saved before
@@ -432,11 +829,13 @@ pub struct Published {
 /// must publish; a side file whose name is taken is `Withheld`. `reserve` claims a
 /// destination against other jobs and returns false when another job holds it.
 pub fn publish(manifest: &mut Manifest, reserve: &mut dyn FnMut(&Path) -> bool) -> io::Result<Published> {
+    require_bound(manifest)?;
     if manifest.state == Publication::Ready {
         manifest.state = Publication::Publishing;
         write_manifest(manifest)?;
     }
     let mut skipped = Vec::new();
+    let mut kept = Vec::new();
     for (index, relative) in manifest.outputs.clone().iter().enumerate() {
         let media = index == 0;
         let target = destination(&manifest.destination_root, Path::new(relative))?;
@@ -470,6 +869,14 @@ pub fn publish(manifest: &mut Manifest, reserve: &mut dyn FnMut(&Path) -> bool) 
             skipped.push(target);
             continue;
         }
+        // A link or junction between the roots and the file would send the move elsewhere.
+        if let Err(e) = plain_below(&manifest.destination_root, Path::new(relative)).and_then(|()| plain_below(&manifest.workspace, Path::new(relative))) {
+            if media {
+                return Err(e);
+            }
+            skipped.push(target);
+            continue;
+        }
         if !source.is_file() {
             let missing = io::Error::new(io::ErrorKind::NotFound, format!("the finished file {} is missing from the download's work folder", source.display()));
             if media {
@@ -496,6 +903,7 @@ pub fn publish(manifest: &mut Manifest, reserve: &mut dyn FnMut(&Path) -> bool) 
             Err(_) => {
                 manifest.set_state(relative, MoveState::Withheld);
                 write_manifest(manifest)?;
+                kept.push(target.clone());
                 skipped.push(target);
             }
         }
@@ -505,7 +913,7 @@ pub fn publish(manifest: &mut Manifest, reserve: &mut dyn FnMut(&Path) -> bool) 
     let media = manifest.media().ok_or_else(|| io::Error::other("nothing to publish"))?;
     manifest.state = Publication::Published;
     write_manifest(manifest)?;
-    Ok(Published { media, skipped })
+    Ok(Published { media, skipped, kept })
 }
 
 /// Deletes a verified work folder. Retries while Windows still holds handles of a killed
@@ -770,8 +1178,9 @@ mod tests {
         move_no_replace(&source, &target).unwrap();
     }
 
+    /// The marker as the next start finds it: read from disk and verified against its folders.
     fn reopen(manifest: &Manifest) -> Manifest {
-        read_manifest(&manifest.workspace).unwrap()
+        verify(&reference_of(manifest), &manifest.job_id).unwrap()
     }
 
     #[test]
@@ -942,4 +1351,521 @@ mod tests {
         let _ = fs::remove_dir_all(out);
     }
 
+    // ---- Verified roots --------------------------------------------------------------------
+
+    /// Rewrites fields of a workspace's marker the way a copied or edited marker would.
+    fn alter_marker(workspace: &Path, change: impl FnOnce(&mut serde_json::Value)) {
+        let mut marker: serde_json::Value = serde_json::from_slice(&fs::read(marker_path(workspace)).unwrap()).unwrap();
+        change(&mut marker);
+        fs::write(marker_path(workspace), serde_json::to_vec(&marker).unwrap()).unwrap();
+    }
+
+    fn reference_of(manifest: &Manifest) -> WorkspaceRef {
+        WorkspaceRef { schema_version: WORKSPACE_REF_SCHEMA, path: manifest.workspace.clone(), attempt: manifest.attempt }
+    }
+
+    /// Verifies the workspace and tries to publish with whatever the marker now says.
+    fn verify_then_publish(manifest: &Manifest) -> io::Result<()> {
+        verify(&reference_of(manifest), &manifest.job_id).and_then(|mut m| publish(&mut m, &mut |_| true).map(|_| ()))
+    }
+
+    #[test]
+    fn a_marker_naming_another_destination_root_publishes_nothing_outside() {
+        let (out, manifest) = ready("bind-destination", false);
+        let outside = temp_dir("bind-outside");
+        let sentinel = outside.join("sentinel.txt");
+        fs::write(&sentinel, b"keep").unwrap();
+        alter_marker(&manifest.workspace, |m| m["destinationRoot"] = serde_json::to_value(&outside).unwrap());
+        assert!(verify_then_publish(&manifest).is_err());
+        assert_eq!(names(&outside), vec!["sentinel.txt"], "something was published outside the owned roots");
+        assert_eq!(fs::read(&sentinel).unwrap(), b"keep");
+        assert!(manifest.workspace.join("clip.mp4").is_file(), "the finished file must stay in the work folder");
+        let _ = fs::remove_dir_all(out);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn a_marker_naming_another_workspace_is_refused_and_nothing_moves() {
+        let (out, manifest) = ready("bind-workspace", false);
+        // Another job's folder, holding a file the altered marker would publish.
+        let (other, _) = open_workspace(&out, &id(), 0).unwrap();
+        fs::write(other.path.join("clip.mp4"), b"theirs").unwrap();
+        alter_marker(&manifest.workspace, |m| m["workspace"] = serde_json::to_value(&other.path).unwrap());
+        assert!(verify_then_publish(&manifest).is_err());
+        assert_eq!(fs::read(other.path.join("clip.mp4")).unwrap(), b"theirs", "another job's file was moved");
+        assert!(!out.join("clip.mp4").exists());
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn altered_output_paths_are_refused_before_anything_moves() {
+        for bad in ["../../victim.mp4", "..\\..\\victim.mp4", "sub/../../victim.mp4", "C:\\Windows\\victim.mp4", "/victim.mp4", ""] {
+            let (out, manifest) = ready("bind-output", false);
+            fs::write(out.join("victim.mp4"), b"keep").unwrap();
+            alter_marker(&manifest.workspace, |m| m["outputs"] = serde_json::json!(["clip.mp4", bad]));
+            assert!(verify_then_publish(&manifest).is_err(), "{bad:?}");
+            assert_eq!(fs::read(out.join("victim.mp4")).unwrap(), b"keep", "{bad:?}");
+            assert!(manifest.workspace.join("clip.mp4").is_file(), "{bad:?} moved the media anyway");
+            let _ = fs::remove_dir_all(out);
+        }
+    }
+
+    #[test]
+    fn a_recorded_move_cannot_name_a_destination_outside_the_owned_roots() {
+        let (out, mut manifest) = ready("bind-move", false);
+        publish(&mut manifest, &mut |_| true).unwrap();
+        let outside = temp_dir("bind-move-outside");
+        let victim = outside.join("clip.mp4");
+        fs::write(&victim, b"unrelated").unwrap();
+        alter_marker(&manifest.workspace, |m| m["moves"][0]["destination"] = serde_json::to_value(&victim).unwrap());
+        assert!(verify(&reference_of(&manifest), &manifest.job_id).is_err(), "a move journal pointing outside was trusted");
+        assert_eq!(fs::read(&victim).unwrap(), b"unrelated");
+        let _ = fs::remove_dir_all(out);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn unsupported_marker_schemas_are_refused() {
+        for schema in [0u64, 3, 99] {
+            let (out, manifest) = ready("bind-schema", false);
+            alter_marker(&manifest.workspace, |m| m["schemaVersion"] = schema.into());
+            assert!(verify(&reference_of(&manifest), &manifest.job_id).is_err(), "schema {schema}");
+            let _ = fs::remove_dir_all(out);
+        }
+    }
+
+    #[test]
+    fn a_manifest_that_was_not_verified_cannot_be_written_or_published() {
+        let (out, manifest) = ready("bind-unverified", false);
+        // Read straight from disk: nothing has proven its roots.
+        let mut raw = read_manifest(&manifest.workspace).unwrap();
+        assert!(write_manifest(&raw).is_err());
+        assert!(publish(&mut raw, &mut |_| true).is_err());
+        assert!(manifest.workspace.join("clip.mp4").is_file());
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[cfg(windows)]
+    fn junction(link: &Path, target: &Path) -> bool {
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J", &link.to_string_lossy(), &target.to_string_lossy()])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_inside_the_destination_cannot_redirect_publication() {
+        let (out, mut manifest) = ready("bind-junction", false);
+        let outside = temp_dir("bind-junction-outside");
+        if junction(&out.join("Channel"), &outside) {
+            fs::create_dir_all(manifest.workspace.join("Channel")).unwrap();
+            fs::write(manifest.workspace.join("Channel").join("clip.mp4"), b"media").unwrap();
+            manifest.outputs = vec!["Channel/clip.mp4".into()];
+            assert!(publish(&mut manifest, &mut |_| true).is_err());
+            assert!(names(&outside).is_empty(), "published through a junction: {:?}", names(&outside));
+        }
+        let _ = fs::remove_dir_all(out);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_work_folder_reached_through_a_junction_is_not_adopted() {
+        let out = temp_dir("bind-link-ws");
+        let real = temp_dir("bind-link-real");
+        let job = id();
+        let (reference, _) = open_workspace(&real, &job, 0).unwrap();
+        fs::create_dir_all(out.join(WORK_DIR)).unwrap();
+        // `<out>/.claws-work/<name>` is a junction to the real work folder.
+        let link = workspace_path(&out, &job, 0);
+        if junction(&link, &reference.path) {
+            let forged = WorkspaceRef { schema_version: 1, path: link, attempt: 0 };
+            assert!(verify(&forged, &job).is_err());
+        }
+        let _ = fs::remove_dir_all(out);
+        let _ = fs::remove_dir_all(real);
+    }
+
+    #[test]
+    fn an_output_folder_given_in_another_spelling_still_verifies() {
+        let out = temp_dir("bind-spelling");
+        let job = id();
+        let (reference, manifest) = open_workspace(&out, &job, 0).unwrap();
+        // The same folder spelled with a detour and mixed separators.
+        let detour = out.join("sub").join("..");
+        fs::create_dir_all(out.join("sub")).unwrap();
+        alter_marker(&reference.path, |m| m["destinationRoot"] = serde_json::to_value(&detour).unwrap());
+        let verified = verify(&reference, &job).expect("the same folder is still the same folder");
+        assert_eq!(verified.workspace, manifest.workspace);
+        assert_eq!(verified.destination_root, out, "publication must use the folder derived from the reference, not the marker's spelling");
+        let _ = fs::remove_dir_all(out);
+    }
+
+    // ---- Evidence and verified deletion ---------------------------------------------------
+
+    #[test]
+    fn publication_evidence_holds_the_media_identity_and_only_done_sidecars() {
+        let (out, mut manifest) = ready("evidence", true);
+        fs::write(out.join("clip.en.srt"), b"user's own").unwrap(); // conflicts: withheld
+        manifest.outputs.push("clip.es.srt".into());
+        fs::write(manifest.workspace.join("clip.es.srt"), b"hola").unwrap();
+        let media_identity = identify(&manifest.workspace.join("clip.mp4")).unwrap();
+        publish(&mut manifest, &mut |_| true).unwrap();
+        let found = evidence(&reference_of(&manifest), &manifest.job_id, &out.join("clip.mp4")).unwrap().expect("evidence for a published download");
+        assert_eq!(found.identity, media_identity);
+        let sidecars: Vec<_> = found.sidecars.iter().map(|m| m.destination.clone()).collect();
+        assert_eq!(sidecars, vec![out.join("clip.es.srt")], "a withheld or taken side file is not ours");
+        assert!(found.sidecars.iter().all(|m| m.state == MoveState::Done));
+        // Another file than the published media gets no evidence.
+        assert!(evidence(&reference_of(&manifest), &manifest.job_id, &out.join("other.mp4")).unwrap().is_none());
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn publication_evidence_is_refused_for_old_markers_and_unfinished_downloads() {
+        // Schema 1: published paths only, no identity to prove ownership with.
+        let (out, mut manifest) = ready("evidence-v1", false);
+        move_no_replace(&manifest.workspace.join("clip.mp4"), &out.join("clip.mp4")).unwrap();
+        manifest.state = Publication::Published;
+        manifest.published = vec![out.join("clip.mp4")];
+        write_manifest(&manifest).unwrap();
+        assert!(evidence(&reference_of(&manifest), &manifest.job_id, &out.join("clip.mp4")).unwrap().is_none());
+        let _ = fs::remove_dir_all(out);
+
+        let (out, manifest) = ready("evidence-unfinished", false);
+        assert!(evidence(&reference_of(&manifest), &manifest.job_id, &out.join("clip.mp4")).unwrap().is_none());
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[cfg(windows)]
+    mod evidence_reads {
+        use super::*;
+        use std::cell::{Cell, RefCell};
+        use std::os::windows::fs::OpenOptionsExt;
+
+        /// A published download, and its marker held by another program (nothing may share it).
+        fn held_marker(tag: &str) -> (PathBuf, Manifest, RefCell<Option<fs::File>>) {
+            let (out, mut manifest) = ready(tag, false);
+            publish(&mut manifest, &mut |_| true).unwrap();
+            let held = fs::OpenOptions::new().read(true).share_mode(0).open(marker_path(&manifest.workspace)).unwrap();
+            (out, manifest, RefCell::new(Some(held)))
+        }
+
+        #[test]
+        fn a_marker_held_for_a_moment_still_gives_its_evidence() {
+            let (out, manifest, held) = held_marker("evidence-brief-lock");
+            let identity = identify(&out.join("clip.mp4")).unwrap();
+            let pauses = Cell::new(0);
+            let found = evidence_pausing(&reference_of(&manifest), &manifest.job_id, &out.join("clip.mp4"), 5, || {
+                pauses.set(pauses.get() + 1);
+                held.borrow_mut().take(); // the other program lets go during the first wait
+            });
+            // Not a download without evidence: the proof was there, only unreadable for a moment.
+            let found = found.expect("a briefly held marker is retried").expect("the marker proves the download");
+            assert_eq!(found.identity, identity);
+            assert_eq!(pauses.get(), 1);
+            let _ = fs::remove_dir_all(out);
+        }
+
+        #[test]
+        fn a_marker_that_stays_unreadable_is_an_error_not_a_download_without_evidence() {
+            let (out, manifest, held) = held_marker("evidence-stuck-lock");
+            let pauses = Cell::new(0);
+            let outcome = evidence_pausing(&reference_of(&manifest), &manifest.job_id, &out.join("clip.mp4"), 4, || pauses.set(pauses.get() + 1));
+            assert!(outcome.is_err(), "an unreadable marker became 'no evidence'");
+            assert_eq!(pauses.get(), 3, "bounded: three waits between four attempts");
+            held.borrow_mut().take();
+            // Readable again, the same call proves the download.
+            assert!(evidence(&reference_of(&manifest), &manifest.job_id, &out.join("clip.mp4")).unwrap().is_some());
+            let _ = fs::remove_dir_all(out);
+        }
+
+        #[test]
+        fn a_network_volume_that_blips_is_a_marker_that_cannot_be_read_not_one_that_is_missing() {
+            // Windows reports these for a share that is unreachable or dropped mid-read; some
+            // of them read as NotFound or Uncategorized, none says anything about ownership.
+            for code in [21, 53, 59, 64, 67, 1167, 1224, 32, 33, 5] {
+                assert!(is_transient(&io::Error::from_raw_os_error(code)), "os error {code} was taken for a verdict about the marker");
+            }
+            // A marker or folder that is really missing, and Claws' own verdicts, are not retried.
+            for code in [2, 3, 267] {
+                assert!(!is_transient(&io::Error::from_raw_os_error(code)), "os error {code} is a missing file or folder");
+            }
+            assert!(!is_transient(&io::Error::other("belongs to another download")));
+            assert!(!is_transient(&io::Error::new(io::ErrorKind::InvalidData, "not a marker")));
+        }
+
+        #[test]
+        fn a_missing_or_refused_marker_is_no_evidence_and_is_not_retried() {
+            let (out, manifest) = ready("evidence-no-retry", false);
+            let reference = reference_of(&manifest);
+            let pauses = Cell::new(0);
+            let mut count = || pauses.set(pauses.get() + 1);
+            // No marker at all (a download of an old version).
+            fs::remove_file(marker_path(&manifest.workspace)).unwrap();
+            assert!(evidence_pausing(&reference, &manifest.job_id, &out.join("clip.mp4"), 5, &mut count).unwrap().is_none());
+            // A marker that is not this download's.
+            fs::write(marker_path(&manifest.workspace), b"{ not a marker").unwrap();
+            assert!(evidence_pausing(&reference, &manifest.job_id, &out.join("clip.mp4"), 5, &mut count).unwrap().is_none());
+            assert!(evidence_pausing(&reference, "another-job", &out.join("clip.mp4"), 5, &mut count).unwrap().is_none());
+            assert_eq!(pauses.get(), 0, "a verdict about the marker was retried as if it were a lock");
+            let _ = fs::remove_dir_all(out);
+        }
+    }
+
+    // ---- Kept side files ------------------------------------------------------------------
+
+    /// A published download whose `clip.en.srt` was taken by the user's own file.
+    fn withheld_set(tag: &str) -> (PathBuf, Manifest, WorkspaceRef) {
+        let (out, mut manifest) = ready(tag, true);
+        fs::write(out.join("clip.en.srt"), b"user's own").unwrap();
+        publish(&mut manifest, &mut |_| true).unwrap();
+        let reference = reference_of(&manifest);
+        (out, manifest, reference)
+    }
+
+    #[test]
+    fn kept_files_name_the_withheld_sources_in_the_work_folder_not_the_taken_destinations() {
+        let (out, manifest, reference) = withheld_set("kept-sources");
+        let kept = kept_files(&reference, &manifest.job_id, Some(&out.join("clip.mp4"))).expect("a withheld side file is kept");
+        assert_eq!(kept.sources, ["clip.en.srt"]);
+        assert_eq!(kept.workspace, reference);
+        assert_eq!(fs::read(reference.path.join("clip.en.srt")).unwrap(), b"subs", "the retained copy");
+        assert_eq!(fs::read(out.join("clip.en.srt")).unwrap(), b"user's own", "the user's file");
+
+        // A download whose side files were all published keeps nothing.
+        let (out2, manifest2) = ready("kept-none", true);
+        let mut manifest2 = manifest2;
+        publish(&mut manifest2, &mut |_| true).unwrap();
+        assert!(kept_files(&reference_of(&manifest2), &manifest2.job_id, Some(&out2.join("clip.mp4"))).is_none());
+        // Not for another media file, not for an unfinished download, not without the file.
+        assert!(kept_files(&reference, &manifest.job_id, Some(&out.join("other.mp4"))).is_none());
+        fs::remove_file(reference.path.join("clip.en.srt")).unwrap();
+        assert!(kept_files(&reference, &manifest.job_id, Some(&out.join("clip.mp4"))).is_none(), "a file that is gone is not kept");
+        let _ = fs::remove_dir_all(out);
+        let _ = fs::remove_dir_all(out2);
+    }
+
+    #[test]
+    fn kept_files_are_only_those_of_a_download_that_finished_publishing() {
+        let (out, mut manifest, reference) = withheld_set("kept-unfinished");
+        let media = out.join("clip.mp4");
+        assert!(kept_files(&reference, &manifest.job_id, Some(&media)).is_some());
+        for state in [Publication::Publishing, Publication::Ready] {
+            manifest.state = state;
+            write_manifest(&manifest).unwrap();
+            assert!(kept_files(&reference, &manifest.job_id, Some(&media)).is_none(), "{state:?} is not finished");
+        }
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn the_media_is_matched_by_path_the_way_windows_does() {
+        let (out, manifest, reference) = withheld_set("kept-case");
+        let spelled_differently = PathBuf::from(out.join("clip.mp4").to_string_lossy().to_uppercase().replace('\\', "/"));
+        assert_ne!(spelled_differently, out.join("clip.mp4"));
+        let kept = kept_files(&reference, &manifest.job_id, Some(&spelled_differently));
+        assert_eq!(kept.map(|k| k.sources), Some(vec!["clip.en.srt".to_string()]), "the same file in another spelling");
+        assert!(kept_files(&reference, &manifest.job_id, Some(&out.join("clip2.mp4"))).is_none(), "another file is still another file");
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn publishing_says_which_skipped_side_files_have_a_way_back() {
+        let (out, mut manifest) = ready("kept-subset", true);
+        // Taken by the user's own file: recorded as withheld, so it can be found again.
+        fs::write(out.join("clip.en.srt"), b"user's own").unwrap();
+        // Its source is gone: skipped, and nothing is left to keep.
+        manifest.outputs.push("clip.es.srt".into());
+        let done = publish(&mut manifest, &mut |_| true).unwrap();
+        assert_eq!(done.skipped, vec![out.join("clip.en.srt"), out.join("clip.es.srt")]);
+        assert_eq!(done.kept, vec![out.join("clip.en.srt")]);
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn kept_files_are_not_taken_from_a_marker_that_is_not_this_downloads() {
+        let (out, manifest, reference) = withheld_set("kept-forged");
+        alter_marker(&reference.path, |m| m["destinationRoot"] = serde_json::json!(std::env::temp_dir()));
+        assert!(kept_files(&reference, &manifest.job_id, None).is_none());
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn kept_files_are_found_through_the_verified_folder_and_say_why_when_they_are_not() {
+        let (out, manifest, reference) = withheld_set("kept-locate");
+        let job = manifest.job_id.clone();
+        let kept = kept_files(&reference, &job, None).unwrap();
+        assert_eq!(locate_kept(&kept, &job), KeptState::Available(vec![reference.path.join("clip.en.srt")]));
+
+        // A source the marker does not record as withheld is not offered, whatever the Library says.
+        let wandering = KeptFiles { sources: vec!["clip.en.srt".into(), MARKER.into(), "../../clip.mp4".into(), "clip.mp4".into()], ..kept.clone() };
+        assert_eq!(locate_kept(&wandering, &job), KeptState::Available(vec![reference.path.join("clip.en.srt")]));
+        // Another job's id never opens this folder.
+        assert_eq!(locate_kept(&kept, &id()), KeptState::Unverified);
+        let mut elsewhere = kept.clone();
+        elsewhere.workspace.path = out.join(WORK_DIR).join("not-a-job-folder");
+        assert_eq!(locate_kept(&elsewhere, &job), KeptState::Missing, "the output folder is there; that folder is not");
+
+        fs::remove_file(reference.path.join("clip.en.srt")).unwrap();
+        assert_eq!(locate_kept(&kept, &job), KeptState::Missing, "the work folder is there, the file is not");
+        remove_workspace(&reference, &job).unwrap();
+        assert_eq!(locate_kept(&kept, &job), KeptState::Missing, "the work folder is gone");
+        let offline = out.join("drive-that-went-away");
+        let mut gone = kept.clone();
+        gone.workspace.path = offline.join(WORK_DIR).join(folder_name(&job, 0));
+        assert_eq!(locate_kept(&gone, &job), KeptState::Offline, "the output folder cannot be reached");
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn a_marker_naming_another_job_is_unverified_not_missing() {
+        let (out, manifest, reference) = withheld_set("kept-unverified");
+        let kept = kept_files(&reference, &manifest.job_id, None).unwrap();
+        alter_marker(&reference.path, |m| m["jobId"] = serde_json::json!(id()));
+        assert_eq!(locate_kept(&kept, &manifest.job_id), KeptState::Unverified);
+        assert_eq!(fs::read(reference.path.join("clip.en.srt")).unwrap(), b"subs", "nothing was touched");
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn the_work_folder_listing_enters_nothing_but_the_work_dir_and_is_bounded() {
+        let out = temp_dir("listing");
+        assert!(work_folders(&out, 10).unwrap().is_empty(), "no work dir is not an error");
+        let jobs: Vec<String> = (0..4).map(|_| id()).collect();
+        for job in &jobs {
+            open_workspace(&out, job, 0).unwrap();
+        }
+        // Other folders of the output folder, and stray files in the work dir, are not visited.
+        fs::create_dir_all(out.join("Music").join(WORK_DIR)).unwrap();
+        fs::write(out.join(WORK_DIR).join("notes.txt"), b"x").unwrap();
+        let found = work_folders(&out, 10).unwrap();
+        let mut ids: Vec<&str> = found.iter().map(|f| f.job_id.as_str()).collect();
+        ids.sort_unstable();
+        let mut expected: Vec<&str> = jobs.iter().map(String::as_str).collect();
+        expected.sort_unstable();
+        assert_eq!(ids, expected);
+        assert_eq!(work_folders(&out, 2).unwrap().len(), 2, "bounded");
+        // A folder whose marker names another job than its own name does is still listed
+        // (the caller verifies); one without a marker is not.
+        fs::create_dir_all(out.join(WORK_DIR).join("deadbeef")).unwrap();
+        assert_eq!(work_folders(&out, 10).unwrap().len(), 4);
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[cfg(windows)]
+    mod verified_deletion {
+        use super::*;
+        use std::os::windows::fs::OpenOptionsExt;
+
+        fn file(tag: &str, bytes: &[u8]) -> (PathBuf, PathBuf, FileIdentity) {
+            let dir = temp_dir(tag);
+            let path = dir.join("clip.mp4");
+            fs::write(&path, bytes).unwrap();
+            let identity = identify(&path).unwrap();
+            (dir, path, identity)
+        }
+
+        #[test]
+        fn the_verified_file_is_deleted_and_a_missing_one_is_not_an_error() {
+            let (dir, path, identity) = file("rm-ok", b"media");
+            assert_eq!(remove_verified(&path, &identity).unwrap(), Removal::Deleted);
+            assert!(!path.exists());
+            assert_eq!(remove_verified(&path, &identity).unwrap(), Removal::Missing);
+            let _ = fs::remove_dir_all(dir);
+        }
+
+        #[test]
+        fn a_replacement_with_the_same_name_and_size_is_never_deleted() {
+            let (dir, path, identity) = file("rm-replaced", b"media");
+            fs::rename(&path, dir.join("original.mp4")).unwrap();
+            fs::write(&path, b"MEDIA").unwrap(); // same name, same size, other file
+            assert!(matches!(remove_verified(&path, &identity), Err(RemoveError::Replaced)));
+            assert_eq!(fs::read(&path).unwrap(), b"MEDIA");
+            // Even byte-identical content is another file when the identity is a file id.
+            fs::write(dir.join("copy.mp4"), b"media").unwrap();
+            fs::remove_file(&path).unwrap();
+            fs::rename(dir.join("copy.mp4"), &path).unwrap();
+            assert!(matches!(remove_verified(&path, &identity), Err(RemoveError::Replaced)));
+            assert_eq!(fs::read(&path).unwrap(), b"media");
+            let _ = fs::remove_dir_all(dir);
+        }
+
+        #[test]
+        fn a_swap_between_verification_and_deletion_deletes_only_the_verified_object() {
+            let (dir, path, identity) = file("rm-race", b"media");
+            let moved = dir.join("moved.mp4");
+            let (path_for_swap, moved_for_swap) = (path.clone(), moved.clone());
+            let mut swap = move || {
+                // The user moves the original away and a new file takes its place.
+                fs::rename(&path_for_swap, &moved_for_swap).unwrap();
+                fs::write(&path_for_swap, b"replacement").unwrap();
+            };
+            assert_eq!(remove_verified_with(&path, &identity, &mut swap).unwrap(), Removal::Deleted);
+            assert_eq!(fs::read(&path).unwrap(), b"replacement", "the replacement was deleted as if it were the download");
+            assert!(!moved.exists(), "the verified object was not the one deleted");
+            let _ = fs::remove_dir_all(dir);
+        }
+
+        #[test]
+        fn a_read_only_download_is_still_deleted() {
+            let (dir, path, identity) = file("rm-readonly", b"media");
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&path, permissions).unwrap();
+            let outcome = remove_verified(&path, &identity);
+            if path.exists() {
+                let mut permissions = fs::metadata(&path).unwrap().permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                permissions.set_readonly(false);
+                fs::set_permissions(&path, permissions).unwrap();
+            }
+            assert_eq!(outcome.unwrap(), Removal::Deleted);
+            assert!(!path.exists(), "a read-only download could not be deleted");
+            let _ = fs::remove_dir_all(dir);
+        }
+
+        #[test]
+        fn a_locked_file_is_reported_and_kept() {
+            let (dir, path, identity) = file("rm-locked", b"media");
+            let held = fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+            assert!(matches!(remove_verified(&path, &identity), Err(RemoveError::Io(_))));
+            drop(held);
+            assert_eq!(fs::read(&path).unwrap(), b"media");
+            assert_eq!(remove_verified(&path, &identity).unwrap(), Removal::Deleted);
+            let _ = fs::remove_dir_all(dir);
+        }
+
+        #[test]
+        fn an_identity_that_could_not_be_read_is_not_reported_as_a_file_in_use() {
+            assert!(identity_verdict(Ok(true)).is_ok());
+            assert!(matches!(identity_verdict(Ok(false)), Err(RemoveError::Replaced)));
+            // The file opened (so it is not in use), but its file id or content could not be read.
+            let failed = identity_verdict(Err(io::Error::other("the file id could not be read")));
+            assert!(matches!(failed, Err(RemoveError::Unverifiable(_))), "{failed:?}");
+            assert!(failed.unwrap_err().to_string().contains("identity could not be read"));
+        }
+
+        #[test]
+        fn a_content_identity_is_hashed_from_the_open_file() {
+            let (dir, path, _) = file("rm-content", b"media");
+            let content = content_identity(&path).unwrap();
+            fs::write(&path, b"other").unwrap();
+            assert!(matches!(remove_verified(&path, &content), Err(RemoveError::Replaced)));
+            fs::write(&path, b"media").unwrap();
+            assert_eq!(remove_verified(&path, &content).unwrap(), Removal::Deleted);
+            let _ = fs::remove_dir_all(dir);
+        }
+
+        #[test]
+        fn a_folder_or_a_link_at_the_path_is_not_a_deletable_download() {
+            let (dir, path, identity) = file("rm-folder", b"media");
+            fs::remove_file(&path).unwrap();
+            fs::create_dir(&path).unwrap();
+            assert!(remove_verified(&path, &identity).is_err());
+            assert!(path.is_dir());
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
 }

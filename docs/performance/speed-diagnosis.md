@@ -112,3 +112,7 @@ To finish the diagnosis, the source is needed: the link (or site), the quality c
 and the speed seen. Then: `yt-dlp -F <link>` shows its protocols (plain HTTP vs HLS/DASH),
 and timing a standalone yt-dlp download with Claws' arguments, against the same file in
 Claws, shows whether Claws adds anything.
+
+## 2026-11-09 status: evidence-blocked
+
+No affected URL or site was supplied, so W0 of the consolidated plan was not run and **no download-speed improvement is claimed**. The 2026-11-09 source changes (late-progress state fix, disk sampling off the async workers, a single processing policy that now also skips cover-art embedding under Fast Save) reduce UI work and optional postprocessing passes; they are not evidence of higher network throughput. Needed to continue: the link or site, the quality chosen and the speed seen (see above).

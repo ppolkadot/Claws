@@ -1,6 +1,6 @@
 [package]
 name = "claws"
-version = "1.1.0"
+version = "1.0.0"
 description = "Local video downloader with a liquid-glass interface"
 edition = "2021"
 rust-version = "1.85"
@@ -28,7 +28,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }
-# The exact path form drag 2.1.1 gives the Shell (it canonicalizes with dunce).
+# Canonicalize downloaded locations before preparing Windows Shell parsing names.
 dunce = "1.0.5"
 futures-util = "0.3.34"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream", "json"] }
@@ -60,6 +60,6 @@ panic = "abort"
 strip = true
 
 [target."cfg(windows)".dependencies]
-drag = "=2.1.1"
-windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Storage_FileSystem", "Win32_UI_Controls", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Storage_FileSystem", "Win32_UI_Controls", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_System_Ole", "Win32_System_SystemServices"] }
+windows-core = "=0.61.2"
 
