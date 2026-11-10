@@ -1,5 +1,7 @@
 # Code Review Findings (F1–F13) Implementation Plan
 
+> Historical implementation specification, superseded by the [consolidated review disposition](2026-11-09-consolidated-review-report-and-implementation-plan.md). Unchecked steps are not evidence that a fix is still missing. See [current status](../../CURRENT_DEVELOPMENT_STATUS.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Resolve all 13 correctness, robustness, accessibility, and maintainability findings recorded in `docs/REVIEW_FINDINGS_2026-11-08.md` with full unit and lifecycle test coverage.

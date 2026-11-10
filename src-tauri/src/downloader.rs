@@ -352,7 +352,6 @@ async fn flush_queue_async(app: &AppHandle) -> Result<()> {
     tokio::task::spawn_blocking(move || flush_queue(&app)).await.map_err(queue_save_error)?
 }
 
-/// The queue writer, saving `queue_snapshot` to queue.json.
 pub fn start_queue_writer(app: &AppHandle) -> crate::queue_writer::QueueWriter {
     let writer_app = app.clone();
     let report_app = app.clone();
@@ -1147,7 +1146,6 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
     outcome
 }
 
-/// The rest of a run, once its settings are frozen and its work folder is open and saved.
 #[allow(clippy::too_many_arguments)]
 async fn run_prepared(
     app: &AppHandle,

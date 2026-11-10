@@ -18,7 +18,6 @@ export interface SpotifyMatchView {
   dispose(): void;
 }
 
-/** Trimmed, de-duplicated texts in first-seen order. */
 function distinct(texts: readonly (string | null | undefined)[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -45,11 +44,7 @@ function statusText(state: SpotifyMatchState): string {
   }
 }
 
-/**
- * Builds the panel once; `update` changes it in place. The query field is never replaced,
- * so focus, the caret and an input-method composition survive every state change. Metadata
- * is always set as text, and choosing a candidate never starts a download.
- */
+/** Keep the query field mounted so focus, caret and IME composition survive updates. */
 export function mountSpotifyMatch(actions: SpotifyMatchActions): SpotifyMatchView {
   let composing = false;
   let disposed = false;
@@ -70,7 +65,6 @@ export function mountSpotifyMatch(actions: SpotifyMatchActions): SpotifyMatchVie
   const confirmHost = h("div", { class: "spotify-match-action" });
   const confirmedHost = h("div", { class: "spotify-confirmed-host" });
   const radios: HTMLInputElement[] = [];
-  /** Present in the page only while `on`, so it is also absent for assistive technology. */
   const present = (host: HTMLElement, node: HTMLElement, on: boolean) => {
     if (on && node.parentNode !== host) host.appendChild(node);
     else if (!on && node.parentNode === host) host.removeChild(node);
@@ -180,7 +174,6 @@ export function mountSpotifyMatch(actions: SpotifyMatchActions): SpotifyMatchVie
   return { el, update, dispose() { disposed = true; } };
 }
 
-/** One-shot render, for callers (and tests) that do not keep the panel. */
 export function renderSpotifyMatch(state: SpotifyMatchState, actions: SpotifyMatchActions): HTMLElement {
   const view = mountSpotifyMatch(actions);
   view.update(state);

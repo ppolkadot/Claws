@@ -654,7 +654,6 @@ mod tests {
         assert_eq!(found[0].video_id, "aaaaaaaaaaa");
         assert_eq!(found[0].score, 1.0);
         assert!(found[1].warnings.iter().any(|w| w.contains("differs")));
-        // Equal scores keep the search order.
         let ties = scored(&track(), json!([entry("aaaaaaaaaaa", "Believe", "Cher", 200.0), entry("bbbbbbbbbbb", "Believe", "Cher", 200.0)]));
         assert_eq!(ties[0].video_id, "aaaaaaaaaaa");
     }

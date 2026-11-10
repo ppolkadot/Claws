@@ -44,7 +44,6 @@ pub enum VideoPreset {
 }
 
 impl VideoPreset {
-    /// Whether this build can make it.
     pub fn available(self) -> bool {
         self != VideoPreset::EditingProRes
     }
@@ -86,7 +85,6 @@ impl JobExecution {
     }
 }
 
-// ---------------------------------------------------------------------------------------
 // Post-transfer processing. One decision, read by the command line below and by disk sizing
 // (`disk_budget::RunPlan`, used by both admission and the size preview), so what is run and
 // what is reserved cannot drift apart.
@@ -141,7 +139,6 @@ impl ProcessingPolicy {
     }
 }
 
-// ---------------------------------------------------------------------------------------
 // yt-dlp arguments. Pure, so the exact command line can be tested without a running app.
 
 /// Where the media comes from. The source always goes last, after `--` when it is a URL,
@@ -333,7 +330,6 @@ fn media_args(push: &mut impl FnMut(&[&str]), options: &DownloadOptions, executi
     }
 }
 
-// ---------------------------------------------------------------------------------------
 // Failure categories, so a cached extraction is refreshed only when the evidence says the
 // source links expired, never for a full disk or a failed merge.
 

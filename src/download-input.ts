@@ -1,7 +1,3 @@
-// Several links pasted at once: parsing, bounded lookups and adding the chosen ones to
-// the queue. No DOM and no imports, so the Node tests can run it as it is
-// (see scripts/tests/download-input.test.mjs).
-
 /** Links looked up from one submission. A longer list is refused, never cut short. */
 export const MAX_LINKS = 500;
 /** Lookups running at once; each one is a yt-dlp process. */
@@ -25,7 +21,6 @@ export interface ParsedLink {
 export interface DuplicateLink {
   url: string;
   line: number;
-  /** Where the same link first appeared. */
   firstLine: number;
 }
 
@@ -41,7 +36,6 @@ export interface ParsedInput {
   invalid: InvalidLine[];
   /** More than the limit of distinct links: the caller must refuse the batch. */
   overLimit: boolean;
-  /** Lines that were not blank. */
   lineCount: number;
 }
 
@@ -105,7 +99,6 @@ export function isBatchInput(parsed: ParsedInput): boolean {
   return parsed.links.length !== 1;
 }
 
-// ---- Lookups ------------------------------------------------------------------------
 
 /** The parts of a lookup result a batch uses (a subset of api.ts ProbeResult). */
 export interface LookupEntry {
@@ -145,7 +138,6 @@ export interface BatchRow<R extends LookupResult = LookupResult> {
   readonly line: number;
   status: LookupStatus;
   result: R | null;
-  /** Why the lookup failed. */
   error: string | null;
   selected: boolean;
   /** Already sent to the queue; it cannot be sent again. */
@@ -208,24 +200,20 @@ export interface BatchCounts {
 }
 
 export interface EnqueueSummary {
-  /** Jobs the queue created. */
   added: number;
   /**
    * Items sent that the queue skipped: already queued with the same options, or repeated.
    * Includes a whole call refused with ALREADY_QUEUED.
    */
   skipped: number;
-  /** Items whose enqueue call was refused. */
   failed: number;
   rowsAdded: number;
   rowsFailed: number;
-  /** Distinct refusal messages. */
   errors: string[];
 }
 
 export interface Chunk {
   items: BatchItem[];
-  /** Rows with items in this chunk. */
   rowIds: number[];
   /** The row each item came from, in the same order as `items`. */
   owners: number[];
@@ -361,7 +349,6 @@ export class LinkBatch<R extends LookupResult = LookupResult> {
     this.markCancelled(row);
   }
 
-  /** Looks up a failed or cancelled row again. */
   retry(id: number) {
     const row = this.find(id);
     if (!row || (row.status !== "failed" && row.status !== "cancelled")) return;
@@ -369,7 +356,6 @@ export class LinkBatch<R extends LookupResult = LookupResult> {
     this.pump();
   }
 
-  /** Looks up every failed or cancelled row again. */
   retryAll() {
     for (const row of this.rows) {
       if (row.status === "failed" || row.status === "cancelled") this.enqueueLookup(row);
@@ -386,7 +372,6 @@ export class LinkBatch<R extends LookupResult = LookupResult> {
     this.onRow(row);
   }
 
-  /** Selects every row that can be added, or clears the selection. */
   selectAll(selected: boolean) {
     for (const row of this.rows) this.setSelected(row.id, selected);
   }

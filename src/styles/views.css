@@ -61,7 +61,6 @@
   min-height: 46px;
   padding: 10px 14px 10px 16px;
 }
-/* Separators start at the text, not the panel edge. */
 .row + .row::after,
 .cookie-detail .row::after {
   content: "";
@@ -166,7 +165,6 @@
   flex: none;
   color: var(--text-2);
 }
-/* A text area: one line until several links are pasted, then up to six lines. */
 .url-input {
   flex: 1;
   min-width: 0;
@@ -330,7 +328,6 @@
   color: var(--label);
   font-size: 12px;
 }
-/* Size preview: the download size, then the free space needed, as separate lines. */
 .estimate {
   display: flex;
   flex-direction: column;
@@ -452,7 +449,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Several links at once. */
 .batch-issues {
   align-items: flex-start;
 }
@@ -570,7 +566,6 @@
   min-width: 0;
   text-align: left;
 }
-/* Reopens the link's details; only the title takes the accent on hover. */
 .recent-open {
   display: flex;
   flex: 1;

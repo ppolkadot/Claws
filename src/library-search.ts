@@ -1,4 +1,3 @@
-/** The parts of a library entry its search box looks at. */
 export interface SearchableItem {
   title: string;
   uploader: string | null;

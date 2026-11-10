@@ -240,7 +240,7 @@ npm run tauri build     # produce the installer in src-tauri/target/release/bund
 - a capture script that verifies the desktop glass against a test pattern, and refuses to capture if another window overlaps Claws;
 - a download-phase timer.
 
-See [`docs/HANDOFF.md`](docs/HANDOFF.md) for how to use them.
+See the [developer handoff](docs/HANDOFF.md) for tool usage and the [documentation index](docs/README.md) for current guidance and historical references.
 
 ## Project structure
 

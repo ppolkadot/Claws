@@ -1,5 +1,7 @@
 # Code Review Findings (2026-11-08)
 
+> Historical review input. Disposition and implementation are recorded in the [consolidated review](superpowers/plans/2026-11-09-consolidated-review-report-and-implementation-plan.md); this is not a current bug list. Use [current status](CURRENT_DEVELOPMENT_STATUS.md) before planning further work.
+
 **Date:** 2026-11-08\
 **Branch:** `feature-expansion-and-motion` (version 1.1.0 source + uncommitted working-tree changes)\
 **Scope:** Full repository review across the Rust backend (`src-tauri/src/`), TypeScript frontend (`src/`), styles (`src/styles/`), and build/verification scripts (`scripts/`).

@@ -1,7 +1,3 @@
-// The Library reuses a tile while nothing it shows or acts on has changed, rebuilds it once when
-// something did, and keeps the tiles that stay in place in the grid. Imports only the pure row
-// ordering, so the Node tests can run it (scripts/tests/library-cache.test.mjs).
-
 import { orderMoves } from "./ui/row-order.js";
 
 /**
@@ -50,7 +46,6 @@ export function tileSignature(item: TileSource): string {
   ]);
 }
 
-/** Tiles by entry id, each kept while its signature is unchanged. */
 export class TileCache<El> {
   private readonly built = new Map<string, { key: string; el: El }>();
 
@@ -67,7 +62,6 @@ export class TileCache<El> {
     return el;
   }
 
-  /** Forgets every tile whose entry is not in `live`. */
   prune(live: ReadonlySet<string>) {
     for (const id of this.built.keys()) if (!live.has(id)) this.built.delete(id);
   }

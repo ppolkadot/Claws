@@ -102,7 +102,6 @@ export interface Job {
   createdAt: number;
   /** Settings bound when the job first started; later starts reuse them. */
   execution?: JobExecution | null;
-  /** The job's private work folder. */
   workspace?: { schemaVersion: number; path: string } | null;
   cancelRequested?: boolean;
   /** Increases with every change; older or repeated events are ignored. */
@@ -217,7 +216,6 @@ export interface ProbeResult {
   entries: EntrySummary[];
 }
 
-/** Saved details of a link downloaded before. */
 export interface CachedLink {
   savedAt: number;
   result: ProbeResult;
@@ -244,13 +242,11 @@ interface Bootstrap {
   settings: Settings;
   jobs: Job[];
   history: HistoryItem[];
-  /** Startup problems to show once. */
   notices: string[];
 }
 
 export interface SavedSettings {
   settings: Settings;
-  /** Saved, but something did not take effect. */
   warning: string | null;
 }
 
@@ -324,7 +320,6 @@ export const api = {
   showKeptFiles: (id: string) => invoke<KeptRevealResult>("show_kept_files", { id }),
   /** Looks again for kept files of older downloads (also in folders that could not be read before). */
   repairKeptFiles: () => invoke<KeptRepairReport>("repair_kept_files"),
-  /** What the last such look found. */
   keptFilesReport: () => invoke<KeptRepairReport | null>("kept_files_report"),
   openOutputDir: () => invoke<void>("open_output_dir"),
   deleteHistory: (id: string, deleteFile: boolean) =>

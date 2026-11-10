@@ -1,5 +1,7 @@
 # Current problems and download-speed review
 
+> Historical snapshot from the 2026-11-04/05 reliability work. Old release states, test totals and limitations below apply to that snapshot. Use [current status](CURRENT_DEVELOPMENT_STATUS.md) for remaining work and [speed diagnosis](performance/speed-diagnosis.md) for measured evidence.
+
 **Date:** 2026-11-05\
 **Reviewed branch:** `download-reliability`\
 **Reviewed source:** `624dd7e` plus the 1.0.5 follow-up corrections\
