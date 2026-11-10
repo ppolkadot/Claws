@@ -2,9 +2,9 @@
 
 ## Version and delivery
 
-Source version: **1.0.8** on `codex/release-1.0.8`. The branch was pushed at `b96eccd`; later comment/documentation cleanup does not rebuild or replace its installer.
+Source version: **1.0.8** on `main`, merged from the approved `codex/release-1.0.8` branch. The [GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.8) carries the verified installer; later comment/documentation cleanup does not rebuild or replace it.
 
-The [1.0.8 release notes](releases/1.0.8.md) and installer build record identify the packaged source (`6794ea9`), checksums and verification. The installer is unsigned and was not installed or published as a GitHub release during this work. Older release records and binaries remain historical evidence.
+The [1.0.8 release notes](releases/1.0.8.md) and installer build record identify the packaged source (`6794ea9`), checksums and verification. The installer is unsigned; installation/upgrade remains unverified. Build records describe packaging-time state, while the GitHub release records publication. Older release records and binaries remain historical evidence.
 
 ## Implemented behavior
 
