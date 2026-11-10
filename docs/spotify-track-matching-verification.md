@@ -76,4 +76,23 @@ Implemented from `docs/superpowers/plans/2026-11-09-spotify-review-followup.md`:
 
 Automated results at this change: Rust `cargo test --locked` 441 passed / 3 ignored; `clippy --all-targets -D warnings` clean; Node suites fonts 7, spotify 36, logic 156, queue 19, motion 63; `npm run build` passes.
 
-Not done in this pass (still unverified): live metadata/search/audio reruns, a real `spotify.link` redirect smoke, the mounted headless-Edge harness, and any real WebView2/OS-IME session. Synthetic composition events in the DOM tests do not establish native IME behavior.
+At the original follow-up commits, live metadata/search/audio reruns, a real `spotify.link` redirect smoke, the mounted headless-Edge harness, and a real WebView2/OS-IME session were not rerun. The recovery pass below supersedes the mounted-harness gap. Synthetic composition events do not establish native IME behavior.
+
+## Recovery and layout review fixes (2026-11-09)
+
+Confirmed and fixed the supplied follow-up findings:
+
+- Interrupted full/short-link resolution snapshots now expose Retry after navigation. Interrupted search and audio-check snapshots point to the corresponding existing action instead of a stale resolver Retry.
+- Editing a known track's query and starting/succeeding at manual search clear resolver retry state. A short link with no known track keeps its retry path if its query field is edited.
+- The persistent review host uses the full column before confirmation and two columns only for a confirmed recording on a wide viewport; the query node stays mounted throughout.
+- Nested action hosts right-align Retry/Use this match. Empty notice/action/candidate hosts are hidden so they contribute no grid gaps. An empty live status remains mounted and accessible using the existing visually-hidden treatment.
+- Empty search results have one polite status explanation, not a second error alert.
+- Removed native `maxlength=300` because it counts UTF-16 units; the controller and backend still validate 300 Unicode code points. A real browser insertion of 200 astral characters reaches the search intact.
+- Focus leaving a removed recovery control moves to the query, or to the stable busy status until the query is enabled. It returns to the query after resolution without overriding a user's intervening focus move.
+- Short links reaching a known allowed Spotify album, playlist, embed or malformed track destination now preserve the typed terminal reason and `retryable: false`. Transient request failures remain retryable. Destination allowlisting still runs before classification; no host was added.
+
+Regression evidence: five new Node/DOM regressions failed before the implementation; a separate busy-Retry focus regression failed before its final fix. The Rust short-to-album regression failed with `shortLinkUnresolved` before typed terminal fetch errors were added. Final runs: **444 Rust tests passed / 3 live tests ignored; 42 Spotify frontend, 156 logic, 19 queue, 63 motion and 7 font tests passed; production build and warning-denying all-target Clippy passed.**
+
+The expanded actual mounted Edge harness passes **36/36** checks with zero browser exceptions, including all original 22 lifecycle checks plus desktop widths, right alignment, empty-host spacing, interrupted full/short resolution, stale Retry removal, recovery focus, persistent composition events, astral query entry and single no-results messaging. Command: `node scripts/dev/spotify-bench.mjs --out .test-build/spotify-bench/recovery-green.json`. Local run logs are in the ignored plan workspace. An independent review found no actionable correctness/security regressions.
+
+These runs use local fixtures and synthetic dev IPC. They do not newly establish live short-link, live-site, native WebView2 or OS-level IME compatibility. The earlier dated native audio-format evidence remains unchanged; no installer, release or installed-app update was produced.

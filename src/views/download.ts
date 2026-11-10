@@ -528,6 +528,8 @@ export const mountDownload: MountView = (container, ctx) => {
   /** Brings the panel up to date; its controls stay frozen while a download is being added. */
   function paintMatching() {
     if (!spotify || !matchView) return;
+    reviewHost?.setAttribute("data-confirmed", String(spotify.state.stage === "confirmed"));
+    if (resultSlot) resultSlot.hidden = spotify.state.stage !== "confirmed";
     matchView.update(spotify.state);
     if (enqueuing) matchView.el.querySelectorAll<HTMLInputElement | HTMLButtonElement>("input, button").forEach((el) => { el.disabled = true; });
   }

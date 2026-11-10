@@ -364,6 +364,18 @@ pub fn parse_oembed(raw: &[u8], expected_id: &str) -> Result<SpotifyTrack> {
     track.artwork = artwork(&value["thumbnail_url"]);
     Ok(track)
 }
+#[derive(Debug, thiserror::Error)]
+enum FetchError {
+    #[error("{}", .0.message())]
+    Unsupported(UnsupportedReason),
+    #[error(transparent)]
+    Request(#[from] AppError),
+}
+impl From<reqwest::Error> for FetchError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Request(error.into())
+    }
+}
 async fn fetch_bounded(
     client: &reqwest::Client,
     mut url: Url,
@@ -371,7 +383,7 @@ async fn fetch_bounded(
     redirects: &mut usize,
     metadata_path: Option<&str>,
     endpoint: &(dyn Fn(&Url) -> Url + Sync),
-) -> Result<(Url, Vec<u8>)> {
+) -> std::result::Result<(Url, Vec<u8>), FetchError> {
     use futures_util::StreamExt;
     let fetch = async {
         let mut visited = std::collections::HashSet::new();
@@ -380,27 +392,31 @@ async fn fetch_bounded(
             // Production uses the identity mapping; tests map only approved logical
             // destinations to a loopback server without weakening this policy.
             if !secure_url(&url, &["open.spotify.com", "spotify.link"]) {
-                return Err(AppError::msg(
-                    "Spotify redirect destination is not allowed.",
-                ));
+                return Err(
+                    AppError::msg("Spotify redirect destination is not allowed.").into(),
+                );
             }
             match metadata_path {
                 Some(path) if url.host_str() != Some("open.spotify.com") || url.path() != path => {
-                    return Err(AppError::msg("Spotify redirected to another entity."))
+                    return Err(AppError::msg("Spotify redirected to another entity.").into())
                 }
                 None => match classify_spotify_url(url.as_str()) {
                     Some(SpotifyInput::Track { .. }) => return Ok((url, vec![])),
                     Some(SpotifyInput::Short { .. }) => {}
+                    Some(SpotifyInput::Unsupported(reason)) => {
+                        return Err(FetchError::Unsupported(reason));
+                    }
                     _ => {
                         return Err(AppError::msg(
                             "Spotify short link did not resolve to an individual track.",
-                        ))
+                        )
+                        .into())
                     }
                 },
                 _ => {}
             }
             if !visited.insert(url.to_string()) {
-                return Err(AppError::msg("Spotify redirect loop."));
+                return Err(AppError::msg("Spotify redirect loop.").into());
             }
             let response = client
                 .get(endpoint(&url))
@@ -410,7 +426,7 @@ async fn fetch_bounded(
             let status = response.status();
             if [301, 302, 303, 307, 308].contains(&status.as_u16()) {
                 if *redirects >= 5 {
-                    return Err(AppError::msg("Spotify exceeded five redirects."));
+                    return Err(AppError::msg("Spotify exceeded five redirects.").into());
                 }
                 let location = response
                     .headers()
@@ -422,7 +438,7 @@ async fn fetch_bounded(
                     .map_err(|_| AppError::msg("Invalid Spotify redirect destination."))?;
                 // oEmbed query defines the requested identity as well as its path.
                 if metadata_path == Some("/oembed") && next.query() != url.query() {
-                    return Err(AppError::msg("Spotify redirected to another entity."));
+                    return Err(AppError::msg("Spotify redirected to another entity.").into());
                 }
                 *redirects += 1;
                 url = next;
@@ -432,13 +448,14 @@ async fn fetch_bounded(
                 return Err(AppError::msg(format!(
                     "Spotify metadata request returned HTTP {}.",
                     status.as_u16()
-                )));
+                ))
+                .into());
             }
             if response
                 .content_length()
                 .is_some_and(|len| len > BODY_LIMIT as u64)
             {
-                return Err(AppError::msg("Spotify metadata exceeds 2 MiB."));
+                return Err(AppError::msg("Spotify metadata exceeds 2 MiB.").into());
             }
             // Compression is deliberately not enabled on the dedicated client. An
             // unsolicited encoded response is rejected, rather than decompressed
@@ -448,14 +465,14 @@ async fn fetch_bounded(
                 .get(reqwest::header::CONTENT_ENCODING)
                 .is_some_and(|v| v != "identity")
             {
-                return Err(AppError::msg("Unsupported Spotify metadata encoding."));
+                return Err(AppError::msg("Unsupported Spotify metadata encoding.").into());
             }
             let mut stream = response.bytes_stream();
             let mut body = Vec::new();
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk?;
                 if chunk.len() > BODY_LIMIT.saturating_sub(body.len()) {
-                    return Err(AppError::msg("Spotify metadata exceeds 2 MiB."));
+                    return Err(AppError::msg("Spotify metadata exceeds 2 MiB.").into());
                 }
                 body.extend_from_slice(&chunk);
             }
@@ -510,7 +527,10 @@ async fn resolve_with(
             let (final_url, _) =
                 fetch_bounded(client, start, deadline, &mut redirects, None, endpoint)
                     .await
-                    .map_err(|_| short_failed())?;
+                    .map_err(|error| match error {
+                        FetchError::Unsupported(reason) => SpotifyLookupError::unsupported(reason),
+                        FetchError::Request(_) => short_failed(),
+                    })?;
             match classify_spotify_url(final_url.as_str()) {
                 Some(SpotifyInput::Track { id }) => id,
                 _ => return Err(short_failed()),
@@ -538,7 +558,7 @@ async fn resolve_with(
         endpoint,
     )
     .await;
-    if let Ok(track) = embed.and_then(|(_, body)| parse_embed(&body, &id)) {
+    if let Ok(track) = embed.and_then(|(_, body)| parse_embed(&body, &id).map_err(Into::into)) {
         if track.artists.is_empty() {
             warnings.push("Spotify artist metadata is unavailable.".into());
         }
@@ -562,7 +582,7 @@ async fn resolve_with(
             endpoint,
         )
         .await;
-        if let Ok(track) = response.and_then(|(_, body)| parse_oembed(&body, &id)) {
+        if let Ok(track) = response.and_then(|(_, body)| parse_oembed(&body, &id).map_err(Into::into)) {
             warnings.push("Spotify artist and duration metadata are unavailable.".into());
             return Ok(SpotifyResolution { track, warnings });
         }
@@ -727,6 +747,83 @@ mod tests {
         }
     }
     type TestReply = (u16, Option<String>, Vec<u8>, u64, bool);
+    #[tokio::test]
+    async fn short_link_terminal_destinations_keep_their_typed_reason() {
+        for (path, reason) in [
+            (format!("album/{ID}"), UnsupportedReason::Collection),
+            (format!("playlist/{ID}"), UnsupportedReason::Collection),
+            (format!("embed/track/{ID}"), UnsupportedReason::Embed),
+            ("track/invalid".into(), UnsupportedReason::InvalidTrackUrl),
+        ] {
+            let (base, server) = server(vec![(
+                302,
+                Some(format!("https://open.spotify.com/{path}")),
+                vec![],
+                0,
+                false,
+            )]);
+            let error = resolve_with(
+                &http_client(),
+                "https://spotify.link/start",
+                tokio::time::Instant::now() + std::time::Duration::from_secs(2),
+                &|_| base.clone(),
+            )
+            .await
+            .unwrap_err();
+            server.join().unwrap();
+            assert_eq!(error.code, reason.code(), "{path}");
+            assert!(!error.retryable, "{path}");
+        }
+    }
+    #[tokio::test]
+    async fn short_link_transport_failure_remains_retryable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let unavailable =
+            Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        drop(listener);
+        let error = resolve_with(
+            &http_client(),
+            "https://spotify.link/start",
+            tokio::time::Instant::now() + std::time::Duration::from_secs(2),
+            &|_| unavailable.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "shortLinkUnresolved");
+        assert!(error.retryable);
+    }
+    #[tokio::test]
+    async fn short_link_to_track_preserves_full_metadata() {
+        let (base, server) = server(vec![
+            (
+                302,
+                Some(format!("https://open.spotify.com/track/{ID}")),
+                vec![],
+                0,
+                false,
+            ),
+            (
+                200,
+                None,
+                include_bytes!("../tests/fixtures/spotify/embed.html").to_vec(),
+                0,
+                false,
+            ),
+        ]);
+        let resolution = resolve_with(
+            &http_client(),
+            "https://spotify.link/start",
+            tokio::time::Instant::now() + std::time::Duration::from_secs(2),
+            &|_| base.clone(),
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(resolution.track.id, ID);
+        assert_eq!(resolution.track.title.as_deref(), Some("Ça va 世界"));
+        assert_eq!(resolution.track.duration, Some(213.573));
+        assert!(resolution.warnings.is_empty());
+    }
     fn server(replies: Vec<TestReply>) -> (Url, std::thread::JoinHandle<()>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -788,7 +885,7 @@ mod tests {
         replies: Vec<TestReply>,
         start: &str,
         budget_ms: u64,
-    ) -> Result<(Url, Vec<u8>)> {
+    ) -> std::result::Result<(Url, Vec<u8>), FetchError> {
         let expected_requests = replies.len();
         let requests = std::sync::atomic::AtomicUsize::new(0);
         let (base, server) = server(replies);
