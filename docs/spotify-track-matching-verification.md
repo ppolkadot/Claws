@@ -96,3 +96,9 @@ Regression evidence: five new Node/DOM regressions failed before the implementat
 The expanded actual mounted Edge harness passes **36/36** checks with zero browser exceptions, including all original 22 lifecycle checks plus desktop widths, right alignment, empty-host spacing, interrupted full/short resolution, stale Retry removal, recovery focus, persistent composition events, astral query entry and single no-results messaging. Command: `node scripts/dev/spotify-bench.mjs --out .test-build/spotify-bench/recovery-green.json`. Local run logs are in the ignored plan workspace. An independent review found no actionable correctness/security regressions.
 
 These runs use local fixtures and synthetic dev IPC. They do not newly establish live short-link, live-site, native WebView2 or OS-level IME compatibility. The earlier dated native audio-format evidence remains unchanged; no installer, release or installed-app update was produced.
+
+## Local 1.0.8 packaging
+
+The user subsequently authorized a 1.0.8 branch, version update and local installer build. `codex/release-1.0.8` includes the reviewed implementation and two final polish fixes: keyboard confirmation advances focus to Download after a successful probe without stealing focus from an intervening query edit, and typed short-link failure copy is displayed once. Unknown retryable errors still receive fallback recovery guidance.
+
+Fresh packaging checks: 444 Rust tests / 3 ignored live tests; 288 Node tests (43 Spotify, 156 logic, 19 queue, 63 motion, 7 font); 37 mounted browser checks; warning-denying Clippy; optimized NSIS build. The extracted executable is version 1.0.8, and archive/payload/embedded-font/CSS/JS/license integrity checks passed. See [1.0.8 release notes](releases/1.0.8.md). The installer was built locally, not installed or published. Existing live short-link and real WebView2/OS-IME limits remain.
