@@ -89,3 +89,27 @@ test('Retry follows retryability, not a missing track', () => {
  const withTrack=renderSpotifyMatch(state({stage:'editable',candidates:[],error:'x',retryable:false}),actions());
  assert.equal(buttons(withTrack,'Try Again').length,0);
 });
+
+
+test('empty persistent hosts do not reserve layout rows and action hosts have alignment hooks', () => {
+ installFakeDom();const view=mountSpotifyMatch(actions());view.update(state({stage:'confirmed',confirmed:{}}));
+ const searchRow=findAll(view.el,n=>n.className==='spotify-search')[0];
+ for(const node of view.el.children.slice(view.el.children.indexOf(searchRow)+1)) {
+   if(!node.textContent && node.getAttribute('aria-live')!=='polite') assert.equal(node.hidden,true,node.className);
+ }
+ const status=findAll(view.el,n=>n.getAttribute('aria-live')==='polite')[0];assert.ok(status.className.includes('visually-hidden'));
+ const confirm=buttons(view,'Use this match')[0];assert.ok(confirm.parentNode.className.includes('spotify-match-action'));
+});
+test('removing focused Retry restores query focus; code-point validation replaces UTF16 maxlength', () => {
+ installFakeDom();const view=mountSpotifyMatch(actions());view.update(state({stage:'editable',retryable:true}));
+ const retry=buttons(view,'Try Again')[0];retry.focus();view.update(state({retryable:false}));
+ assert.equal(document.activeElement,input(view));
+ assert.equal(input(view).getAttribute('maxlength'),null);
+});
+
+test('Retry keeps focus through a busy resolution and returns to query after recovery', () => {
+ installFakeDom();const view=mountSpotifyMatch(actions());view.update(state({stage:'failed',track:null,candidates:[],retryable:true}));
+ buttons(view,'Try Again')[0].focus();view.update(state({stage:'resolving',track:null,candidates:[],retryable:false}));
+ const status=findAll(view.el,n=>n.getAttribute('aria-live')==='polite')[0];assert.equal(document.activeElement,status);
+ view.update(state());assert.equal(document.activeElement,input(view));
+});

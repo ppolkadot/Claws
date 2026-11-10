@@ -54,9 +54,11 @@ export function mountSpotifyMatch(actions: SpotifyMatchActions): SpotifyMatchVie
   let composing = false;
   let disposed = false;
   let candidatesKey = "";
+  let focusQueryAfterResolution = false;
 
   const identity = h("div", { class: "spotify-identity group" });
-  const query = h("input", { class: "text-input spotify-query", attrs: { id: "spotify-query", type: "text", "aria-label": "Search YouTube", maxlength: 300, placeholder: "Artist and song title" } });
+  // The controller validates 300 Unicode code points; native maxlength counts UTF-16 units.
+  const query = h("input", { class: "text-input spotify-query", attrs: { id: "spotify-query", type: "text", "aria-label": "Search YouTube", placeholder: "Artist and song title" } });
   const search = button({ label: "Find on YouTube", onClick: () => actions.search() });
   const retry = button({ label: "Try Again", onClick: () => actions.retry() });
   const notices = h("div", { class: "spotify-notices" });
@@ -64,9 +66,9 @@ export function mountSpotifyMatch(actions: SpotifyMatchActions): SpotifyMatchVie
   const candidatesHost = h("div", { class: "spotify-candidates-host" });
   const confirm = button({ label: "Use this match", variant: "primary", onClick: () => actions.confirm() });
   const confirmed = h("strong", { text: "Source: YouTube match", attrs: { role: "status" } });
-  const retryHost = h("div");
-  const confirmHost = h("div");
-  const confirmedHost = h("div");
+  const retryHost = h("div", { class: "spotify-match-action" });
+  const confirmHost = h("div", { class: "spotify-match-action" });
+  const confirmedHost = h("div", { class: "spotify-confirmed-host" });
   const radios: HTMLInputElement[] = [];
   /** Present in the page only while `on`, so it is also absent for assistive technology. */
   const present = (host: HTMLElement, node: HTMLElement, on: boolean) => {
@@ -138,7 +140,10 @@ export function mountSpotifyMatch(actions: SpotifyMatchActions): SpotifyMatchVie
 
   function update(state: SpotifyMatchState) {
     if (disposed) return;
+    const previousFocus = document.activeElement;
+    const ownedFocus = previousFocus !== null && el.contains(previousFocus);
     const busy = state.stage === "resolving" || state.stage === "searching" || state.stage === "probing";
+    if (focusQueryAfterResolution && previousFocus !== status) focusQueryAfterResolution = false;
     paintIdentity(state);
     // Never write the field while it is being edited: the user's text is the truth.
     if (!composing && query.value !== state.query) query.value = state.query;
@@ -151,11 +156,21 @@ export function mountSpotifyMatch(actions: SpotifyMatchActions): SpotifyMatchVie
       if (warning !== error) notices.appendChild(h("p", { class: "row-hint", text: warning }));
     }
     status.textContent = statusText(state);
+    status.className = `row-hint spotify-status${status.textContent ? "" : " visually-hidden"}`;
     present(retryHost, retry, !busy && state.retryable);
+    retry.disabled = false;
     paintCandidates(state, busy);
     present(confirmHost, confirm, state.candidates.length > 0);
     confirm.disabled = busy || !state.selectedId || state.stage === "confirmed";
     present(confirmedHost, confirmed, state.stage === "confirmed");
+    for (const host of [notices, retryHost, candidatesHost, confirmHost, confirmedHost]) host.hidden = !host.firstChild;
+    if (ownedFocus && previousFocus && !el.contains(previousFocus)) {
+      if (!query.disabled) query.focus({ preventScroll: true });
+      else { focusQueryAfterResolution = true; status.tabIndex = -1; status.focus({ preventScroll: true }); }
+    } else if (focusQueryAfterResolution && !query.disabled) {
+      focusQueryAfterResolution = false;
+      query.focus({ preventScroll: true });
+    }
   }
 
   return { el, update, dispose() { disposed = true; } };

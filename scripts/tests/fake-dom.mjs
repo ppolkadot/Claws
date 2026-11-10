@@ -99,6 +99,10 @@ class FakeElement {
   get firstChild() {
     return this.children[0] ?? null;
   }
+  contains(node) {
+    for (let current = node; current; current = current.parentNode) if (current === this) return true;
+    return false;
+  }
   remove() {
     if (this.parentNode) this.parentNode.removeChild(this);
   }

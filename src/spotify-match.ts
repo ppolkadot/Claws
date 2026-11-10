@@ -105,7 +105,6 @@ function freeze<T>(value: T): Immutable<T> {
 
 const fresh = (url = ""): SpotifyMatchSnapshot => ({ stage: "editable", url, track: trackStub(url), query: "", candidates: [], selectedId: null, confirmed: null, warnings: [], error: null, retryable: false });
 const metadataError = "Couldn't read this Spotify track. Enter the artist and song title to search YouTube.";
-const interrupted = "This lookup was interrupted when you left this page. Retry to continue.";
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 /** One matching session. Every input change invalidates all work started against older state. */
@@ -157,7 +156,7 @@ export class SpotifyMatchController {
   setQuery(query: string): void {
     if (this.disposed || query === this.current.query) return;
     ++this.epoch;
-    this.publish({ ...this.copy(), stage: "editable", query, candidates: [], selectedId: null, confirmed: null, error: null });
+    this.publish({ ...this.copy(), stage: "editable", query, candidates: [], selectedId: null, confirmed: null, error: null, retryable: this.current.track ? false : this.current.retryable });
   }
 
   async search(): Promise<void> {
@@ -178,6 +177,7 @@ export class SpotifyMatchController {
       return;
     }
     next.stage = "searching";
+    next.retryable = false;
     this.searchingQuery = query;
     this.publish(next);
     try {
@@ -189,7 +189,7 @@ export class SpotifyMatchController {
         seen.add(candidate.videoId);
         return true;
       }).slice(0, 5).map((candidate) => ({ ...structuredClone(candidate), url: `https://www.youtube.com/watch?v=${candidate.videoId}` }));
-      this.publish({ ...this.copy(), stage: "choosing", candidates: valid, error: valid.length ? null : "No YouTube recordings found. Edit the query and search again." });
+      this.publish({ ...this.copy(), stage: "choosing", candidates: valid, error: null, retryable: false });
     } catch (error) {
       if (this.active(ticket)) this.publish({ ...this.copy(), stage: "editable", error: `Couldn't search YouTube. ${message(error)} Try again or edit the query.` });
     }
@@ -225,9 +225,15 @@ export class SpotifyMatchController {
   snapshot(): SpotifyMatchSnapshot {
     const saved = this.copy();
     if (saved.stage === "resolving" || saved.stage === "searching" || saved.stage === "probing") {
+      const operation = saved.stage;
       saved.stage = saved.candidates.length ? "choosing" : saved.track ? "editable" : "failed";
       saved.confirmed = null;
-      saved.error = interrupted;
+      saved.retryable = operation === "resolving";
+      saved.error = operation === "resolving"
+        ? "This lookup was interrupted when you left this page. Retry to continue."
+        : operation === "searching"
+          ? "This search was interrupted when you left this page. Choose Find on YouTube to continue."
+          : "This audio check was interrupted when you left this page. Choose Use this match to continue.";
     }
     return saved;
   }

@@ -126,7 +126,8 @@ test("rerunning search invalidates confirmation and selection immediately", asyn
   assert.equal(c.state.selectedId, null);
   assert.equal(c.state.stage, "searching");
   next.resolve([]); await pending;
-  assert.match(c.state.error, /No YouTube/i);
+  assert.equal(c.state.error, null);
+  assert.equal(c.state.candidates.length, 0);
 });
 
 test("query edits invalidate a late resolve without overwriting the query", async () => {
@@ -316,4 +317,28 @@ test("a late probe cannot restore confirmation after a new search", async () => 
   late.resolve(probe()); await confirming;
   assert.equal(c.state.confirmed, null);
   assert.notEqual(c.state.stage, "confirmed");
+});
+
+
+test("interrupted resolution snapshots restore an actionable retry for full and short links", async () => {
+  for (const input of [url, "https://spotify.link/pending"]) {
+    const pending = deferred(); const { controller: c } = setup({resolve:()=>pending.promise});
+    const work=c.open(input); const saved=c.snapshot(); c.dispose();
+    assert.equal(saved.retryable,true);
+    const {controller:back,calls}=setup(); back.restore(saved);
+    assert.equal(back.state.retryable,true);
+    await back.open(input); assert.equal(calls.resolve.length,1);
+    pending.resolve({track:track(),warnings:[]});await work;
+  }
+});
+test("manual recovery clears resolver retry when editing, searching and confirming", async () => {
+  const {controller:c}=setup({resolve:async()=>{throw {code:'lookupFailed',message:'Offline',retryable:true};}});
+  await c.open(url);assert.equal(c.state.retryable,true);
+  c.setQuery('Artist Song');assert.equal(c.state.retryable,false);
+  await c.search();assert.equal(c.state.retryable,false);
+  c.select(videoId);await c.confirm();assert.equal(c.state.retryable,false);
+});
+test("an empty search has one status explanation instead of a duplicate error", async () => {
+  const {controller:c}=setup({search:async()=>[]});await c.open(url);
+  assert.equal(c.state.stage,'choosing');assert.equal(c.state.error,null);
 });

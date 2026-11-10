@@ -93,6 +93,9 @@ try {
     const invoke = window.__TAURI_INTERNALS__.invoke;
     window.__TAURI_INTERNALS__.invoke = (cmd, payload) => {
       __s.calls.push({cmd,payload:structuredClone(payload ?? {})});
+      if (cmd === 'resolve_spotify_track' && __s.holdResolve) return new Promise((resolve,reject) => { __s.pendingResolve={resolve,reject}; });
+      if (cmd === 'resolve_spotify_track' && __s.failResolve) return Promise.reject({code:'network',message:'Synthetic metadata outage',retryable:true});
+      if (cmd === 'search_spotify_matches' && __s.emptySearch) return Promise.resolve([]);
       if (cmd === 'enqueue' && __s.holding) return new Promise((resolve,reject) => { __s.pendingEnqueue={resolve,reject,run:()=>invoke(cmd,payload)}; });
       if (cmd === 'cached_link' && payload.url === __s.cacheUrl) return Promise.resolve({savedAt:Date.now(),result:__s.cachedResult});
       if (cmd === 'probe_url' && payload.url === __s.cacheUrl) return new Promise(resolve => { __s.blockedProbe=resolve; });
@@ -101,14 +104,19 @@ try {
     };
   })()`);
 
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 1200, height: 1000, deviceScaleFactor: 1, mobile: false });
   await lookup(spotifyUrl);
   await until("document.querySelectorAll('input[name=spotify-match]').length === 3");
+  check("Desktop matching-only panel fills its review width", await evaluate("Math.abs(document.querySelector('.spotify-review').getBoundingClientRect().width-document.querySelector('.spotify-match').getBoundingClientRect().width)<3"));
+  check("Matching panel has no visible empty grid hosts", await evaluate("[...document.querySelector('.spotify-match').children].every(el=>el.textContent.trim() || el.querySelector('input,img') || getComputedStyle(el).display==='none' || el.classList.contains('visually-hidden'))"));
+  check("Confirmation action aligns to panel right edge", await evaluate("(() => {const p=document.querySelector('.spotify-match'),b=__s.button('Use this match');return Math.abs(b.getBoundingClientRect().right-(p.getBoundingClientRect().right-parseFloat(getComputedStyle(p).paddingRight)))<3;})()"));
   check("Spotify routes before cache and generic probe", await evaluate("!__s.calls.some(c=>c.cmd==='cached_link'||c.cmd==='probe_url')"));
   check("No candidate preselected and no Download before confirmation", await evaluate("![...document.querySelectorAll('input[name=spotify-match]')].some(el=>el.checked) && !__s.button('Download')"));
   await evaluate("__s.choose(1)");
   check("Selecting a candidate does not probe or enqueue", await evaluate("!__s.calls.some(c=>c.cmd==='probe_url'||c.cmd==='enqueue')"));
   await evaluate("__s.click('Use this match')");
   await until("Boolean(__s.button('Download'))");
+  check("Desktop confirmed review has two columns", await evaluate("getComputedStyle(document.querySelector('.spotify-review')).gridTemplateColumns.split(' ').length===2 && Boolean(document.querySelector('.spotify-result'))"));
   check("Selected recording receives the sole full probe", await evaluate("JSON.stringify(__s.calls.filter(c=>c.cmd==='probe_url').map(c=>c.payload.url))===JSON.stringify(['https://www.youtube.com/watch?v=abcdefghijk'])"));
   check("Confirmation forces audio and hides Type controls", await evaluate("document.querySelector('[aria-label=Type]').closest('.row').hidden && document.querySelector('[aria-label=Type] [aria-checked=true]').textContent==='Audio Only'"));
   await evaluate("__s.click('FLAC'); document.querySelector('[aria-label=\"Fast Save\"]').click()");
@@ -185,6 +193,42 @@ try {
   await until("document.querySelector('.stage').textContent.includes('individually')");
   await evaluate("__s.wait(200)");
   check("Mixed batch rejects Spotify before generic probe while ordinary row remains usable", await evaluate(`(() => { const calls=__s.calls.slice(${oldCalls}); return !calls.some(c=>c.cmd==='probe_url' && c.payload.url.includes('spotify')) && calls.some(c=>c.cmd==='probe_url' && c.payload.url==='https://example.com/ordinary-row') && document.querySelector('.stage').textContent.includes('individually'); })()`));
+  // Resolve interruption must retain recovery after an actual view unmount.
+  for (const url of ['https://spotify.link/synthetic-short', spotifyUrl]) {
+    await evaluate("__s.holdResolve=true; __s.pendingResolve=null");
+    await lookup(url);
+    await until("Boolean(__s.pendingResolve)");
+    await evaluate("__s.nav('queue').then(()=>__s.nav('download'))");
+    check(`Interrupted ${url.includes('spotify.link') ? 'short-link' : 'full-track'} resolution restores Retry`, await evaluate("Boolean(__s.button('Try Again')) && !__s.button('Try Again').disabled && document.querySelector('.spotify-match').textContent.includes('interrupted')"));
+    await evaluate("__s.holdResolve=false; __s.pendingResolve.reject({code:'network',message:'Synthetic interruption',retryable:true}); __s.wait(50)");
+  }
+  await evaluate("__s.failResolve=true");
+  await lookup(spotifyUrl);
+  await until("Boolean(__s.button('Try Again'))");
+  check("Retry action aligns to panel right edge", await evaluate("(() => {const p=document.querySelector('.spotify-match'),b=__s.button('Try Again');return Math.abs(b.getBoundingClientRect().right-(p.getBoundingClientRect().right-parseFloat(getComputedStyle(p).paddingRight)))<3;})()"));
+  await evaluate("__s.failResolve=false; const q=document.querySelector('#spotify-query'); q.value='manual metadata recovery'; q.dispatchEvent(new Event('input',{bubbles:true})); __s.click('Find on YouTube')");
+  await until("document.querySelectorAll('input[name=spotify-match]').length===3");
+  check("Successful manual search removes stale metadata Retry", await evaluate("!__s.button('Try Again')"));
+
+  await evaluate("__s.failResolve=true");
+  await lookup(spotifyUrl);
+  await until("Boolean(__s.button('Try Again'))");
+  await evaluate("__s.failResolve=false; __s.button('Try Again').focus(); __s.click('Try Again')");
+  await until("document.querySelectorAll('input[name=spotify-match]').length===3");
+  check("Recovered Retry returns focus to query", await evaluate("document.activeElement===document.querySelector('#spotify-query')"));
+
+  await evaluate("__s.queryNode=document.querySelector('#spotify-query'); __s.queryNode.focus(); __s.queryNode.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})); __s.queryNode.value='Japanese song'; __s.queryNode.dispatchEvent(new Event('input',{bubbles:true})); __s.searchCount=__s.calls.filter(c=>c.cmd==='search_spotify_matches').length; __s.queryNode.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true,cancelable:true}))");
+  check("Composition retains mounted query node and suppresses Enter search", await evaluate("__s.queryNode===document.querySelector('#spotify-query') && document.activeElement===__s.queryNode && __s.queryNode.value==='Japanese song' && __s.calls.filter(c=>c.cmd==='search_spotify_matches').length===__s.searchCount"));
+  await evaluate("__s.queryNode.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})); __s.queryNode.select()");
+  await cdp("Input.insertText", {text:'\u{1F3B5}'.repeat(200)});
+  check("Browser accepts more than 150 astral query characters", await evaluate("Array.from(document.querySelector('#spotify-query').value).length===200"));
+  await evaluate("__s.click('Find on YouTube')");
+  await until("document.querySelectorAll('input[name=spotify-match]').length===3");
+  check("Unicode query reaches search intact", await evaluate("__s.calls.filter(c=>c.cmd==='search_spotify_matches').at(-1).payload.query===String.fromCodePoint(0x1F3B5).repeat(200)"));
+  await evaluate("__s.emptySearch=true; const noResultsQuery=document.querySelector('#spotify-query');noResultsQuery.value='synthetic no results';noResultsQuery.dispatchEvent(new Event('input',{bubbles:true}));__s.click('Find on YouTube')");
+  await until("document.querySelectorAll('input[name=spotify-match]').length===0 && !__s.button('Find on YouTube').disabled && /No (YouTube|matching) recordings found/i.test(document.querySelector('.spotify-match').textContent)");
+  check("Empty search presents one no-results message", await evaluate("[...document.querySelector('.spotify-match').querySelectorAll('.notice,.spotify-status')].filter(el=>el.textContent.trim() && /No (YouTube|matching) recordings found/i.test(el.textContent)).length===1"));
+  check("Empty search leaves no visible empty grid hosts", await evaluate("[...document.querySelector('.spotify-match').children].every(el=>el.textContent.trim() || el.querySelector('input,img') || getComputedStyle(el).display==='none' || el.classList.contains('visually-hidden'))"));
   check("Mounted flow has no uncaught browser exceptions", pageErrors.length === 0);
   const report = { scope: "Synthetic dev IPC and actual mounted frontend only", checks, pageErrors, screenshot: join(outputDir, "confirmation.png") };
   if (args.out) writeFileSync(args.out, JSON.stringify(report, null, 2));
