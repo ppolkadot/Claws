@@ -66,7 +66,6 @@ const PARAGRAPH_GAP_MS: u64 = 3000;
 /// Written files use Windows line endings, so every editor shows the lines.
 const EOL: &str = "\r\n";
 
-/// One caption after cleaning.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Cue {
     pub start_ms: u64,
@@ -113,8 +112,6 @@ pub fn convert(text: &str, format: TranscriptFormat, automatic: bool) -> Result<
     Ok((render(&transcript, format), transcript))
 }
 
-// ---------------------------------------------------------------------------------------
-// Reading
 
 struct RawCue {
     start_ms: u64,
@@ -272,8 +269,6 @@ fn read_cues(text: &str) -> (Vec<RawCue>, usize) {
     (cues, skipped)
 }
 
-// ---------------------------------------------------------------------------------------
-// Cleaning
 
 fn entity(name: &str) -> Option<String> {
     let named = match name {
@@ -351,7 +346,6 @@ fn markup_tag(tag: &str) -> Option<(String, bool)> {
     (known && fits).then_some((name, closing))
 }
 
-/// One stretch of a line and who says it.
 struct Segment {
     speaker: Option<String>,
     text: String,
@@ -417,7 +411,6 @@ fn strip_markup(line: &str) -> Vec<Segment> {
     segments
 }
 
-/// Runs of spaces and tabs as one space.
 fn collapse_spaces(text: &str) -> String {
     let mut collapsed = String::with_capacity(text.len());
     let mut space = false;
@@ -512,8 +505,6 @@ fn collapse_rolling(raw: Vec<RawCue>, automatic: bool) -> Vec<Cue> {
     out
 }
 
-// ---------------------------------------------------------------------------------------
-// Writing
 
 fn clock(ms: u64, separator: char) -> String {
     let (h, m, s, f) = (ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000);
@@ -615,10 +606,7 @@ pub fn render(transcript: &Transcript, format: TranscriptFormat) -> String {
     out
 }
 
-// ---------------------------------------------------------------------------------------
-// The artifact in the work folder
 
-/// The text file made for publication.
 #[derive(Debug)]
 pub struct Artifact {
     /// Relative to the work folder, beside the caption file.
@@ -710,8 +698,6 @@ pub fn validate_artifact(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------------------
-// Names
 
 /// `--sub-langs` takes regular expressions; a language code is matched literally.
 pub fn sub_langs(code: &str) -> String {

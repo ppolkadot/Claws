@@ -162,6 +162,8 @@ impl DownloadOptions {
 pub struct Job {
     pub id: String,
     pub url: String,
+    #[serde(default)]
+    pub match_origin: Option<crate::spotify_match::MatchOrigin>,
     /// Set when the playlist entry had no link of its own: the job then downloads item
     /// `playlist_index` of the playlist at `url`.
     #[serde(default)]
@@ -266,6 +268,8 @@ fn emit_removed(app: &AppHandle, id: &str) {
 pub struct EnqueueItem {
     pub url: String,
     #[serde(default)]
+    pub match_origin: Option<crate::spotify_match::MatchOrigin>,
+    #[serde(default)]
     pub playlist_index: Option<u32>,
     pub title: String,
     pub thumbnail: Option<String>,
@@ -348,7 +352,6 @@ async fn flush_queue_async(app: &AppHandle) -> Result<()> {
     tokio::task::spawn_blocking(move || flush_queue(&app)).await.map_err(queue_save_error)?
 }
 
-/// The queue writer, saving `queue_snapshot` to queue.json.
 pub fn start_queue_writer(app: &AppHandle) -> crate::queue_writer::QueueWriter {
     let writer_app = app.clone();
     let report_app = app.clone();
@@ -539,6 +542,9 @@ pub fn enqueue(app: &AppHandle, items: Vec<EnqueueItem>, mut options: DownloadOp
     let mut created = Vec::with_capacity(items.len());
     for item in items {
         let url = validate_url(&item.url)?;
+        if let Some(origin) = &item.match_origin {
+            crate::spotify_match::validate_match_origin(origin, &item.url, item.playlist_index, &options)?;
+        }
         let key = (url.clone(), item.playlist_index.filter(|i| *i > 0), options_key(&options));
         if pending.contains(&key) || !seen.insert(key) {
             continue;
@@ -546,6 +552,7 @@ pub fn enqueue(app: &AppHandle, items: Vec<EnqueueItem>, mut options: DownloadOp
         created.push(Job {
             id: uuid::Uuid::new_v4().to_string(),
             url,
+            match_origin: item.match_origin,
             playlist_index: item.playlist_index.filter(|i| *i > 0),
             title: if item.title.trim().is_empty() {
                 "Untitled".into()
@@ -1139,7 +1146,6 @@ async fn execute(app: &AppHandle, id: &str, allow_cache: bool) -> Outcome {
     outcome
 }
 
-/// The rest of a run, once its settings are frozen and its work folder is open and saved.
 #[allow(clippy::too_many_arguments)]
 async fn run_prepared(
     app: &AppHandle,

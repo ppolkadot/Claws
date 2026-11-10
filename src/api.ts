@@ -1,12 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { DownloadEstimate } from "./download-estimates";
-import type { DragOutcome } from "./ui/drag-gesture";
-import type { JobEvent, JobRemoved, JobsAdded } from "./queue-events";
-import type { Resolution, VideoPreset } from "./resolution";
-import type { KeptRecord, KeptRepairReport, KeptRevealResult } from "./kept-files";
-import type { TranscriptFormat } from "./transcript-options";
+import type { DownloadEstimate } from "./download-estimates.js";
+import type { DragOutcome } from "./ui/drag-gesture.js";
+import type { JobEvent, JobRemoved, JobsAdded } from "./queue-events.js";
+import type { Resolution, VideoPreset } from "./resolution.js";
+import type { KeptRecord, KeptRepairReport, KeptRevealResult } from "./kept-files.js";
+import type { TranscriptFormat } from "./transcript-options.js";
 
 export type { DownloadEstimate, DragOutcome, JobEvent, JobRemoved, JobsAdded, KeptRecord, KeptRepairReport, KeptRevealResult, Resolution, TranscriptFormat, VideoPreset };
 
@@ -78,6 +78,7 @@ export interface DownloadOptions {
 }
 
 export interface Job {
+  matchOrigin?: MatchOrigin | null;
   id: string;
   url: string;
   title: string;
@@ -101,7 +102,6 @@ export interface Job {
   createdAt: number;
   /** Settings bound when the job first started; later starts reuse them. */
   execution?: JobExecution | null;
-  /** The job's private work folder. */
   workspace?: { schemaVersion: number; path: string } | null;
   cancelRequested?: boolean;
   /** Increases with every change; older or repeated events are ignored. */
@@ -119,6 +119,7 @@ export interface JobExecution {
 }
 
 export interface HistoryItem {
+  matchOrigin?: MatchOrigin | null;
   id: string;
   title: string;
   url: string;
@@ -190,6 +191,7 @@ export interface EntrySummary {
 }
 
 export interface ProbeResult {
+  audioAvailable?: boolean | null;
   kind: "video" | "playlist";
   url: string;
   title: string;
@@ -214,13 +216,13 @@ export interface ProbeResult {
   entries: EntrySummary[];
 }
 
-/** Saved details of a link downloaded before. */
 export interface CachedLink {
   savedAt: number;
   result: ProbeResult;
 }
 
 export interface EnqueueItem {
+  matchOrigin?: MatchOrigin | null;
   url: string;
   playlistIndex?: number | null;
   title: string;
@@ -240,17 +242,56 @@ interface Bootstrap {
   settings: Settings;
   jobs: Job[];
   history: HistoryItem[];
-  /** Startup problems to show once. */
   notices: string[];
 }
 
 export interface SavedSettings {
   settings: Settings;
-  /** Saved, but something did not take effect. */
   warning: string | null;
 }
 
+export interface SpotifyTrack {
+  url: string;
+  id: string;
+  title: string | null;
+  artists: string[];
+  duration: number | null;
+  artwork: string | null;
+}
+
+export interface SpotifyResolution {
+  track: SpotifyTrack;
+  warnings: string[];
+}
+
+/** What `resolve_spotify_track` rejects with; other commands reject with plain text. */
+export interface SpotifyLookupIssue {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+export interface YouTubeCandidate {
+  url: string;
+  videoId: string;
+  title: string;
+  uploader: string | null;
+  duration: number | null;
+  thumbnail: string | null;
+  score: number;
+  warnings: string[];
+}
+
+export interface MatchOrigin {
+  kind: "spotifyYouTube";
+  spotifyUrl: string;
+  spotifyTitle: string | null;
+  spotifyArtists: string[];
+}
+
 export const api = {
+  resolveSpotify: (url: string) => invoke<SpotifyResolution>("resolve_spotify_track", { url }),
+  searchSpotify: (track: SpotifyTrack, query: string) => invoke<YouTubeCandidate[]>("search_spotify_matches", { track, query }),
   bootstrap: () => invoke<Bootstrap>("bootstrap"),
   appReady: () => invoke<void>("app_ready"),
   quit: () => invoke<void>("quit_app"),
@@ -279,7 +320,6 @@ export const api = {
   showKeptFiles: (id: string) => invoke<KeptRevealResult>("show_kept_files", { id }),
   /** Looks again for kept files of older downloads (also in folders that could not be read before). */
   repairKeptFiles: () => invoke<KeptRepairReport>("repair_kept_files"),
-  /** What the last such look found. */
   keptFilesReport: () => invoke<KeptRepairReport | null>("kept_files_report"),
   openOutputDir: () => invoke<void>("open_output_dir"),
   deleteHistory: (id: string, deleteFile: boolean) =>

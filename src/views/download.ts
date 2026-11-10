@@ -36,12 +36,13 @@ import { group, progressBar, row, sectionTitle, setProgress, spinner } from "../
 import { settleIn } from "../ui/motion";
 import { subtitleChips } from "../ui/subtitle-chips";
 import type { MountView } from "./shell";
+import { SpotifyMatchController, isSpotifyInput } from "../spotify-match";
+import { mountSpotifyMatch, type SpotifyMatchView } from "./spotify-match";
 
-type Phase = "idle" | "loading" | "result" | "error" | "batch";
+type Phase = "idle" | "loading" | "result" | "error" | "batch" | "spotify";
 
 /** Batch rows built per frame, as in the Queue view: about a frame's worth of work. */
 const ROWS_PER_FRAME = 40;
-/** Skipped lines listed by name; the rest are counted. */
 const ISSUES_SHOWN = 6;
 
 const AUDIO_FORMATS = [
@@ -72,12 +73,9 @@ function presetRow(value: VideoPreset, onChange: (next: VideoPreset) => void): H
   return row("Format", control.el, hint);
 }
 
-/** Why the Transcript type cannot be chosen for this video. */
 const NO_CAPTIONS = "No captions available for this video";
-/** Shown where a size estimate would be: a transcript downloads no media. */
 const TEXT_ONLY = "Text only — the video is not downloaded";
 
-/** The caption track for a transcript, human and automatic tracks in their own groups. */
 function captionSelect(choices: CaptionChoices, value: string | null, onChange: (key: string) => void): HTMLSelectElement {
   const optgroup = (label: string, tracks: CaptionChoices["human"]) =>
     tracks.length === 0
@@ -94,7 +92,6 @@ function captionSelect(choices: CaptionChoices, value: string | null, onChange: 
   return select;
 }
 
-/** The Quality chips: Best, then each choice with its cap as the hint. */
 function qualityChips(choices: { value: number; label: string; hint: string }[], value: number | null, onChange: (next: number | null) => void): HTMLElement {
   return chipRadio<number>("Quality", [{ value: 0, label: "Best" }, ...choices], value ?? 0, (next) => onChange(next === 0 ? null : next));
 }
@@ -137,7 +134,6 @@ type EstimateLine = {
   detail: HTMLElement;
   /** Visually hidden; written only when an estimate starts or settles, never per step. */
   status: HTMLElement;
-  /** Asks again for what failed; shown only then. It never blocks Download. */
   retry: HTMLButtonElement;
   busy: boolean;
 };
@@ -276,7 +272,6 @@ export const mountDownload: MountView = (container, ctx) => {
   let errorText = "";
   let errorRetry = true;
   let lastUrl = "";
-  /** Lines skipped beside the one link being looked up (several lines, one link in them). */
   let skipped: ParsedInput | null = null;
   /** Bumped by every submission; an older lookup's reply is dropped. */
   let ticket = 0;
@@ -290,14 +285,13 @@ export const mountDownload: MountView = (container, ctx) => {
   let subs = new Set<string>();
   let embedSubs = false;
   let fastSave = false;
-  /** The caption track a transcript is made from (transcript-options.ts captionKey). */
   let caption: string | null = null;
   let transcriptFormat: TranscriptFormat = "txt";
-  /** Names the Download button after the type (a transcript is saved, not downloaded). */
   let paintActionLabel: (() => void) | null = null;
   let selected = new Set<number>();
   /** True while an enqueue is in flight or its confirmation is showing. */
   let enqueuing = false;
+  let activeEnqueue: symbol | null = null;
   /** Saved details shown while a fresh lookup runs ("checking"), or after it failed ("stale"). */
   let freshness: "fresh" | "checking" | "stale" = "fresh";
   let staleReason = "";
@@ -306,8 +300,12 @@ export const mountDownload: MountView = (container, ctx) => {
   let freshnessEl: HTMLElement | null = null;
   /** The link the queue has accepted; its details are never kept for a return to this view. */
   let enqueuedResult: ProbeResult | null = null;
+  let spotify: SpotifyMatchController | null = null;
+  let matchView: SpotifyMatchView | null = null;
+  let reviewHost: HTMLElement | null = null;
+  let resultSlot: HTMLElement | null = null;
+  let matchingSessionId = "";
 
-  // ---- Size previews (display only; the download checks free space when it starts) ----
   /** One link: follows the choices, debounced, latest answer only. */
   let previewLine: EstimateLine | null = null;
   const preview = new PreviewEstimator(
@@ -329,10 +327,8 @@ export const mountDownload: MountView = (container, ctx) => {
   const estimateItem = (item: EstimateItem) => api.estimate(item.url, item.playlistIndex, item.options);
   // Repeats are dropped by the queue's identity (enqueue adds each item once).
   const runOptions = { calls: estimateCalls, id: (item: EstimateItem) => itemKey(item) };
-  /** A playlist's selected entries, only when asked ("Estimate Sizes"). */
   let paintListEstimate: (() => void) | null = null;
   const listRun = new EstimateRun<EstimateItem>(estimateItem, { ...runOptions, onChange: () => paintListEstimate?.() });
-  /** The batch's selected links, only when asked. */
   let paintBatchEstimate: (() => void) | null = null;
   const batchRun = new EstimateRun<EstimateItem>(estimateItem, { ...runOptions, onChange: () => paintBatchEstimate?.() });
 
@@ -378,7 +374,6 @@ export const mountDownload: MountView = (container, ctx) => {
   });
 
   const multiline = () => /[\r\n]/.test(input.value.trim());
-  /** Grows the field with its lines (up to six, then it scrolls) and names the button. */
   function fitInput() {
     const lines = input.value.replace(/\s+$/, "").split(/\r\n|\r|\n/).length;
     input.rows = Math.min(Math.max(lines, 1), 6);
@@ -441,7 +436,6 @@ export const mountDownload: MountView = (container, ctx) => {
     if (!store.tools.ytdlp && !store.toolBusy.ytdlp && !store.toolError.ytdlp) void installEngine();
   });
 
-  /** Shows a lookup result with every option back at its default. */
   function showResult(next: ProbeResult) {
     result = next;
     store.previews.begin(next.url); // a new link replaces the one kept, with its choices and estimates
@@ -461,7 +455,81 @@ export const mountDownload: MountView = (container, ctx) => {
     listRun.reset();
   }
 
-  /** Takes refreshed details while keeping the choices already made. */
+  /** Drops the matching session and its panel; what a return would restore is left alone. */
+  function clearSpotifyView() {
+    spotify?.dispose();
+    spotify = null;
+    matchView?.dispose();
+    matchView = null;
+    reviewHost = null;
+    resultSlot = null;
+  }
+
+  function clearSpotify() {
+    clearSpotifyView();
+    store.spotifyMatch = null;
+  }
+
+  function createSpotify() {
+    matchingSessionId = crypto.randomUUID();
+    const controller = new SpotifyMatchController({
+      resolve: api.resolveSpotify,
+      search: api.searchSpotify,
+      probe: api.probe,
+    }, (state) => {
+      if (spotify !== controller) return;
+      ticket += 1;
+      const before = phase;
+      const focusDownload = state.stage === "confirmed"
+        && document.activeElement === matchView?.el.querySelector(".spotify-status");
+      if (state.stage === "confirmed" && state.confirmed) {
+        if (result?.url !== state.confirmed.url) showResult(controller.snapshot().confirmed!);
+        mode = "audio";
+        freshness = "fresh";
+        staleReason = "";
+        phase = "result";
+      } else {
+        result = null;
+        phase = "spotify";
+        preview.cancel();
+        store.previews.clear();
+      }
+      // While the user types or the results change, only the panel itself is updated in
+      // place: rebuilding the stage would drop the query field and an IME composition.
+      if (phase !== before || phase === "result" || !matchView || !stage.contains(matchView.el)) render();
+      else paintMatching();
+      if (focusDownload) resultSlot?.querySelector<HTMLButtonElement>(".actions .btn-primary")?.focus({ preventScroll: true });
+    });
+    spotify = controller;
+    matchView = mountSpotifyMatch({
+      setQuery: (query) => { if (!enqueuing) controller.setQuery(query); },
+      search: () => { if (!enqueuing) void controller.search(); },
+      select: (id) => { if (!enqueuing) controller.select(id); },
+      confirm: () => { if (!enqueuing) void controller.confirm(); },
+      retry: () => { if (!enqueuing) void controller.open(lastUrl); },
+    });
+    resultSlot = h("div", { class: "spotify-result" });
+    reviewHost = h("div", { class: "spotify-review" }, matchView.el, resultSlot);
+    return controller;
+  }
+
+  function paintMatching() {
+    if (!spotify || !matchView) return;
+    reviewHost?.setAttribute("data-confirmed", String(spotify.state.stage === "confirmed"));
+    if (resultSlot) resultSlot.hidden = spotify.state.stage !== "confirmed";
+    matchView.update(spotify.state);
+    if (enqueuing) matchView.el.querySelectorAll<HTMLInputElement | HTMLButtonElement>("input, button").forEach((el) => { el.disabled = true; });
+  }
+
+  /** Makes the stage hold exactly these nodes, without moving (and so unfocusing) any that stay. */
+  function syncStage(wanted: (HTMLElement | null)[]) {
+    const nodes = wanted.filter((node): node is HTMLElement => node !== null);
+    for (const child of Array.from(stage.children)) if (!nodes.includes(child as HTMLElement)) stage.removeChild(child);
+    nodes.forEach((node, index) => {
+      if (stage.children[index] !== node) stage.insertBefore(node, stage.children[index] ?? null);
+    });
+  }
+
   function adoptRefresh(next: ProbeResult) {
     const before = result;
     result = next;
@@ -513,7 +581,21 @@ export const mountDownload: MountView = (container, ctx) => {
   // that is actually looked up, or adding every row ends it.
   async function lookUp(url: string, issues: ParsedInput | null = null) {
     const mine = ++ticket;
+    activeEnqueue = null;
+    enqueuing = false;
+    clearSpotify();
     skipped = issues;
+    if (isSpotifyInput(url)) {
+      lastUrl = url;
+      result = null;
+      freshness = "fresh";
+      staleReason = "";
+      store.previews.clear();
+      phase = "spotify";
+      const controller = createSpotify();
+      await controller.open(url);
+      return;
+    }
     if (!looksLikeUrl(url)) {
       lastUrl = "";
       return showError("Couldn't read that link", "That does not look like a link. Paste the full address, starting with https://");
@@ -526,7 +608,6 @@ export const mountDownload: MountView = (container, ctx) => {
     }
     lastUrl = url;
 
-    // Saved details show at once; the lookup below checks them.
     const cached = await api.cachedLink(url).catch(() => null);
     if (mine !== ticket) return; // a newer request replaced this one
     if (cached) {
@@ -575,9 +656,11 @@ export const mountDownload: MountView = (container, ctx) => {
     render();
   }
 
-  /** Several links: each is looked up (three at a time); nothing downloads until asked. */
   async function submitBatch(parsed: ParsedInput) {
     const mine = ++ticket;
+    activeEnqueue = null;
+    enqueuing = false;
+    clearSpotify();
     lastUrl = "";
     skipped = null;
     if (parsed.overLimit) {
@@ -655,12 +738,10 @@ export const mountDownload: MountView = (container, ctx) => {
     paintLine(previewLine, size, detail, preview.state.status === "loading", false, preview.failed);
   }
 
-  /** The line under a list, and its button, for a run of estimates. */
   function paintRun(run: EstimateRun<EstimateItem>, line: EstimateLine, btn: HTMLButtonElement, count: number) {
     const s = run.state;
     const finished = run.key !== null && !s.running && s.done > 0;
     paintLine(line, describeRun(run), finished ? (aggregate(s.results).tempText ?? "") : "", s.running, true, run.canRetry);
-    // Named apart from the batch's own Stop (which stops reading links).
     setText(btn.querySelector("span")!, s.running ? "Stop Estimating" : "Estimate Sizes");
     const title = s.running
       ? "Stops estimating. Sizes already read stay; estimates already running finish in the background and are ignored."
@@ -675,9 +756,22 @@ export const mountDownload: MountView = (container, ctx) => {
   async function startDownload(trigger?: HTMLButtonElement) {
     // A double click, or a click during the confirmation, would queue it twice.
     if (!result || enqueuing) return;
+    const match = spotify?.state;
+    if (spotify && (match?.stage !== "confirmed" || match.confirmed?.url !== result.url || result.audioAvailable !== true)) return;
     enqueuing = true;
+    const enqueueToken = Symbol();
+    activeEnqueue = enqueueToken;
     const mine = ticket;
     const sent = result;
+    const sentSessionId = spotify ? matchingSessionId : null;
+    const settleMatch = (accepted: boolean) => {
+      if (!sentSessionId) return;
+      if (store.spotifyMatch?.sessionId === sentSessionId) {
+        if (accepted) store.spotifyMatch = null;
+        else store.spotifyMatch.enqueuePending = false;
+      }
+      store.emit("spotifyMatch", { sessionId: sentSessionId, accepted });
+    };
     if (trigger) trigger.disabled = true;
     const items =
       result.kind === "playlist"
@@ -701,12 +795,14 @@ export const mountDownload: MountView = (container, ctx) => {
             },
           ];
     try {
-      // The looked-up link, so its details are saved in the link cache.
       store.previews.adding(sent.url); // a view left from here is not shown as new on a return
-      const added = await api.enqueue(items, currentOptions(), lastUrl || result.url);
+      const origin = match?.track ? { kind: "spotifyYouTube" as const, spotifyUrl: match.track.url, spotifyTitle: match.track.title, spotifyArtists: [...match.track.artists] } : null;
+      const added = await api.enqueue(items.map((item) => ({ ...item, matchOrigin: origin })), currentOptions(), spotify ? sent.url : lastUrl || sent.url);
       // Usually already applied from the jobs-added event; the revisions make this a no-op.
       store.addJobs(added);
       enqueuedResult = sent;
+      // The mounted view handles its own success below; a replacement view receives this.
+      if (mine !== ticket) settleMatch(true);
       store.previews.clearFor(sent.url); // added to the queue: its details and estimates are done with
       const jobs = added.jobs;
       if (trigger) {
@@ -718,19 +814,24 @@ export const mountDownload: MountView = (container, ctx) => {
         action: { label: "View Queue", run: () => store.go("queue") },
       });
       if (mine !== ticket) return; // another link was submitted meanwhile
+      clearSpotify();
       input.value = "";
       fitInput();
       lastUrl = "";
       result = null;
-      // Back to the list this link was looked up over, if there is one.
       phase = store.batch ? "batch" : "idle";
       render();
     } catch (error) {
+      settleMatch(false);
       store.previews.addFailed(sent.url);
       toast(errorMessage(error), { tone: "error" });
       if (trigger) trigger.disabled = false;
     } finally {
-      enqueuing = false;
+      if (activeEnqueue === enqueueToken) {
+        enqueuing = false;
+        activeEnqueue = null;
+        if (spotify) render();
+      }
     }
   }
 
@@ -899,6 +1000,7 @@ export const mountDownload: MountView = (container, ctx) => {
       },
     );
     const typeRow = row("Type", typeSeg.el, typeHint);
+    typeRow.hidden = spotify !== null;
     const panel = group(typeRow);
     const body = h("div", { class: "options-body" }, panel);
 
@@ -979,12 +1081,11 @@ export const mountDownload: MountView = (container, ctx) => {
               audioFormat = value;
               scheduleEstimate();
             }),
-            audioHint(),
+            spotify ? `${audioHint()} FLAC and WAV conversion cannot improve the YouTube source quality.` : audioHint(),
           ),
         );
       }
       if (mode !== "transcript") rows.push(fastSaveRow());
-      // Everything after the Type row is replaced; the Type row itself stays.
       while (typeRow.nextSibling) typeRow.nextSibling.remove();
       append(panel, rows);
       paintActionLabel?.();
@@ -1034,6 +1135,7 @@ export const mountDownload: MountView = (container, ctx) => {
           h("span", { class: "save-to", text: `Saves to ${folderName(store.settings.outputDir)}` }),
           (() => {
             const btn: HTMLButtonElement = button({ label: "Download", icon: "download", variant: "primary", onClick: () => void startDownload(btn) });
+            btn.disabled = enqueuing;
             paintActionLabel = () => {
               // The "Added" confirmation stays as it is until the view resets.
               if (btn.classList.contains("confirmed")) return;
@@ -1049,7 +1151,6 @@ export const mountDownload: MountView = (container, ctx) => {
     return wrap;
   }
 
-  // ---- Several links ---------------------------------------------------------------
 
   async function addBatch() {
     const session = store.batch;
@@ -1082,7 +1183,6 @@ export const mountDownload: MountView = (container, ctx) => {
   }
 
   function rowNote(r: BatchRow<ProbeResult>): [string, string] {
-    // Created now, or already waiting there with the same choices: either way it is queued.
     if (r.added) return ["In the queue", "done"];
     switch (r.status) {
       case "waiting":
@@ -1428,7 +1528,6 @@ export const mountDownload: MountView = (container, ctx) => {
     );
   }
 
-  /** Shown above a single link's details, or an error, while a batch is kept behind them. */
   function batchReturn(): HTMLElement | null {
     if (!store.batch || phase === "batch") return null;
     const total = store.links.rows.length;
@@ -1442,6 +1541,7 @@ export const mountDownload: MountView = (container, ctx) => {
         variant: "secondary",
         size: "small",
         onClick: () => {
+          clearSpotify();
           ticket += 1; // a single lookup still running is dropped
           lastUrl = "";
           result = null;
@@ -1479,7 +1579,6 @@ export const mountDownload: MountView = (container, ctx) => {
     const changed = key !== shownKey;
     shownKey = key;
     const back = batchReturn();
-    // Shown with the single link's loading, error and details; never with a batch.
     const issues = skipped && phase !== "idle" && phase !== "batch" ? renderIssues(skipped) : null;
     switch (phase) {
       case "loading":
@@ -1501,10 +1600,19 @@ export const mountDownload: MountView = (container, ctx) => {
         break;
       case "result": {
         const shown = renderResult(result!);
-        replace(stage, back, issues, shown);
+        if (spotify && reviewHost && resultSlot) {
+          replace(resultSlot, shown);
+          syncStage([back, issues, reviewHost]);
+          paintMatching();
+        } else replace(stage, back, issues, shown);
         if (changed) stageAnimation = settleIn(shown);
         break;
       }
+      case "spotify":
+        if (resultSlot) clear(resultSlot);
+        syncStage([back, issues, reviewHost]);
+        paintMatching();
+        break;
       case "batch":
         if (!store.batch) {
           phase = "idle";
@@ -1541,7 +1649,7 @@ export const mountDownload: MountView = (container, ctx) => {
     if (!pasted) return;
     input.value = pasted;
     fitInput();
-    if (looksLikeUrl(pasted)) void submit();
+    if (looksLikeUrl(pasted) || isSpotifyInput(pasted)) void submit();
     else input.focus();
   };
   const offPaste = store.on("paste", takePaste);
@@ -1554,10 +1662,34 @@ export const mountDownload: MountView = (container, ctx) => {
     render();
   });
   const offBatchRow = store.on("batchRow", (detail) => batchView?.paintRow(detail as BatchRow<ProbeResult>));
+  const offSpotify = store.on("spotifyMatch", (detail) => {
+    const outcome = detail as { sessionId: string; accepted: boolean };
+    if (!spotify || matchingSessionId !== outcome.sessionId) return;
+    enqueuing = false;
+    if (outcome.accepted) {
+      clearSpotify();
+      result = null;
+      lastUrl = "";
+      input.value = "";
+      phase = store.batch ? "batch" : "idle";
+    }
+    render();
+  });
 
   // Back from another view: the link's details, the choices made over them and the estimates
   // already read come back as they were left. Nothing that was still running is revived.
-  const returning = store.previews.take();
+  const matchingReturn = store.spotifyMatch;
+  const returning = matchingReturn ? null : store.previews.take();
+  if (matchingReturn) {
+    lastUrl = matchingReturn.snapshot.url;
+    input.value = lastUrl;
+    fitInput();
+    createSpotify().restore(matchingReturn.snapshot);
+    matchingSessionId = matchingReturn.sessionId;
+    enqueuing = matchingReturn.enqueuePending;
+    audioFormat = matchingReturn.audioFormat;
+    fastSave = matchingReturn.fastSave;
+  }
   if (returning) {
     result = returning.result;
     lastUrl = returning.typedUrl;
@@ -1581,6 +1713,11 @@ export const mountDownload: MountView = (container, ctx) => {
 
   /** Leaving the view: keeps what a return needs, as plain data, and stops what is running. */
   function saveSession() {
+    if (spotify) {
+      store.spotifyMatch = enqueuedResult !== null && result === enqueuedResult ? null : { snapshot: spotify.snapshot(), audioFormat, fastSave, sessionId: matchingSessionId, enqueuePending: enqueuing };
+      store.previews.clear();
+      return;
+    }
     if (phase === "result" && result && result !== enqueuedResult) {
       listRun.cancel(); // what it read stays; the calls still on their way are ignored
       const checking = freshness === "checking";
@@ -1611,12 +1748,14 @@ export const mountDownload: MountView = (container, ctx) => {
 
   return () => {
     saveSession();
+    clearSpotifyView();
     offPaste();
     offFocus();
     offTools.forEach((off) => off());
     offHistory();
     offBatch();
     offBatchRow();
+    offSpotify();
     batchView?.dispose();
     batchView = null;
     stageAnimation?.cancel();

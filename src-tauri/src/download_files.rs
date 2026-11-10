@@ -1351,7 +1351,6 @@ mod tests {
         let _ = fs::remove_dir_all(out);
     }
 
-    // ---- Verified roots --------------------------------------------------------------------
 
     /// Rewrites fields of a workspace's marker the way a copied or edited marker would.
     fn alter_marker(workspace: &Path, change: impl FnOnce(&mut serde_json::Value)) {
@@ -1502,7 +1501,6 @@ mod tests {
         let _ = fs::remove_dir_all(out);
     }
 
-    // ---- Evidence and verified deletion ---------------------------------------------------
 
     #[test]
     fn publication_evidence_holds_the_media_identity_and_only_done_sidecars() {
@@ -1614,7 +1612,6 @@ mod tests {
         }
     }
 
-    // ---- Kept side files ------------------------------------------------------------------
 
     /// A published download whose `clip.en.srt` was taken by the user's own file.
     fn withheld_set(tag: &str) -> (PathBuf, Manifest, WorkspaceRef) {

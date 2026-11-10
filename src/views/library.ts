@@ -9,11 +9,11 @@ import { button, confirmSheet, toast } from "../ui/components";
 import { h, replace } from "../ui/dom";
 import { icon } from "../ui/icons";
 import { fileDragButton } from "../ui/file-drag";
+import { matchesLibrarySearch } from "../library-search";
 import type { MountView } from "./shell";
 
 const fail = (error: unknown) => toast(errorMessage(error), { tone: "error" });
 
-/** Opens the folder of an entry's kept subtitle files and says what happened, success or not. */
 export async function showKept(id: string) {
   try {
     const outcome = keptOutcome(await api.showKeptFiles(id));
@@ -94,6 +94,7 @@ function tile(item: HistoryItem): HTMLElement {
       { class: "tile-text" },
       h("span", { class: "tile-title", text: item.title, attrs: { title: item.title } }),
       item.uploader ? h("span", { class: "tile-sub", text: item.uploader }) : null,
+      item.matchOrigin ? h("span", { class: "tile-sub", text: "Source: YouTube match", attrs: { title: [item.matchOrigin.spotifyTitle, ...item.matchOrigin.spotifyArtists].filter(Boolean).join(" · ") } }) : null,
       h("span", { class: "tile-sub", text: meta }),
       h("span", { class: "tile-date", text: formatDate(item.finishedAt) }),
       // Always visible (the hover actions are not): a kept file must stay findable.
@@ -128,7 +129,6 @@ export const mountLibrary: MountView = (container, ctx) => {
   });
   ctx.setActions([searchBox, clearAll]);
 
-  // Folders that could not be checked for kept subtitle files of older downloads, with a retry.
   const keptNote = h("div", { class: "kept-note glass", attrs: { role: "status" } });
   keptNote.hidden = true;
   const paintKeptNote = (report: Parameters<typeof repairNote>[0]) => {
@@ -170,7 +170,7 @@ export const mountLibrary: MountView = (container, ctx) => {
   const render = () => {
     const query = search.value.trim().toLowerCase();
     const items = store.history.filter(
-      (i) => !query || i.title.toLowerCase().includes(query) || (i.uploader ?? "").toLowerCase().includes(query),
+      (i) => matchesLibrarySearch(i, query),
     );
     tiles.prune(new Set(store.history.map((i) => i.id)));
     clearAll.disabled = store.history.length === 0;

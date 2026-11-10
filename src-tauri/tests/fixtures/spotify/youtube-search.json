@@ -1,0 +1,5 @@
+{"_type":"playlist","entries":[
+  {"_type":"url","ie_key":"Youtube","id":"abcdefghijk","url":"https://www.youtube.com/watch?v=abcdefghijk","title":"Believe","uploader":"Cher","duration":200,"thumbnail":"https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg"},
+  {"_type":"url","ie_key":"Youtube","id":"bcdefghijkl","url":"https://www.youtube.com/watch?v=bcdefghijkl","title":"Believe live cover","uploader":"Cher","duration":245},
+  {"_type":"url","ie_key":"Youtube","id":"cdefghijklm","url":"https://www.youtube.com/watch?v=cdefghijklm","title":"Believe","uploader":"Cher","duration":245}
+]}

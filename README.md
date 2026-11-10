@@ -46,6 +46,7 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 - **Drag into an editor.** A finished download in the Library or the Queue has a *Drag file* handle that starts a real Windows file drag (copy only), so you can drop the file into Explorer or an editor's media bin. The file stays in your Library. Press Enter on the handle to show the file in its folder instead.
 - **Fast Save.** An optional per-download switch. It skips writing metadata into the file, skips embedding the cover art (MP3 and M4A audio) and keeps subtitles as separate `.srt` files, so a large file is not rewritten after it downloads. Conversion or merging that the chosen format needs still happens. The video and audio are the same either way.
 - **Audio without needless conversion.** With *Prefer matching source audio* on, an audio stream already in the chosen format is saved by copying it instead of converting it.
+- **Spotify track matching.** Paste a single `https://open.spotify.com/track/...` song link (localized track links also work), or a `https://spotify.link/...` short link that resolves through supported Spotify hosts. Claws reads public song details and searches YouTube. Select a recording, press **Use this match** to check its audio, then choose an audio format and press **Download**. Nothing is selected or downloaded automatically. The Queue and Library label these files **Source: YouTube match**. The file is YouTube audio; the recording/version may differ, and FLAC or WAV conversion cannot improve its original quality. No Spotify account or developer credentials are needed. If public metadata fails, enter the artist/title to search manually. Albums, playlists, Spotify URIs and batch matching are not supported; open each track individually. Short links that redirect outside the supported hosts require the full track URL.
 - **Playlists and channels.** Pick exactly which videos to download.
 
 **Managing**
@@ -80,7 +81,7 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 2. Run it. Releases are not code-signed yet, so Windows SmartScreen may warn on first run; choose **More info → Run anyway**.
 3. On first launch Claws downloads yt-dlp into its own folder and verifies it against the checksum yt-dlp publishes. This happens once and takes a few seconds.
 
-The current version is **Claws 1.0.7**, available from [GitHub Releases](https://github.com/ppolkadot/Claws/releases/tag/v1.0.7). The [repository installer](installers/Claws_1.0.7_x64-setup.exe), [SHA-256 checksum](installers/Claws_1.0.7_x64-setup.exe.sha256) and [release notes](docs/releases/1.0.7.md) are included here too. This fixes finished-download errors for Unicode filenames on Windows. After installing, use **Try Again** on affected jobs to reuse their retained downloads.
+The current local build is **Claws 1.0.8**, with [Windows installer](installers/Claws_1.0.8_x64-setup.exe), [SHA-256 checksum](installers/Claws_1.0.8_x64-setup.exe.sha256) and [release notes](docs/releases/1.0.8.md). It adds Spotify track matching through explicitly confirmed YouTube recordings and includes the Unicode-path correction from 1.0.7. Version 1.0.8 has not been published to GitHub; the previous published release is [1.0.7](https://github.com/ppolkadot/Claws/releases/tag/v1.0.7).
 
 The application identifier and data location remain unchanged. Queue schema remains 3: old 1.0.5 cannot execute these jobs, but this build can recover an unambiguous queue it preserved. Live clean-install/upgrade and editor-drag acceptance remain outstanding. Earlier installers and the 1.0.0 Beta release are retained as historical artifacts.
 
@@ -239,7 +240,7 @@ npm run tauri build     # produce the installer in src-tauri/target/release/bund
 - a capture script that verifies the desktop glass against a test pattern, and refuses to capture if another window overlaps Claws;
 - a download-phase timer.
 
-See [`docs/HANDOFF.md`](docs/HANDOFF.md) for how to use them.
+See the [developer handoff](docs/HANDOFF.md) for tool usage and the [documentation index](docs/README.md) for current guidance and historical references.
 
 ## Project structure
 

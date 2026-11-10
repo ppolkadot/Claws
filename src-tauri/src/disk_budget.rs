@@ -21,7 +21,6 @@ const MIN_MARGIN: u64 = 512 * MIB;
 /// While watching a job of unknown size, stop below this much free space.
 pub const WATCH_FLOOR: u64 = 256 * MIB;
 
-/// What the download will do with its streams after transferring them.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Steps {
     /// Video and audio are merged into a new file (both inputs exist meanwhile).
@@ -41,19 +40,11 @@ pub fn known_total(streams: &[Option<u64>]) -> Option<u64> {
 /// the arithmetic overflows, or the result would be zero (an empty or zero-sized plan is
 /// not a measurement, so it never becomes a zero-byte reservation).
 ///
-/// This is an upper-bound estimate, not a measured peak. For an audio conversion of source
-/// `S` into output `O` it assumes the source is still on disk while the output is made
-/// (`S + O`) and, when a later pass rewrites the output (metadata or cover art), while that
-/// pass writes its temporary copy too (`S + 2 * O`). yt-dlp normally deletes the source
-/// first, which would make the true peak `max(S + O, 2 * O)`: with yt-dlp 2026.10.26 and the
-/// bundled ffmpeg on synthetic media, every conversion logged "Deleting original file"
-/// before the metadata pass, and the largest observed folder was `2 * O` (WAV, FLAC, MP3,
-/// M4A, Opus). That is one tool version on one volume, the same one Claws runs from (not a
-/// disposable volume), and only folder sizes were recorded: processing time and disk I/O
-/// were not measured. A failed deletion (a file held open
-/// by a scanner) leaves the source behind, and Claws does not check the order at run time,
-/// so the lower figure is not used. The output size `O` itself is an assumption for lossy
-/// targets (see `audio_output`).
+/// Conservatively keeps source `S` alongside output `O`: `S + O`, or `S + 2 * O`
+/// when a later metadata or cover-art pass rewrites the output. A failed source
+/// deletion can leave both files on disk, and deletion order is not checked at
+/// runtime, so the lower `max(S + O, 2 * O)` estimate is unsafe. Lossy output size
+/// `O` is itself an assumption (see `audio_output`).
 pub fn peak_bytes(streams: &[Option<u64>], steps: Steps) -> Option<u64> {
     let total = known_total(streams)?;
     let peak = match steps.audio_output {
@@ -89,9 +80,6 @@ pub fn audio_output(format: &str, source: Option<u64>, duration: Option<f64>) ->
 /// What one download does with the streams it selects, as far as disk space goes. Both the
 /// admission check (downloader.rs `Budget`) and the size preview (estimate.rs) size a run
 /// through this, so the preview shows exactly the peak admission would reserve.
-///
-/// Extension point: a later processing stage (a clipped range, an editing transcode) adds
-/// its own term here, so admission and the preview keep agreeing.
 #[derive(Clone, Copy, Debug)]
 pub struct RunPlan<'a> {
     /// "video" or "audio".

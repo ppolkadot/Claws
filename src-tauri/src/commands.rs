@@ -62,6 +62,16 @@ pub async fn probe_url(app: AppHandle, url: String) -> Result<ProbeResult> {
     probe::probe(&app, &url).await
 }
 
+#[tauri::command]
+pub async fn resolve_spotify_track(app: AppHandle, url: String) -> std::result::Result<crate::spotify::SpotifyResolution, crate::spotify::SpotifyLookupError> {
+    crate::spotify::resolve(&app, &url).await
+}
+
+#[tauri::command]
+pub async fn search_spotify_matches(app: AppHandle, track: crate::spotify::SpotifyTrack, query: String) -> Result<Vec<crate::spotify_match::YouTubeCandidate>> {
+    crate::spotify_match::search(&app, track, &query).await
+}
+
 /// A size and free-space preview for one item with these options. Display only: the
 /// download still checks the actual free space when it starts.
 #[tauri::command]
@@ -151,7 +161,6 @@ pub fn save_settings(
     .flatten()
     .collect();
     let warning = (!warnings.is_empty()).then(|| warnings.join(" "));
-    // A higher concurrency limit can start waiting jobs right away.
     downloader::pump(&app);
     Ok(SavedSettings { settings, warning })
 }
@@ -221,7 +230,6 @@ pub async fn repair_kept_files(app: AppHandle) -> Result<RepairReport> {
     Ok(tauri::async_runtime::spawn_blocking(move || history::repair_kept_files(&app)).await?)
 }
 
-/// What the last look for kept side files found (see `repair_kept_files`).
 #[tauri::command]
 pub fn kept_files_report(app: AppHandle) -> RepairReport {
     history::last_repair(&app)
