@@ -32,9 +32,10 @@ import { store, type BatchChoices, type BatchSession, type EstimateItem } from "
 import { button, chipRadio, segmented, toast, toggle } from "../ui/components";
 import { append, clear, h, replace } from "../ui/dom";
 import { icon } from "../ui/icons";
-import { group, progressBar, row, sectionTitle, setProgress, spinner } from "../ui/layout";
+import { group, row, sectionTitle, spinner } from "../ui/layout";
 import { settleIn } from "../ui/motion";
 import { subtitleChips } from "../ui/subtitle-chips";
+import { mountSetupPanel } from "./setup-panel";
 import type { MountView } from "./shell";
 import { SpotifyMatchController, isSpotifyInput } from "../spotify-match";
 import { mountSpotifyMatch, type SpotifyMatchView } from "./spotify-match";
@@ -396,45 +397,8 @@ export const mountDownload: MountView = (container, ctx) => {
   const stage = h("div", { class: "stage" });
   container.append(urlBar, setup, stage);
 
-  const paintSetup = () => {
-    if (!store.toolsKnown) return clear(setup);
-    const missing = !store.tools.ytdlp;
-    const busy = Boolean(store.toolBusy.ytdlp);
-    const error = store.toolError.ytdlp;
-    if (!missing && !busy && !error) return clear(setup);
-
-    const progress = store.toolProgress.ytdlp;
-    const fraction = progress && progress.total > 0 ? progress.received / progress.total : null;
-    const bar = progressBar(fraction);
-    setProgress(bar, busy ? fraction : 0);
-    replace(
-      setup,
-      h(
-        "div",
-        { class: `banner glass${error ? " banner-error" : ""}`, attrs: { role: "status" } },
-        h(
-          "div",
-          { class: "banner-text" },
-          h("strong", { text: error ? "Setup could not finish" : "Setting up Claws" }),
-          h("span", {
-            text: error
-              ? error
-              : "Downloading yt-dlp, the engine that reads each site. This happens once and takes a moment.",
-          }),
-          busy ? bar : null,
-        ),
-        error
-          ? button({ label: "Try Again", icon: "retry", variant: "primary", onClick: () => void installEngine() })
-          : null,
-      ),
-    );
-  };
-  const installEngine = () => store.runTool("ytdlp", api.installYtdlp);
-  const offTools = [store.on("tools", paintSetup), store.on("toolProgress", paintSetup)];
-  paintSetup();
-  void store.toolsReady.then(() => {
-    if (!store.tools.ytdlp && !store.toolBusy.ytdlp && !store.toolError.ytdlp) void installEngine();
-  });
+  // Nothing is installed until the panel's button is pressed.
+  const offSetup = mountSetupPanel(setup);
 
   function showResult(next: ProbeResult) {
     result = next;
@@ -604,7 +568,7 @@ export const mountDownload: MountView = (container, ctx) => {
     if (mine !== ticket) return;
     if (!store.tools.ytdlp) {
       lastUrl = "";
-      return showError("Couldn't read that link", "yt-dlp is still being set up. Try again in a moment.");
+      return showError("Couldn't read that link", "yt-dlp is not installed yet. Press Set Up Everything above, then try again.");
     }
     lastUrl = url;
 
@@ -676,7 +640,7 @@ export const mountDownload: MountView = (container, ctx) => {
     }
     await store.toolsReady;
     if (mine !== ticket) return;
-    if (!store.tools.ytdlp) return showError("Couldn't read those links", "yt-dlp is still being set up. Try again in a moment.");
+    if (!store.tools.ytdlp) return showError("Couldn't read those links", "yt-dlp is not installed yet. Press Set Up Everything above, then try again.");
     input.value = "";
     fitInput();
     phase = "batch";
@@ -1751,7 +1715,7 @@ export const mountDownload: MountView = (container, ctx) => {
     clearSpotifyView();
     offPaste();
     offFocus();
-    offTools.forEach((off) => off());
+    offSetup();
     offHistory();
     offBatch();
     offBatchRow();

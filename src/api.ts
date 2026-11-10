@@ -162,6 +162,8 @@ export interface PublishedFile {
   state: "moving" | "done" | "withheld";
 }
 
+import type { ToolName } from "./setup.js";
+
 export interface ToolInfo {
   path: string;
   version: string;
@@ -173,6 +175,8 @@ export interface ToolInfo {
 export interface ToolsStatus {
   ytdlp: ToolInfo | null;
   ffmpeg: ToolInfo | null;
+  /** Deno, installed by Claws or found on PATH. Null while only Node.js is present. */
+  deno: ToolInfo | null;
   latestYtdlp: string | null;
   /** "Deno" or "Node.js", the JavaScript runtime yt-dlp uses for sites like YouTube. */
   jsRuntime: string | null;
@@ -236,7 +240,7 @@ export interface EnqueueItem {
 }
 
 export interface ToolProgress {
-  tool: "ytdlp" | "ffmpeg";
+  tool: ToolName;
   received: number;
   total: number;
   stage: "download" | "extract";
@@ -333,6 +337,7 @@ export const api = {
   installYtdlp: () => invoke<ToolsStatus>("install_ytdlp"),
   updateYtdlp: () => invoke<ToolsStatus>("update_ytdlp"),
   installFfmpeg: () => invoke<ToolsStatus>("install_ffmpeg"),
+  installDeno: () => invoke<ToolsStatus>("install_deno"),
   openFontPage: () => invoke<void>("open_font_page"),
 };
 

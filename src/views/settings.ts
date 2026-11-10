@@ -1,6 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { api, errorMessage, type Backdrop, type CookieKind, type QuickOpenShortcut, type Theme } from "../api";
+import type { ToolName } from "../setup";
 import { store } from "../store";
 import { button, chipRadio, segmented, slider, stepper, toast, toggle } from "../ui/components";
 import { h, replace } from "../ui/dom";
@@ -284,11 +285,12 @@ function buildSettings(container: HTMLElement): () => void {
 
   const toolsGroup = h("div", { class: "tools" });
   const paintTools = () => {
-    const { ytdlp, ffmpeg, jsRuntime } = store.tools;
+    const { ytdlp, ffmpeg, deno, jsRuntime } = store.tools;
+    const denoBusy = Boolean(store.toolBusy.deno);
     const ytdlpBusy = Boolean(store.toolBusy.ytdlp);
     const ffmpegBusy = Boolean(store.toolBusy.ffmpeg);
 
-    const progressFor = (tool: "ytdlp" | "ffmpeg") => {
+    const progressFor = (tool: ToolName) => {
       const p = store.toolProgress[tool];
       const fraction = p && p.total > 0 ? p.received / p.total : null;
       const bar = progressBar(fraction);
@@ -351,24 +353,35 @@ function buildSettings(container: HTMLElement): () => void {
           ffmpegHint,
         ),
         row(
-          "JavaScript runtime",
-          store.toolsKnown
-            ? h(
-                "span",
-                { class: "font-status" },
-                h("span", { class: "tool-dot", attrs: { "data-state": jsRuntime ? "ok" : "missing" } }),
-                jsRuntime ?? "Not found",
-              )
-            : null,
+          `JavaScript runtime${deno ? `  Deno ${deno.version}` : ""}`,
           !store.toolsKnown
-            ? "Checking…"
+            ? null
             : jsRuntime
-              ? `Found on your PATH. yt-dlp uses ${jsRuntime} to read sites such as YouTube.`
-              : "YouTube and some other sites need Deno or Node.js. Install one (deno.com is the simplest), then restart Claws.",
+              ? h(
+                  "span",
+                  { class: "font-status" },
+                  h("span", { class: "tool-dot", attrs: { "data-state": "ok" } }),
+                  jsRuntime,
+                )
+              : h(
+                  "div",
+                  { class: "tool-control" },
+                  denoBusy ? progressFor("deno") : null,
+                  button({ label: "Install", icon: "download", variant: "secondary", size: "small", onClick: () => void store.runTool("deno", api.installDeno) }),
+                ),
+          store.toolError.deno
+            ? store.toolError.deno
+            : !store.toolsKnown
+              ? "Checking…"
+              : deno?.managed
+                ? "Installed by Claws. yt-dlp uses Deno to read sites such as YouTube."
+                : jsRuntime
+                  ? `Found on your PATH. yt-dlp uses ${jsRuntime} to read sites such as YouTube.`
+                  : "YouTube and some other sites need a JavaScript runtime. Install Deno here; it is checked against its published checksum.",
         ),
       ),
     );
-    toolsGroup.querySelectorAll<HTMLButtonElement>("button").forEach((b) => (b.disabled = ytdlpBusy || ffmpegBusy));
+    toolsGroup.querySelectorAll<HTMLButtonElement>("button").forEach((b) => (b.disabled = ytdlpBusy || ffmpegBusy || denoBusy));
   };
   const offTools = [store.on("tools", paintTools), store.on("toolProgress", paintTools)];
   paintTools();

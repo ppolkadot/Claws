@@ -167,6 +167,7 @@ pub fn run() {
             commands::install_ytdlp,
             commands::update_ytdlp,
             commands::install_ffmpeg,
+            commands::install_deno,
             commands::default_output_dir,
             commands::open_font_page,
         ])

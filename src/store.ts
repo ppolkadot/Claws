@@ -1,3 +1,4 @@
+import type { ToolName } from "./setup";
 import {
   api,
   errorMessage,
@@ -114,10 +115,12 @@ class Store {
   /** The download list, kept in creation order from revisioned events. */
   readonly jobs = new JobTable<Job>();
   history: HistoryItem[] = [];
-  tools: ToolsStatus = { ytdlp: null, ffmpeg: null, latestYtdlp: null, jsRuntime: null };
-  toolProgress: Partial<Record<"ytdlp" | "ffmpeg", ToolProgress>> = {};
-  toolBusy: Partial<Record<"ytdlp" | "ffmpeg", boolean>> = {};
-  toolError: Partial<Record<"ytdlp" | "ffmpeg", string>> = {};
+  tools: ToolsStatus = { ytdlp: null, ffmpeg: null, deno: null, latestYtdlp: null, jsRuntime: null };
+  /** "Not Now" on the setup panel: optional tools are not offered again until the next launch. */
+  setupDismissed = false;
+  toolProgress: Partial<Record<ToolName, ToolProgress>> = {};
+  toolBusy: Partial<Record<ToolName, boolean>> = {};
+  toolError: Partial<Record<ToolName, string>> = {};
 
   /** False until the first tool check returns; until then "not installed" is unknown. */
   toolsKnown = false;
@@ -335,6 +338,11 @@ class Store {
     return url;
   }
 
+  dismissSetup() {
+    this.setupDismissed = true;
+    this.emit("tools");
+  }
+
   setTools(tools: ToolsStatus) {
     this.tools = tools;
     this.emit("tools");
@@ -346,7 +354,7 @@ class Store {
   }
 
   /** Installs queue (the backend refuses a second one), so none is dropped. */
-  runTool(tool: "ytdlp" | "ffmpeg", action: () => Promise<ToolsStatus>, options: { quiet?: boolean } = {}): Promise<void> {
+  runTool(tool: ToolName, action: () => Promise<ToolsStatus>, options: { quiet?: boolean } = {}): Promise<void> {
     if (this.toolPending.has(tool)) return this.toolChain;
     this.toolPending.add(tool);
     this.toolChain = this.toolChain.then(() => this.runToolNow(tool, action, options));
@@ -354,9 +362,9 @@ class Store {
   }
 
   private toolChain: Promise<void> = Promise.resolve();
-  private toolPending = new Set<"ytdlp" | "ffmpeg">();
+  private toolPending = new Set<ToolName>();
 
-  private async runToolNow(tool: "ytdlp" | "ffmpeg", action: () => Promise<ToolsStatus>, options: { quiet?: boolean }) {
+  private async runToolNow(tool: ToolName, action: () => Promise<ToolsStatus>, options: { quiet?: boolean }) {
     this.toolBusy[tool] = true;
     delete this.toolError[tool];
     delete this.toolProgress[tool];
