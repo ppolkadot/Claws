@@ -148,7 +148,8 @@ export class SpotifyMatchController {
       const next = fresh(url);
       next.retryable = issue.retryable;
       next.stage = next.track ? "editable" : "failed";
-      next.error = next.track ? metadataError : issue.retryable ? `${issue.message} Retry, or paste the full Spotify track link.` : issue.message;
+      next.error = next.track ? metadataError
+        : issue.code === "unknown" && issue.retryable ? `${issue.message} Retry, or paste the full Spotify track link.` : issue.message;
       this.publish(next);
     }
   }

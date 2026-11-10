@@ -164,7 +164,11 @@ export function mountSpotifyMatch(actions: SpotifyMatchActions): SpotifyMatchVie
     confirm.disabled = busy || !state.selectedId || state.stage === "confirmed";
     present(confirmedHost, confirmed, state.stage === "confirmed");
     for (const host of [notices, retryHost, candidatesHost, confirmHost, confirmedHost]) host.hidden = !host.firstChild;
-    if (ownedFocus && previousFocus && !el.contains(previousFocus)) {
+    if (previousFocus === confirm && state.stage === "probing") {
+      // Disabling the focused confirmation must not drop keyboard focus out of the stage.
+      status.tabIndex = -1;
+      status.focus({ preventScroll: true });
+    } else if (ownedFocus && previousFocus && !el.contains(previousFocus)) {
       if (!query.disabled) query.focus({ preventScroll: true });
       else { focusQueryAfterResolution = true; status.tabIndex = -1; status.focus({ preventScroll: true }); }
     } else if (focusQueryAfterResolution && !query.disabled) {

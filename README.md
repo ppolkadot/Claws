@@ -81,7 +81,7 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 2. Run it. Releases are not code-signed yet, so Windows SmartScreen may warn on first run; choose **More info → Run anyway**.
 3. On first launch Claws downloads yt-dlp into its own folder and verifies it against the checksum yt-dlp publishes. This happens once and takes a few seconds.
 
-The current version is **Claws 1.0.7**, available from [GitHub Releases](https://github.com/ppolkadot/Claws/releases/tag/v1.0.7). The [repository installer](installers/Claws_1.0.7_x64-setup.exe), [SHA-256 checksum](installers/Claws_1.0.7_x64-setup.exe.sha256) and [release notes](docs/releases/1.0.7.md) are included here too. This fixes finished-download errors for Unicode filenames on Windows. After installing, use **Try Again** on affected jobs to reuse their retained downloads.
+The current local build is **Claws 1.0.8**, with [Windows installer](installers/Claws_1.0.8_x64-setup.exe), [SHA-256 checksum](installers/Claws_1.0.8_x64-setup.exe.sha256) and [release notes](docs/releases/1.0.8.md). It adds Spotify track matching through explicitly confirmed YouTube recordings and includes the Unicode-path correction from 1.0.7. Version 1.0.8 has not been published to GitHub; the previous published release is [1.0.7](https://github.com/ppolkadot/Claws/releases/tag/v1.0.7).
 
 The application identifier and data location remain unchanged. Queue schema remains 3: old 1.0.5 cannot execute these jobs, but this build can recover an unambiguous queue it preserved. Live clean-install/upgrade and editor-drag acceptance remain outstanding. Earlier installers and the 1.0.0 Beta release are retained as historical artifacts.
 

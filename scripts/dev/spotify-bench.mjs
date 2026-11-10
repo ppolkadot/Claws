@@ -114,8 +114,9 @@ try {
   check("No candidate preselected and no Download before confirmation", await evaluate("![...document.querySelectorAll('input[name=spotify-match]')].some(el=>el.checked) && !__s.button('Download')"));
   await evaluate("__s.choose(1)");
   check("Selecting a candidate does not probe or enqueue", await evaluate("!__s.calls.some(c=>c.cmd==='probe_url'||c.cmd==='enqueue')"));
-  await evaluate("__s.click('Use this match')");
+  await evaluate("__s.button('Use this match').focus(); __s.click('Use this match')");
   await until("Boolean(__s.button('Download'))");
+  check("Keyboard confirmation focuses Download instead of the URL field", await evaluate("document.activeElement===__s.button('Download')"));
   check("Desktop confirmed review has two columns", await evaluate("getComputedStyle(document.querySelector('.spotify-review')).gridTemplateColumns.split(' ').length===2 && Boolean(document.querySelector('.spotify-result'))"));
   check("Selected recording receives the sole full probe", await evaluate("JSON.stringify(__s.calls.filter(c=>c.cmd==='probe_url').map(c=>c.payload.url))===JSON.stringify(['https://www.youtube.com/watch?v=abcdefghijk'])"));
   check("Confirmation forces audio and hides Type controls", await evaluate("document.querySelector('[aria-label=Type]').closest('.row').hidden && document.querySelector('[aria-label=Type] [aria-checked=true]').textContent==='Audio Only'"));
