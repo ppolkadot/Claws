@@ -4,7 +4,9 @@ Current local build: **1.0.8**, requested by the owner on 2026-11-09 and prepare
 
 Startup recovery's suppressed kept-file save failure is fixed and has a red/green lifecycle regression. The implementation and regression tests were committed in `356569d` and published as 1.0.0 Beta. Application identifier and queue schema remain unchanged; installer downgrades are explicitly allowed. Live native drag/editor, real-site speed and clean-install/upgrade acceptance remain pending.
 
-Fresh verification for 1.0.7: 410 Rust tests, feature-enabled Clippy with warnings denied, production frontend/font checks, production NSIS build, archive integrity, embedded executable version and exact decompressed font/CSS/JS/license bytes. The unchanged frontend previously passed 241 Node tests, 2 Python tests and a clean-export build for 1.0.6. Native editor drag and live installation/upgrade are still unverified. The 1.0.7 correction follows the 1.0.6 standard release.
+Fresh local verification for 1.0.8: 444 Rust tests (3 live tests ignored), 288 Node tests, 37 mounted Edge checks, feature-enabled Clippy with warnings denied, production frontend/font build and NSIS packaging. The archive, embedded executable version and all seven compressed frontend/font/license assets were verified. Build/source provenance and checksums are recorded alongside the local installer. No installation or remote publication was performed.
+
+Historical verification for 1.0.7: 410 Rust tests, feature-enabled Clippy with warnings denied, production frontend/font checks, production NSIS build, archive integrity, embedded executable version and exact decompressed font/CSS/JS/license bytes. The unchanged frontend previously passed 241 Node tests, 2 Python tests and a clean-export build for 1.0.6. Native editor drag and live installation/upgrade are still unverified. The 1.0.7 correction follows the 1.0.6 standard release.
 
 | Feature | Status | Evidence / limits |
 | --- | --- | --- |
