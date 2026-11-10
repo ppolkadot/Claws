@@ -1,7 +1,4 @@
-// What Fast Save skips, as one decision for the Options panel: pure logic, no DOM, so Node
-// tests can run it (scripts/tests/processing-options.test.mjs). It mirrors the Rust
-// ProcessingPolicy (download_policy.rs), which decides what a download actually runs.
-//
+// Mirrors ProcessingPolicy in download_policy.rs.
 // Contract: Fast Save skips the optional passes that can rewrite the finished file, that is
 // writing metadata, embedding subtitles and embedding cover art. Necessary work stays:
 // audio conversion, merging video with audio and any container repair the download needs.
@@ -9,7 +6,6 @@
 export interface FastSaveChoices {
   mode: "video" | "audio" | "transcript";
   audioFormat: string;
-  /** The setting that writes title, uploader and date into the file. */
   metadata: boolean;
   /** Video only: subtitles are chosen and set to be embedded rather than saved beside it. */
   embeddedSubs: boolean;
@@ -34,7 +30,6 @@ function joined(items: string[]): string {
   return items.length < 3 ? items.join(" and ") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }
 
-/** The hint under the Fast Save toggle. */
 export function fastSaveHint(c: FastSaveChoices): string {
   const skipped = skippedByFastSave(c);
   if (skipped.length === 0) return "Nothing optional to skip with these choices. Conversion and merging, where the format needs them, still happen.";

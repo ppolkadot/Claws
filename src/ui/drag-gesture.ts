@@ -1,6 +1,3 @@
-// The pointer gesture behind a file-drag handle, kept free of the DOM so it is unit-tested
-// (scripts/tests/file-drag-gesture.test.mjs).
-
 /** CSS pixels the pointer travels before a press becomes a drag (Windows' drag box is 4 px). */
 export const DRAG_THRESHOLD = 5;
 

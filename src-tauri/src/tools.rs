@@ -69,7 +69,6 @@ pub fn command(program: &Path) -> Command {
 
 pub fn find_ytdlp(app: &AppHandle) -> Option<PathBuf> {
     let bin = app.state::<AppState>().bin_dir();
-    // Folder build first, then the single-file build older versions installed.
     for managed in [bin.join("yt-dlp").join("yt-dlp.exe"), bin.join("yt-dlp.exe")] {
         if managed.is_file() {
             return Some(managed);
@@ -246,7 +245,6 @@ const TIMING: Timing = Timing {
     text_total: Duration::from_secs(60),
 };
 
-/// Limits for one transfer.
 #[derive(Clone, Copy)]
 struct Bounds {
     idle: Duration,
@@ -260,7 +258,6 @@ const FFMPEG_ZIP_MAX: u64 = 512 * 1024 * 1024;
 const CHECKSUM_MAX: u64 = 1024 * 1024;
 const RELEASE_JSON_MAX: u64 = 2 * 1024 * 1024;
 
-/// Where one tool comes from.
 struct Release<'a> {
     tool: &'static str,
     archive_url: &'a str,
@@ -328,7 +325,6 @@ fn add_received(received: u64, chunk: usize, max: u64) -> Result<u64> {
         .ok_or_else(|| too_big(max))
 }
 
-/// Waits for one step of a response (headers or the next piece of the body).
 async fn within_idle<T>(idle: Duration, step: impl std::future::Future<Output = reqwest::Result<T>>) -> Result<T> {
     tokio::time::timeout(idle, step).await.map_err(|_| stalled(idle))?.map_err(net_error)
 }
@@ -1086,8 +1082,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    // ---- Network bounds and install serialization (R11) ---------------------------------
-    //
     // Local HTTP fixtures only; the deadlines are injected short so nothing waits for a
     // production interval.
 
@@ -1438,7 +1432,6 @@ mod tests {
         assert!(err.to_string().contains("more data than allowed"), "{err}");
     }
 
-    // ---- Installs through the real app state ---------------------------------------------
 
     struct Rig {
         app: TestApp,

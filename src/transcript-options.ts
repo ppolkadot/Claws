@@ -1,21 +1,15 @@
-// Transcript choices: pure logic, no DOM, so Node tests can run it
-// (scripts/tests/transcript-options.test.mjs).
-//
 // A transcript is made from one of the site's own caption tracks (transcript.rs); Claws does
 // not recognise speech. Human and automatic captions of the same language are different
 // tracks, so a choice is keyed by both the code and the kind.
 
-/** What a transcript is saved as (transcript.rs `TranscriptFormat`). */
 export type TranscriptFormat = "txt" | "txtTimestamps" | "srt" | "vtt";
 
-/** One caption track (probe.rs `SubtitleLang`). */
 export interface CaptionTrack {
   code: string;
   name: string;
   auto: boolean;
 }
 
-/** The parts of a lookup this module reads (probe.rs `ProbeResult`). */
 export interface CaptionSource {
   kind: "video" | "playlist";
   subtitles: CaptionTrack[];
@@ -33,7 +27,6 @@ export const TRANSCRIPT_FORMATS: { value: TranscriptFormat; label: string; hint:
 export interface CaptionChoices {
   human: CaptionTrack[];
   automatic: CaptionTrack[];
-  /** False when there is nothing to make a transcript from (or for a playlist). */
   available: boolean;
 }
 
@@ -95,7 +88,6 @@ export function keptCaption(key: string | null, choices: CaptionChoices, preferr
 /** The most subtitle languages one video download can ask for (downloader.rs `MAX_SUBTITLE_LANGS`; a Rust test ties the two). */
 export const MAX_SUBTITLE_LANGS = 12;
 
-/** How many subtitle languages the video picker lists. */
 export const SUBTITLE_CHIPS_SHOWN = 14;
 
 /** The subtitle tracks the picker lists (all of them, up to SUBTITLE_CHIPS_SHOWN). */
@@ -108,7 +100,6 @@ export function canSelectSubtitle(selected: ReadonlySet<string>, code: string): 
   return selected.has(code) || selected.size < MAX_SUBTITLE_LANGS;
 }
 
-/** What the subtitle picker says about its limit. */
 export function subtitleLimitHint(count: number): string {
   return count >= MAX_SUBTITLE_LANGS
     ? `Limit reached: ${MAX_SUBTITLE_LANGS} of ${MAX_SUBTITLE_LANGS} languages. Clear one to choose another.`
@@ -146,7 +137,6 @@ export function refreshSignature(r: RefreshSource): string {
   ]);
 }
 
-/** The choices a refreshed lookup can invalidate. */
 export interface TrackChoices {
   mode: "video" | "audio" | "transcript";
   subs: ReadonlySet<string>;
@@ -200,7 +190,6 @@ export function refreshTrackChoices<T extends TrackChoices>(
   return { choices: { ...choices, subs, caption, mode }, notices };
 }
 
-/** The options a transcript is queued with (downloader.rs `DownloadOptions`). */
 export interface TranscriptDownloadOptions {
   mode: "transcript";
   maxHeight: null;

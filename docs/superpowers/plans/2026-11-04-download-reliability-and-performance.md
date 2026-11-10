@@ -1,5 +1,7 @@
 # Remaining Download Fixes and Speed Improvements — Implementation Plan
 
+> Historical baseline and implementation plan. Reliability fixes were delivered; source versions and test totals below are historical. Remaining real-source speed/acceptance work is tracked in [current status](../../CURRENT_DEVELOPMENT_STATUS.md) and [speed diagnosis](../../performance/speed-diagnosis.md).
+
 > **For agentic workers:** Use superpowers:executing-plans to execute this plan task-by-task. Do not dispatch agents unless the owner requests delegation. Before starting, compare HEAD with the baseline below and remove any task subsequently completed.
 
 **Goal:** Demonstrate a meaningful improvement to the actual slow-download scenario and package the verified result while preserving the completed reliability corrections.

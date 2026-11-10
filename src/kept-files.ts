@@ -1,7 +1,4 @@
-// Subtitle files a download kept in its work folder because their names were taken in the
-// output folder: what the Library and the Queue say about them. Pure logic, no DOM, so Node
-// tests can run it (scripts/tests/kept-files.test.mjs). The backend (history.rs) decides what
-// is kept and where; this only words it.
+// history.rs owns retention of subtitle files whose output names were taken; this module formats their notices.
 
 /** The saved record on a Library entry; `sources` are paths inside the work folder. */
 export interface KeptRecord {
@@ -11,15 +8,12 @@ export interface KeptRecord {
 
 export type KeptStatus = "shown" | "offline" | "missing" | "unverified";
 
-/** The answer of "Show kept files". */
 export interface KeptRevealResult {
   status: KeptStatus;
-  /** The folder the kept files are in. */
   folder: string;
   files: number;
 }
 
-/** What the last look for kept files of older downloads found. */
 export interface KeptRepairReport {
   attached: number;
   /** Known output folders that could not be read, so their downloads were not checked. */

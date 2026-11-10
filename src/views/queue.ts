@@ -102,7 +102,6 @@ const DESTRUCTIVE = new Set(["Cancel download", "Remove from list"]);
  */
 const PRESS_GUARD_MS = 600;
 
-/** Arms a row's guard: its buttons ignore activation for PRESS_GUARD_MS. */
 function guard(refs: RowRefs) {
   refs.guardUntil = performance.now() + PRESS_GUARD_MS;
 }
@@ -131,7 +130,7 @@ function buildRow(job: Job): RowRefs {
     h(
       "div",
       { class: "job-main" },
-      h("div", { class: "job-head" }, h("span", { class: "job-title", text: job.title, attrs: { title: job.title } }), h("span", { class: "job-kind", text: optionsText(job) })),
+      h("div", { class: "job-head" }, h("span", { class: "job-title", text: job.title, attrs: { title: job.title } }), h("span", { class: "job-kind", text: job.matchOrigin ? `${optionsText(job)} · Source: YouTube match` : optionsText(job) })),
       status,
       bar,
     ),
@@ -248,7 +247,6 @@ export const mountQueue: MountView = (container, ctx) => {
 
   const rows = new Map<string, RowRefs>();
   const known = new Map<string, Job>();
-  // Each row element's refs, for finding a neighbour when focus has to move.
   const refsOf = new Map<Element, RowRefs>();
   // Removed rows still collapsing out: no longer in `rows`, but leaving the view stops them.
   const collapsing = new Set<HTMLElement>();

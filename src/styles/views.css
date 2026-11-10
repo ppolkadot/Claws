@@ -1,3 +1,46 @@
+.spotify-match {
+  display: grid;
+  gap: 12px;
+  margin: 20px 0;
+}
+.spotify-identity {
+  display: grid;
+  gap: 4px;
+  padding: 16px;
+  overflow-wrap: anywhere;
+}
+.spotify-art {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 8px;
+}
+.spotify-search { display: flex; gap: 8px; align-items: center; }
+.spotify-query { flex: 1; min-width: 0; }
+.spotify-candidates { min-width: 0; margin: 0; padding: 0; border: 0; }
+.spotify-candidates legend { padding: 8px 0; font-weight: 600; }
+.spotify-candidate { display: flex; align-items: center; gap: 12px; padding: 12px 8px; cursor: pointer; }
+.spotify-candidate + .spotify-candidate { border-top: 0.5px solid var(--separator); }
+.spotify-candidate-text { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.spotify-candidate:has(input:checked) { background: var(--fill); border-radius: 8px; }
+.spotify-candidate input { flex: 0 0 auto; accent-color: var(--blue-fill); }
+.spotify-candidate input:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+.spotify-match-action { display: flex; justify-content: flex-end; }
+.spotify-match > [hidden] { display: none; }
+.spotify-review { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
+.spotify-review[data-confirmed="true"] { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.spotify-review .result { min-width: 0; }
+.spotify-review .preview { flex-direction: column; align-items: stretch; }
+.spotify-review .preview-thumb { width: 100%; }
+.spotify-review .row { flex-wrap: wrap; }
+.spotify-review .actions { flex-wrap: wrap; }
+@media (max-width: 1000px) {
+  .spotify-review[data-confirmed="true"] { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 650px) {
+  .spotify-search { align-items: stretch; flex-direction: column; }
+}
+
 .section-title {
   margin: 26px 6px 7px;
   color: var(--label);
@@ -18,7 +61,6 @@
   min-height: 46px;
   padding: 10px 14px 10px 16px;
 }
-/* Separators start at the text, not the panel edge. */
 .row + .row::after,
 .cookie-detail .row::after {
   content: "";
@@ -123,7 +165,6 @@
   flex: none;
   color: var(--text-2);
 }
-/* A text area: one line until several links are pasted, then up to six lines. */
 .url-input {
   flex: 1;
   min-width: 0;
@@ -287,7 +328,6 @@
   color: var(--label);
   font-size: 12px;
 }
-/* Size preview: the download size, then the free space needed, as separate lines. */
 .estimate {
   display: flex;
   flex-direction: column;
@@ -409,7 +449,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Several links at once. */
 .batch-issues {
   align-items: flex-start;
 }
@@ -527,7 +566,6 @@
   min-width: 0;
   text-align: left;
 }
-/* Reopens the link's details; only the title takes the accent on hover. */
 .recent-open {
   display: flex;
   flex: 1;

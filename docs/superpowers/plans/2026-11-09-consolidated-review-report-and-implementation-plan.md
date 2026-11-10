@@ -1,6 +1,6 @@
 # Consolidated Review Report and Archived Implementation Plan
 
-**Status, 2026-11-09:** Implementation packages have been delivered, including the final startup kept-file save fix, in the owner-requested 1.0.0 source. The task lists below are the historical implementation specification, not a fresh list of unfinished fixes. Current artifact evidence is in `docs/releases/1.0.0.md`; remaining real-source/native/installation acceptance is recorded there and in HANDOFF. W0 speed evidence and deliberately optional work remain outside the completed-code claim.
+**Status:** Archived implementation specification. The packages were delivered in the historical 1.0.0 source and carried forward into 1.0.8. Old version numbers, test totals and unchecked steps below describe the original review snapshot. Use [current status](../../CURRENT_DEVELOPMENT_STATUS.md) and [release notes](../../releases/1.0.8.md) for current delivery; W0 real-source speed evidence and explicitly deferred work remain separate.
 
 > **For agentic workers:** Use `superpowers:executing-plans` to execute one work package at a time. Subagent execution is optional only when separately authorized. Steps use checkbox (`- [ ]`) syntax for tracking. This document requests no implementation, commit, installer replacement or publication by itself.
 

@@ -19,6 +19,259 @@ use crate::settings::Settings;
 use crate::state::AppState;
 use crate::AppHandle;
 
+fn spotify_origin_value() -> serde_json::Value {
+    serde_json::json!({"kind":"spotifyYouTube","spotifyUrl":"https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT","spotifyTitle":"Believe","spotifyArtists":["Cher"]})
+}
+
+/// Opt-in integration: real tools and a deliberately chosen YouTube recording,
+/// isolated from the owner's queue, cookies, settings and download folder.
+#[test]
+#[ignore = "live audio save; set CLAWS_SPOTIFY_LIVE_TOOLS to an installed Claws bin folder"]
+fn spotify_live_audio_save_keeps_selected_source() {
+    fn copy_tools(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let destination = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tools(&entry.path(), &destination);
+            } else {
+                std::fs::copy(entry.path(), destination).unwrap();
+            }
+        }
+    }
+    let tools =
+        PathBuf::from(std::env::var_os("CLAWS_SPOTIFY_LIVE_TOOLS").expect("provide tools folder"));
+    let dir = temp_dir("spotify-live-audio");
+    copy_tools(&tools, &dir.join("bin"));
+    let app = TestApp::with_data(dir.clone(), dir.join("out"), Vec::new());
+    // Explicit test selection from the live search; no product auto-match behavior.
+    let source = "https://www.youtube.com/watch?v=n7wvAEDOxAs";
+    let preview =
+        tauri::async_runtime::block_on(crate::probe::probe(app.handle(), source)).unwrap();
+    assert_eq!(preview.url, source);
+    assert_eq!(preview.audio_available, Some(true));
+    for format in ["mp3", "m4a", "opus", "flac", "wav", "best"] {
+        for fast_save in [false, true] {
+            {
+                let state = app.state();
+                let mut settings = state.settings.lock().unwrap();
+                settings.embed_metadata = !fast_save;
+                settings.output_dir = app
+                    .out
+                    .join(format!("{format}-fast-{fast_save}"))
+                    .to_string_lossy()
+                    .into_owned();
+            }
+            let item: EnqueueItem = serde_json::from_value(serde_json::json!({
+                "url":source,"title":preview.title,"uploader":preview.uploader,"duration":preview.duration,
+                "matchOrigin":spotify_origin_value()
+            })).unwrap();
+            let jobs = downloader::enqueue(
+                app.handle(),
+                vec![item],
+                DownloadOptions {
+                    mode: "audio".into(),
+                    audio_format: format.into(),
+                    fast_save,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let id = &jobs.jobs[0].job_id;
+            let deadline = Instant::now() + Duration::from_secs(180);
+            loop {
+                let job = app.job(id).unwrap();
+                if matches!(job.status, JobStatus::Completed | JobStatus::Failed) {
+                    assert_eq!(
+                        job.status,
+                        JobStatus::Completed,
+                        "live {format} fast_save={fast_save} save failed: {:?}",
+                        job.error
+                    );
+                    assert_eq!(job.url, source);
+                    let entry = library_entry(&app, id);
+                    assert_eq!(entry.url, source);
+                    assert_eq!(
+                        serde_json::to_value(&entry).unwrap()["matchOrigin"],
+                        spotify_origin_value()
+                    );
+                    let path = PathBuf::from(entry.file_path.unwrap());
+                    assert!(std::fs::metadata(&path).unwrap().len() > 0);
+                    let output = std::process::Command::new(app.dir.join("bin/ffprobe.exe"))
+                        .args([
+                            "-v",
+                            "error",
+                            "-select_streams",
+                            "a:0",
+                            "-show_entries",
+                            "stream=codec_name",
+                            "-of",
+                            "default=nw=1:nk=1",
+                        ])
+                        .arg(path)
+                        .output()
+                        .unwrap();
+                    assert!(output.status.success());
+                    let codec = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    match format {
+                        "mp3" | "opus" | "flac" => assert_eq!(codec, format),
+                        "m4a" => assert_eq!(codec, "aac"),
+                        "wav" => assert!(codec.starts_with("pcm_")),
+                        _ => assert!(!codec.is_empty()),
+                    }
+                    eprintln!("Live {format} fast_save={fast_save} saved and ffprobed ({codec}); chosen URL and provenance retained.");
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "live save exceeded three minutes"
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    let app = app.restart();
+    let state = app.state();
+    let entries = state.history.lock().unwrap();
+    assert_eq!(entries.len(), 12);
+    assert!(entries
+        .iter()
+        .all(|entry| entry.url == source && entry.match_origin.is_some()));
+    eprintln!(
+        "All 12 live format/Fast Save variants retain their source and provenance after restart."
+    );
+}
+
+#[test]
+fn spotify_origin_queue_restart_history_and_updates_keep_chosen_source() {
+    let dir = temp_dir("spotify-provenance");
+    let out = dir.join("out");
+    let t = TestApp::with_data(dir, out, Vec::new());
+    // Occupy the single worker slot with a paused-independent active placeholder so
+    // enqueue is tested without spawning yt-dlp or contacting a live service.
+    let blocker: Job = serde_json::from_value(serde_json::json!({"id":"blocker","url":"https://fixture.invalid/blocker","title":"Blocker","options":{},"status":"downloading","progress":0,"createdAt":0})).unwrap();
+    t.state().jobs.lock().unwrap().push(blocker);
+    let item = || {
+        serde_json::from_value::<EnqueueItem>(serde_json::json!({"url":"https://www.youtube.com/watch?v=abcdefghijk","title":"Chosen YouTube title","matchOrigin":spotify_origin_value()})).unwrap()
+    };
+    let audio = DownloadOptions {
+        mode: "audio".into(),
+        ..Default::default()
+    };
+    let added = downloader::enqueue(t.handle(), vec![item()], audio.clone()).unwrap();
+    let id = added.jobs[0].job_id.clone();
+    assert_eq!(
+        serde_json::to_value(&added.jobs[0].job).unwrap()["matchOrigin"],
+        spotify_origin_value()
+    );
+    let ordinary: EnqueueItem = serde_json::from_value(serde_json::json!({"url":"https://www.youtube.com/watch?v=abcdefghijk","title":"Ordinary duplicate"})).unwrap();
+    assert!(downloader::enqueue(t.handle(), vec![ordinary], audio.clone()).is_err());
+    assert_eq!(t.job(&id).unwrap().title, "Chosen YouTube title");
+    let t = t.restart();
+    let job = t.job(&id).unwrap();
+    assert_eq!(job.url, "https://www.youtube.com/watch?v=abcdefghijk");
+    assert_eq!(
+        serde_json::to_value(&job).unwrap()["matchOrigin"],
+        spotify_origin_value()
+    );
+    crate::history::record(t.handle(), &job).unwrap();
+    crate::history_mutation::mutate(t.handle(), |items| {
+        items[0].thumbnail_local = Some("local.jpg".into());
+        ((), true)
+    })
+    .unwrap();
+    let saved: Vec<crate::history::HistoryItem> =
+        crate::store::load_or_recover(&t.dir.join("history.json"), "history", &mut Vec::new());
+    assert_eq!(saved[0].url, job.url);
+    assert_eq!(
+        serde_json::to_value(&saved[0]).unwrap()["matchOrigin"],
+        spotify_origin_value()
+    );
+    assert_eq!(saved[0].thumbnail_local.as_deref(), Some("local.jpg"));
+    // A failed attempt remains tied to the exact accepted source on retry. Occupy
+    // the slot again so this state transition cannot start a real media process.
+    {
+        let state = t.state();
+        let mut jobs = state.jobs.lock().unwrap();
+        jobs.iter_mut().find(|j| j.id == "blocker").unwrap().status = JobStatus::Downloading;
+        jobs.iter_mut().find(|j| j.id == id).unwrap().status = JobStatus::Failed;
+    }
+    downloader::resume(t.handle(), &id);
+    assert_eq!(t.job(&id).unwrap().url, job.url);
+    assert_eq!(
+        serde_json::to_value(t.job(&id).unwrap()).unwrap()["matchOrigin"],
+        spotify_origin_value()
+    );
+}
+
+#[test]
+fn spotify_origin_matched_duplicate_preserves_ordinary_first_acceptance() {
+    let dir = temp_dir("spotify-duplicate");
+    let out = dir.join("out");
+    let t = TestApp::with_data(dir, out, Vec::new());
+    let blocker: Job = serde_json::from_value(serde_json::json!({"id":"blocker","url":"https://fixture.invalid/blocker","title":"Blocker","options":{},"status":"downloading","progress":0,"createdAt":0})).unwrap();
+    t.state().jobs.lock().unwrap().push(blocker);
+    let ordinary: EnqueueItem = serde_json::from_value(
+        serde_json::json!({"url":"https://www.youtube.com/watch?v=abcdefghijk","title":"Ordinary"}),
+    )
+    .unwrap();
+    let matched: EnqueueItem = serde_json::from_value(serde_json::json!({"url":"https://www.youtube.com/watch?v=abcdefghijk","title":"Matched","matchOrigin":spotify_origin_value()})).unwrap();
+    let added = downloader::enqueue(
+        t.handle(),
+        vec![ordinary, matched],
+        DownloadOptions {
+            mode: "audio".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(added.jobs.len(), 1);
+    assert_eq!(added.jobs[0].job.title, "Ordinary");
+    assert!(serde_json::to_value(&added.jobs[0].job).unwrap()["matchOrigin"].is_null());
+    let old: crate::history::HistoryItem = serde_json::from_value(serde_json::json!({"id":"old","title":"Old","url":"https://example.test/old","mode":"video","quality":"Best","finishedAt":0})).unwrap();
+    assert!(serde_json::to_value(old).unwrap()["matchOrigin"].is_null());
+}
+
+#[test]
+fn spotify_origin_published_file_ownership_survives_library_restart_and_repair() {
+    let Some(t) = TestApp::new("spotify-published") else {
+        return;
+    };
+    let item: EnqueueItem=serde_json::from_value(serde_json::json!({"url":"https://www.youtube.com/watch?v=abcdefghijk","title":"Chosen recording","matchOrigin":spotify_origin_value()})).unwrap();
+    let added = downloader::enqueue(
+        t.handle(),
+        vec![item],
+        DownloadOptions {
+            mode: "audio".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let id = added.jobs[0].job_id.clone();
+    t.wait_job(
+        &id,
+        |j| j.status == JobStatus::Completed,
+        "matched fixture publication",
+    );
+    let entry = library_entry(&t, &id);
+    assert!(entry.file_identity.is_some());
+    let identity = entry.file_identity.clone();
+    let path = entry.file_path.clone().unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    downloader::clear_finished(t.handle());
+    let t = t.restart();
+    crate::history::repair_kept_files(t.handle());
+    let restored = library_entry(&t, &id);
+    assert_eq!(restored.url, "https://www.youtube.com/watch?v=abcdefghijk");
+    assert_eq!(restored.file_identity, identity);
+    assert_eq!(
+        serde_json::to_value(&restored).unwrap()["matchOrigin"],
+        spotify_origin_value()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+}
+
 pub(crate) struct TestApp {
     app: tauri::App<tauri::test::MockRuntime>,
     pub dir: PathBuf,
@@ -59,7 +312,6 @@ impl SampleGate {
         }
     }
 
-    /// Called by the provider for each sample.
     fn enter(&self) -> std::io::Result<()> {
         use std::sync::atomic::Ordering::SeqCst;
         let index = self.started.fetch_add(1, SeqCst);
@@ -86,7 +338,6 @@ impl SampleGate {
         self.hold_from.store(index, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// Makes the sample numbered `index` panic, as a failing provider would.
     pub fn panic_at(&self, index: usize) {
         self.panic_at.store(index, std::sync::atomic::Ordering::SeqCst);
     }
@@ -140,7 +391,6 @@ impl TestApp {
         Some(Self::with_data(dir, out, Vec::new()))
     }
 
-    /// An app started on an existing data folder (a restart), restoring `queue`.
     pub fn with_data(dir: PathBuf, out: PathBuf, queue: Vec<Job>) -> Self {
         let app = tauri::test::mock_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -185,12 +435,10 @@ impl TestApp {
         *self.free.lock().unwrap() = readings.iter().copied().collect();
     }
 
-    /// Closes this app the way Claws exits and starts a new one on the same data.
     pub fn restart(self) -> Self {
         self.restart_after(|_| {})
     }
 
-    /// Like `restart`, with `change` applied to the data folder while Claws is closed.
     pub fn restart_after(self, change: impl FnOnce(&Path)) -> Self {
         let (dir, out) = (self.dir.clone(), self.out.clone());
         downloader::shutdown(self.handle());
@@ -214,7 +462,7 @@ impl TestApp {
     }
 
     pub fn enqueue_with(&self, link: &str, options: DownloadOptions) -> String {
-        let item = EnqueueItem { url: link.into(), playlist_index: None, title: link.into(), thumbnail: None, uploader: None, duration: None };
+        let item = EnqueueItem { url: link.into(), match_origin: None, playlist_index: None, title: link.into(), thumbnail: None, uploader: None, duration: None };
         let added = downloader::enqueue(self.handle(), vec![item], options).expect("enqueue");
         added.jobs[0].job_id.clone()
     }
@@ -236,14 +484,12 @@ impl TestApp {
         }
     }
 
-    /// Lines the fixture tool logged, one per start.
     pub fn starts(&self) -> Vec<String> {
         std::fs::read_to_string(self.out.join("fixture-starts.log"))
             .map(|t| t.lines().map(str::to_string).collect())
             .unwrap_or_default()
     }
 
-    /// Makes saves of `name` in the data folder fail.
     pub fn block(&self, name: &str) {
         let path = self.dir.join(name);
         let _ = std::fs::remove_file(&path);
@@ -527,7 +773,6 @@ fn held(t: &TestApp, id: &str) -> Option<u64> {
     t.state().disk_ledger.lock().unwrap().held(id)
 }
 
-/// Whether another thread holds the ledger right now (without waiting for it).
 fn ledger_is_locked(t: &TestApp) -> bool {
     matches!(t.state().disk_ledger.try_lock(), Err(std::sync::TryLockError::WouldBlock))
 }
@@ -877,7 +1122,6 @@ fn startup_recovery_returns_before_library_work_and_prevents_duplicate_starts() 
     assert_eq!(t.starts().len(), 1);
 }
 
-// ---- Video presets ------------------------------------------------------------------------
 
 fn original(max_height: Option<u32>) -> DownloadOptions {
     DownloadOptions { max_height, video_preset: crate::download_policy::VideoPreset::Original, ..DownloadOptions::default() }
@@ -942,7 +1186,6 @@ fn a_completed_queue_job_drags_only_its_recorded_library_file() {
     assert_eq!(crate::file_drag::recorded_file(&history, &id).unwrap(), dunce::canonicalize(&saved).unwrap());
     assert_eq!(std::fs::read(&saved).unwrap(), b"merged", "resolving never touches the file");
 
-    // Removed from the Library, the queue row's id no longer resolves.
     crate::history_mutation::delete_entry(t.handle(), &id, false).unwrap();
     let history = { t.state().history.lock().unwrap().clone() };
     let error = crate::file_drag::recorded_file(&history, &id).unwrap_err().to_string();
@@ -964,7 +1207,6 @@ fn a_completed_download_records_the_identity_that_proves_it_is_ours() {
     };
     assert_eq!(recorded(&t).file_identity, Some(crate::download_files::identify(&saved).unwrap()));
 
-    // Saved with the entry, so it is there after a restart too.
     let t = t.restart();
     assert_eq!(recorded(&t).file_identity, Some(crate::download_files::identify(&saved).unwrap()));
 
@@ -1002,13 +1244,11 @@ fn a_saved_job_with_a_preset_this_version_cannot_make_fails_without_starting() {
     assert_eq!(t.starts().len(), 1, "yt-dlp was never started for it");
 }
 
-// ---- Transcripts ----------------------------------------------------------------------------
 
 fn transcript(code: &str, auto: bool, format: crate::transcript::TranscriptFormat) -> DownloadOptions {
     DownloadOptions { mode: "transcript".into(), subtitle_langs: vec![code.into()], auto_subs: auto, transcript_format: format, ..DownloadOptions::default() }
 }
 
-/// Files in the output folder, apart from the fixture's log and Claws' work folders.
 fn published(t: &TestApp) -> Vec<String> {
     if !t.out.is_dir() {
         return Vec::new();
@@ -1036,7 +1276,6 @@ fn a_transcript_is_saved_to_the_folder_and_library_without_any_media() {
     let text = std::fs::read_to_string(&saved).unwrap();
     assert_eq!(text, "Ana: Hello & welcome\r\nこれは字幕です 🎬\r\n");
     assert_eq!(published(&t), ["papa [en].txt"], "only the transcript is published, not the raw captions");
-    // No media bytes were ever reported.
     assert_eq!((job.downloaded_bytes, job.total_bytes), (None, None));
     let starts = t.starts();
     assert_eq!(starts.len(), 1);
@@ -1154,7 +1393,6 @@ fn a_transcript_job_resumes_with_its_choices_after_a_restart() {
     assert_eq!(saved["jobs"][0]["options"]["transcriptFormat"], "srt");
 }
 
-/// Every `job-update` the app emits, as the interface receives them.
 fn record_job_events(t: &TestApp) -> Arc<Mutex<Vec<Job>>> {
     use tauri::Listener;
     let events: Arc<Mutex<Vec<Job>>> = Default::default();
@@ -1244,9 +1482,7 @@ fn a_network_failure_after_a_pre_download_postprocessor_is_not_reported_as_proce
     assert!(!error.contains("processing the file failed"), "a transfer failure was reported as a processing failure: {error}");
 }
 
-// ---- Kept side files (W4) ---------------------------------------------------------------------
 
-/// A video with English and Spanish caption files next to it, saved as separate files.
 fn with_captions() -> DownloadOptions {
     DownloadOptions { subtitle_langs: vec!["en".into(), "es".into()], embed_subs: false, ..DownloadOptions::default() }
 }
@@ -1260,7 +1496,6 @@ fn library_entry_count(t: &TestApp, id: &str) -> usize {
     t.state().history.lock().unwrap().iter().filter(|h| h.id == id).count()
 }
 
-/// The Library as `history.json` holds it: what the next start (or a reload) reads.
 fn saved_library(t: &TestApp) -> Vec<crate::history::HistoryItem> {
     serde_json::from_str(&std::fs::read_to_string(t.dir.join("history.json")).unwrap()).unwrap()
 }

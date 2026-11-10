@@ -23,6 +23,8 @@ pub struct HistoryItem {
     pub id: String,
     pub title: String,
     pub url: String,
+    #[serde(default)]
+    pub match_origin: Option<crate::spotify_match::MatchOrigin>,
     pub uploader: Option<String>,
     pub duration: Option<f64>,
     /// Remote thumbnail, used until (or if) a local copy exists.
@@ -74,6 +76,7 @@ pub fn record(app: &AppHandle, job: &Job) -> crate::error::Result<()> {
         id: job.id.clone(),
         title: job.title.clone(),
         url: job.url.clone(),
+        match_origin: job.match_origin.clone(),
         uploader: job.uploader.clone(),
         duration: job.duration,
         thumbnail: job.thumbnail.clone(),

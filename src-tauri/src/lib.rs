@@ -21,6 +21,8 @@ mod links;
 mod probe;
 mod queue_writer;
 mod settings;
+mod spotify;
+mod spotify_match;
 mod state;
 mod store;
 mod tools;
@@ -140,6 +142,8 @@ pub fn run() {
             commands::app_ready,
             commands::quit_app,
             commands::probe_url,
+            commands::resolve_spotify_track,
+            commands::search_spotify_matches,
             commands::estimate_download,
             commands::cached_link,
             commands::enqueue,
@@ -170,7 +174,6 @@ pub fn run() {
         .expect("error while starting Claws");
 
     app.run(|app, event| {
-        // Stop yt-dlp and ffmpeg and save the queue before exiting.
         match event {
             tauri::RunEvent::Exit => downloader::shutdown(app),
             // Claws does not open or enqueue files dropped on it. A drop is only noted, so a

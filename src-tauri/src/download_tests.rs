@@ -391,8 +391,6 @@ fn yt_dlp_picks_the_matching_audio_stream() {
     assert_eq!(pick(&only_combined, "m4a", PreferMatching), pick(&only_combined, "m4a", Best));
 }
 
-// ---- Presets on real media ------------------------------------------------------------
-//
 // Short synthetic clips made with the installed FFmpeg, described in a made-up info file
 // the way a site describes its streams, read through file links, saved by the real yt-dlp
 // with the exact arguments the policy builds, and inspected with ffprobe. They need
@@ -664,7 +662,6 @@ fn a_stream_without_codec_fields_is_kept_whole() {
     }
 }
 
-// ---- Transcripts through the real yt-dlp ----------------------------------------------------
 // The captions are local files read through file links; the only "media" format points at a
 // file that does not exist, so any attempt to download media would fail the run.
 

@@ -1,8 +1,3 @@
-// Size and free-space previews: formatting, totals over several items, and the two ways
-// estimates are asked for (one link as its choices change; many items only on request).
-// No DOM and no imports, so the Node tests can run it as it is
-// (see scripts/tests/download-estimates.test.mjs).
-//
 // The numbers come from the backend (estimate.rs), which re-runs the download's own format
 // selection over the cached lookup. They are display only: the download still checks the
 // actual free space when it starts. A size that is not known is never counted as zero.
@@ -26,7 +21,6 @@ export type Confidence = "exact" | "approximate" | "unknown";
  */
 export type EstimateState = "available" | "unknown" | "failed";
 
-/** One selected stream (estimate.rs EstimatePart). */
 export interface EstimatePart {
   formatId: string;
   vcodec: string | null;
@@ -35,11 +29,9 @@ export interface EstimatePart {
   width: number | null;
   height: number | null;
   bytes: number | null;
-  /** The size the site states, not an estimate. */
   exact: boolean;
 }
 
-/** estimate.rs DownloadEstimate. */
 export interface DownloadEstimate {
   /** Bytes transferred, or null when any selected stream's size is unknown. */
   downloadBytes: number | null;
@@ -54,7 +46,6 @@ export interface DownloadEstimate {
    * margin (disk_budget.rs `required`), without other downloads' reservations. Shown.
    */
   requiredFreeBytes: number | null;
-  /** Size of the file that is kept. */
   outputBytes: number | null;
   /** The kept file is a conversion (an audio target): its size and container are not the download's. */
   converted: boolean;
@@ -75,7 +66,6 @@ export function estimateState(estimate: DownloadEstimate | null | undefined): Es
   return known(estimate?.downloadBytes) !== null ? "available" : "unknown";
 }
 
-/** The longest failure reason shown, in characters. */
 const FAILURE_LIMIT = 240;
 const NO_REASON = "The estimate could not be made.";
 
@@ -110,7 +100,6 @@ export function describeFailure(error: unknown): string {
   return line.length > FAILURE_LIMIT ? `${line.slice(0, FAILURE_LIMIT)}\u2026` : line;
 }
 
-/** An estimate that could not be made (a call that threw, or one that said so). */
 export function failedEstimate(diagnostic: string): DownloadEstimate {
   return {
     downloadBytes: null,
@@ -174,7 +163,6 @@ export interface Aggregate {
   /** Sum of the known kept-file sizes of converted items; null when none is known. */
   outputBytes: number | null;
   outputUnknownCount: number;
-  /** The download size line. */
   text: string;
   /** The kept files of a conversion ("Saved as WAV: about 1.1 GB"); null when nothing is converted. */
   outputText: string | null;
@@ -283,7 +271,6 @@ export function aggregate(estimates: (DownloadEstimate | null)[]): Aggregate {
   };
 }
 
-// ---- One link ---------------------------------------------------------------------
 
 export type PreviewStatus = "idle" | "loading" | "done" | "failed";
 
@@ -296,7 +283,6 @@ export interface PreviewState {
 
 const FAILED_SIZE = "Size estimate failed";
 
-/** The two lines a single link's preview shows. */
 export function describeSingle(state: PreviewState): { size: string; detail: string } {
   switch (state.status) {
     case "idle":
@@ -341,7 +327,6 @@ export class CallLimit {
     return this.running < this.limit;
   }
 
-  /** Calls running now. */
   get active(): number {
     return this.running;
   }
@@ -475,7 +460,6 @@ export class PreviewEstimator {
     this.set({ status: "done", estimate });
   }
 
-  /** The last estimate could not be made, so Retry applies. */
   get failed(): boolean {
     return this.state.status === "failed";
   }
@@ -512,7 +496,6 @@ export class PreviewEstimator {
   }
 }
 
-// ---- Many items -------------------------------------------------------------------
 
 export interface RunState {
   /** Items asked for, before the cap. */
@@ -543,7 +526,6 @@ export interface RunState {
  */
 export interface RunSnapshot<T> {
   key: string;
-  /** Ids of the items the run was asked for. */
   asked: string[];
   total: number;
   requested: number;
@@ -582,7 +564,6 @@ export class EstimateRun<T> {
   state: RunState = emptyRun();
   private generation = 0;
   private queue: T[] = [];
-  /** Ids of the items the run was asked for. */
   private asked = new Set<string>();
   /** What each answered item came to, by id, so a retry can ask for the failures alone. */
   private settled = new Map<string, { item: T; result: DownloadEstimate }>();
@@ -605,7 +586,6 @@ export class EstimateRun<T> {
     return this.cap;
   }
 
-  /** The list without repeats, first occurrence kept. */
   distinct(list: T[]): T[] {
     const seen = new Set<string>();
     return list.filter((item) => {
@@ -676,17 +656,14 @@ export class EstimateRun<T> {
     this.onChange();
   }
 
-  /** Items whose estimate failed, in the order they were asked. */
   private failures(): T[] {
     return [...this.settled.values()].filter((entry) => estimateState(entry.result) === "failed").map((entry) => entry.item);
   }
 
-  /** How many items failed; Retry asks again for those and no others. */
   get failedCount(): number {
     return this.failures().length;
   }
 
-  /** There are failures to retry and nothing is running. */
   get canRetry(): boolean {
     return this.key !== null && !this.state.running && this.failures().length > 0;
   }
@@ -814,7 +791,6 @@ export class EstimateRun<T> {
   }
 }
 
-/** The status line for a run of many estimates. */
 export function describeRun<T>(run: EstimateRun<T>): string {
   const s = run.state;
   if (run.key === null || s.total === 0) return "";

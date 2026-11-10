@@ -178,7 +178,6 @@ export function chipRadio<T extends string | number>(
         return;
     }
     event.preventDefault();
-    // Landing on the chip that is already the choice is not a change.
     if (next === checked) {
       chips[next].focus();
       return;

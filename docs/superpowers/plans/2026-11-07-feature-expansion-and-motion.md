@@ -1,5 +1,7 @@
 # Claws feature expansion and animation: remaining work
 
+> The baseline version and delivery chronology below are historical. Retain this document for deferred feature scope and manual acceptance; use [current status](../../CURRENT_DEVELOPMENT_STATUS.md) for the packaged version and outstanding work.
+
 > For implementers: execute one deliverable at a time and recheck HEAD first. Completed work has been removed from this plan, as the release checklist requires; the git history and `docs/CURRENT_DEVELOPMENT_STATUS.md` record it.
 
 **Date:** 2026-11-08. Scope revised by the owner; the feature work below was implemented on branch `feature-expansion-and-motion`.
