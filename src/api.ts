@@ -26,6 +26,10 @@ export interface Settings {
   glassIntensity: number;
   backdrop: Backdrop;
   maxConcurrent: number;
+  /** Downloads that may be processing without holding a transfer slot. */
+  maxProcessing: number;
+  /** Speed limit for each download in KiB/s; 0 is no limit. */
+  speedLimitKib: number;
   embedMetadata: boolean;
   /** System-wide Quick Open shortcut, e.g. "ctrl+alt+d", or "off". */
   quickOpenShortcut: QuickOpenShortcut;

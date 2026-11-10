@@ -117,7 +117,7 @@ The application identifier and data location remain unchanged. Queue schema rema
 
 | Section | Options |
 | --- | --- |
-| **Downloads** | Output folder (default `Downloads\Claws`), filename template (a yt-dlp output template), simultaneous downloads (1–8), embed metadata, prefer matching source audio |
+| **Downloads** | Output folder (default `Downloads\Claws`), filename template (a yt-dlp output template), simultaneous downloads (1–8), processing alongside (1–8, default 2: downloads that may be merging or converting without holding up the next transfer), speed limit (per download, off by default; applies from the next download that starts or resumes), embed metadata, prefer matching source audio |
 | **Quick Access** | Quick Open shortcut (Ctrl+Alt+D, Ctrl+Alt+Space, Ctrl+Shift+Space or off), keep running when closed, open at login |
 | **Appearance** | Theme (System, Light, Dark), window material (Glass, Acrylic, Mica, Solid), transparency, font status |
 | **Sign-in** | Cookies from none, a browser (Firefox, Chrome, Edge, Brave, Opera, Vivaldi), or a `cookies.txt` file |

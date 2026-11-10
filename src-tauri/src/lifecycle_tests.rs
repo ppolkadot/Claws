@@ -1719,3 +1719,58 @@ fn cancelling_a_finished_download_that_never_reached_the_library_keeps_its_retai
     assert!(workspace.join("oak.en.srt").is_file());
     assert!(t.job(&id).is_some(), "a committed publication is not cancelled");
 }
+
+fn release_merges(t: &TestApp) {
+    std::fs::write(t.out.join("fixture-merge-release"), b"go").unwrap();
+}
+
+#[test]
+fn a_queued_job_starts_transferring_while_three_others_are_processing() {
+    let Some(t) = TestApp::new("slots-free") else { return };
+    // The defaults: three transfers, and two processing jobs that hold no transfer slot.
+    let merging: Vec<String> = ["one", "two", "three"].iter().map(|name| t.enqueue(&format!("https://fixture.invalid/merge-hold/{name}"))).collect();
+    let fourth = t.enqueue("https://fixture.invalid/hang/four");
+    for id in &merging {
+        t.wait_job(id, |j| j.status == JobStatus::Processing, "the merge to start");
+    }
+    // Three merges overflow the processing limit by one, which holds one of three slots.
+    t.wait_job(&fourth, running, "the fourth to transfer beside three merges");
+    for id in &merging {
+        assert_eq!(t.job(id).unwrap().status, JobStatus::Processing, "a merge ended before it was released");
+    }
+
+    release_merges(&t);
+    for id in &merging {
+        t.wait_job(id, |j| j.status == JobStatus::Completed, "the completion");
+        wait_until("the finished job's disk claim to go", || t.state().disk_ledger.lock().unwrap().held(id).is_none());
+    }
+    assert!(running(&t.job(&fourth).unwrap()), "the transfer was disturbed by the completions");
+}
+
+#[test]
+fn processing_beyond_its_limit_holds_a_transfer_slot() {
+    let Some(t) = TestApp::new("slots-full") else { return };
+    {
+        let state = t.state();
+        let mut settings = state.settings.lock().unwrap();
+        settings.max_concurrent = 1;
+        settings.max_processing = 1;
+    }
+    let first = t.enqueue("https://fixture.invalid/merge-hold/first");
+    let second = t.enqueue("https://fixture.invalid/merge-hold/second");
+    let third = t.enqueue("https://fixture.invalid/hang/third");
+    // The first merge frees the only transfer slot for the second; the second merge is
+    // one more than the limit and keeps the slot, so the third waits.
+    t.wait_job(&first, |j| j.status == JobStatus::Processing, "the first merge");
+    t.wait_job(&second, |j| j.status == JobStatus::Processing, "the second merge");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(t.job(&third).unwrap().status, JobStatus::Queued, "more ran at once than the two limits allow");
+    assert_eq!(t.starts().len(), 2);
+
+    release_merges(&t);
+    t.wait_job(&third, running, "the third once the merges are done");
+    for id in [&first, &second] {
+        t.wait_job(id, |j| j.status == JobStatus::Completed, "the completion");
+        wait_until("the finished job's disk claim to go", || t.state().disk_ledger.lock().unwrap().held(id).is_none());
+    }
+}

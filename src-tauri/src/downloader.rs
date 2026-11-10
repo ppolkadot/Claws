@@ -619,9 +619,22 @@ impl Drop for WorkerSlot {
     }
 }
 
+/// Transfer slots in use. A transferring job holds one. Jobs in their final processing
+/// hold none up to `processing_limit`; each one beyond it holds a slot, because a merge
+/// that has started inside yt-dlp cannot be made to wait. That bounds the processes
+/// running at once to the two limits added together.
+fn occupied_slots(jobs: &[Job], processing_limit: usize) -> usize {
+    let transferring = jobs.iter().filter(|j| j.status == JobStatus::Downloading).count();
+    let processing = jobs.iter().filter(|j| j.status == JobStatus::Processing).count();
+    transferring + processing.saturating_sub(processing_limit)
+}
+
 pub fn pump(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let limit = state.settings.lock().unwrap().max_concurrent.max(1) as usize;
+    let (limit, processing_limit) = {
+        let settings = state.settings.lock().unwrap();
+        (settings.max_concurrent.max(1) as usize, settings.max_processing.max(1) as usize)
+    };
     loop {
         // Exiting workers call pump too; none of them may start another download.
         if state.shutting_down.load(Ordering::SeqCst) {
@@ -629,8 +642,7 @@ pub fn pump(app: &AppHandle) {
         }
         let claimed = {
             let mut jobs = state.jobs.lock().unwrap();
-            let active = jobs.iter().filter(|j| j.status.is_active()).count();
-            if active >= limit {
+            if occupied_slots(&jobs, processing_limit) >= limit {
                 None
             } else {
                 let mut live = state.live_jobs.lock().unwrap();
@@ -1082,7 +1094,26 @@ fn build_args(
         (None, Some(index)) => Source::PlaylistItem { url: &job.url, index },
         (None, None) => Source::Url(&job.url),
     };
-    download_policy::download_args(tools::common_args(app, settings), &job.options, execution, workspace, source)
+    let mut common = tools::common_args(app, settings);
+    let limit = speed_limit_args(settings);
+    if limit.is_empty() {
+        return download_policy::download_args(common, &job.options, execution, workspace, source);
+    }
+    // yt-dlp applies the limit to every fragment connection on its own, so eight
+    // fragments would run at up to eight times the chosen speed. A limited start
+    // fetches one fragment at a time; the job's frozen choice is left as it is.
+    common.extend(limit);
+    let limited = JobExecution { fragment_concurrency: 1, ..execution.clone() };
+    download_policy::download_args(common, &job.options, &limited, workspace, source)
+}
+
+/// `--limit-rate` for a download starting now, or nothing when no limit is set. Only
+/// downloads get it: link lookups and size previews move no media.
+fn speed_limit_args(settings: &Settings) -> Vec<String> {
+    match settings.speed_limit_kib {
+        0 => Vec::new(),
+        kib => vec!["--limit-rate".into(), format!("{kib}K")],
+    }
 }
 
 struct Outcome {
@@ -1572,13 +1603,19 @@ fn postprocessor_started(app: &AppHandle, id: &str, rest: &str) {
 }
 
 fn mark_processing(app: &AppHandle, id: &str) {
+    let mut left_transfer = false;
     update_job(app, id, |j| {
         if j.status.is_active() {
+            left_transfer = j.status == JobStatus::Downloading;
             j.status = JobStatus::Processing;
         }
         j.speed = None;
         j.eta = None;
     });
+    // The transfer slot is free while the file is processed: a queued job may start.
+    if left_transfer {
+        pump(app);
+    }
 }
 
 fn handle_line(
@@ -2281,6 +2318,36 @@ mod tests {
         assert_eq!(again.options.mode, "transcript");
         assert_eq!(again.options.transcript_format, TranscriptFormat::TxtTimestamps);
         assert_eq!(options_key(&again.options), options_key(&job.options));
+    }
+
+    #[test]
+    fn a_speed_limit_is_passed_only_when_one_is_set() {
+        let mut settings = Settings::default();
+        assert!(speed_limit_args(&settings).is_empty(), "no limit is the default");
+        settings.speed_limit_kib = 2048;
+        assert_eq!(speed_limit_args(&settings), ["--limit-rate", "2048K"]);
+    }
+
+    #[test]
+    fn a_limited_start_fetches_one_fragment_at_a_time_and_leaves_the_frozen_choice() {
+        let Some(t) = crate::lifecycle_tests::TestApp::new("limit-args") else { return };
+        let id = t.enqueue("https://fixture.invalid/hang/limited");
+        let job = t.wait_job(&id, |j| j.status == JobStatus::Downloading && j.execution.is_some(), "the download to start");
+        let execution = job.execution.clone().unwrap();
+        let workspace = job.workspace.clone().unwrap().path;
+        let value_after = |args: &[String], flag: &str| args.iter().position(|a| a == flag).map(|i| args[i + 1].clone());
+
+        let mut settings = t.state().settings.lock().unwrap().clone();
+        let open = build_args(t.handle(), &job, &settings, &execution, &workspace, None);
+        assert_eq!(value_after(&open, "--limit-rate"), None);
+        assert_eq!(value_after(&open, "--concurrent-fragments").as_deref(), Some("8"));
+
+        settings.speed_limit_kib = 1024;
+        let limited = build_args(t.handle(), &job, &settings, &execution, &workspace, None);
+        assert_eq!(value_after(&limited, "--limit-rate").as_deref(), Some("1024K"));
+        assert_eq!(value_after(&limited, "--concurrent-fragments").as_deref(), Some("1"));
+        assert_eq!(limited.last(), open.last(), "the link stays the last argument");
+        assert_eq!(execution.fragment_concurrency, 8, "the frozen choice is not rewritten");
     }
 
     #[test]

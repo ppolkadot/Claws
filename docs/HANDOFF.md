@@ -22,6 +22,8 @@ Claws is a Windows Tauri 2 desktop app with plain TypeScript/CSS. Rust invokes y
 - Settings schema is 2; queue schema is 3. Preserve newer/corrupt data and ambiguous backups rather than guessing or starting an empty writable queue. Keep migrations and recovery journals durable.
 - A job freezes output/template/processing choices before first execution. Retry/resume uses that execution and source; current cookie/tool locations may change. Cancellation cleanup is scoped to the verified attempt's work folder.
 - Download into an owned `.claws-work` folder, then publish verified outputs without overwriting existing files. A recorded path alone is not permission to delete; keep file identities, publication evidence, history mutations and kept-file recovery intact.
+- `max_concurrent` counts transferring jobs. Up to `max_processing` jobs in final processing hold no transfer slot; each one beyond that does, so at most the two limits added together run at once. A merge already running inside yt-dlp is never held back.
+- A speed limit is read when a download starts and is passed only to downloads, never to lookups or previews. yt-dlp applies `--limit-rate` to each fragment connection, so a limited start runs with one fragment; the job's frozen `fragment_concurrency` is not rewritten.
 - Progress reaches 100% only after publication. Late telemetry cannot undo Processing. Queue event revisions prevent older replies from reverting state.
 - Keep size preview, admission and processing policy consistent. Processing monitoring is best effort; a preview is not a reservation or a strict gate before every FFmpeg launch.
 - yt-dlp calls include `--encoding utf-8`; environment variables alone did not preserve printed Unicode paths on Windows.
@@ -53,7 +55,9 @@ git diff --check
 
 Repository-wide `cargo fmt --check` has pre-existing drift. Keep unrelated formatting out of focused edits.
 
-For an authorized installer build, synchronize `package.json`, `package-lock.json` (root and package entries), `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and `src-tauri/tauri.conf.json`, then run `npm run tauri build -- --bundles nsis`. Output is under `src-tauri/target/release/bundle/nsis/`. Record the source commit/snapshot, installer hash, extracted version and embedded-asset checks. Keep existing installer/checksum/build records immutable; a source edit does not replace a packaged release.
+For an authorized installer build, synchronize `package.json`, `package-lock.json` (root and package entries), `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and `src-tauri/tauri.conf.json`, then run `npm run tauri build -- --bundles nsis`. Output is under `src-tauri/target/release/bundle/nsis/`. Record the source commit/snapshot, installer hash, extracted version and embedded-asset checks in the release notes under `releases/`. Attach the installer and its `.sha256` to the GitHub Release; do not commit new installers (`installers/*` is ignored). The files already tracked in `installers/` are historical records: keep them immutable, and a source edit does not replace a packaged release.
+
+`.github/workflows/ci.yml` runs the frontend tests, the build, the backend tests and Clippy on `windows-latest` for every push and pull request. Tests that need a real yt-dlp or FFmpeg skip there, so run them locally before a release.
 
 ## Development tools
 

@@ -24,6 +24,22 @@ const SHORTCUTS: { value: QuickOpenShortcut; label: string }[] = [
   { value: "off", label: "Off" },
 ];
 
+const SPEED_LIMITS: { value: number; label: string }[] = [
+  { value: 0, label: "No limit" },
+  { value: 512, label: "512 KB/s" },
+  { value: 1024, label: "1 MB/s" },
+  { value: 2048, label: "2 MB/s" },
+  { value: 5120, label: "5 MB/s" },
+  { value: 10240, label: "10 MB/s" },
+  { value: 25600, label: "25 MB/s" },
+];
+
+/** The offered limits, plus a saved value that is not one of them (a hand-edited file). */
+function speedLimits(current: number): { value: number; label: string }[] {
+  if (SPEED_LIMITS.some((option) => option.value === current)) return SPEED_LIMITS;
+  return [...SPEED_LIMITS, { value: current, label: `${current} KiB/s` }];
+}
+
 const onError = (message: string) => toast(message, { tone: "error" });
 
 export const mountSettings: MountView = (container, ctx) => {
@@ -96,6 +112,16 @@ function buildSettings(container: HTMLElement): () => void {
     ),
     row("Filename", template, h("span", {}, "yt-dlp output template. ", h("code", { text: "%(title)s" }), " and ", h("code", { text: "%(id)s" }), " are the usual parts.")),
     row("Simultaneous downloads", stepper("Simultaneous downloads", s().maxConcurrent, 1, 8, (v) => update({ maxConcurrent: v }))),
+    row(
+      "Processing alongside",
+      stepper("Processing alongside", s().maxProcessing, 1, 8, (v) => update({ maxProcessing: v })),
+      "How many downloads may be merging or converting without holding up the next transfer. Beyond this number, the next download waits.",
+    ),
+    row(
+      "Speed limit",
+      chipRadio<number>("Speed limit", speedLimits(s().speedLimitKib), s().speedLimitKib, (v) => update({ speedLimitKib: v })),
+      "For each download, so several at once can add up to more. Applies from the next download that starts or resumes; a limited download fetches one segment at a time.",
+    ),
     row(
       "Embed metadata",
       toggle("Embed metadata", s().embedMetadata, (v) => update({ embedMetadata: v })),
