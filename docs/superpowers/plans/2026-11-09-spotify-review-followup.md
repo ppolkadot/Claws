@@ -1,5 +1,7 @@
 # Spotify Review Follow-up Implementation Plan
 
+> Implemented through Claws 1.0.8. The tasks and unchecked steps below preserve the review specification; they are not an active queue. Current evidence and remaining live/native limits are in [Spotify verification](../../spotify-track-matching-verification.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans or superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Correct the confirmed Spotify matching UX issues and improve matching robustness without changing explicit selection, fresh audio verification or download-source guarantees.

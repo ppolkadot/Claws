@@ -19,7 +19,6 @@ import { buildShell } from "./views/shell";
 
 const root = document.querySelector<HTMLDivElement>("#app")!;
 
-/** Pushes the appearance settings onto the document so they apply before any save round trip. */
 function applyAppearance() {
   const { theme, glassIntensity, backdrop } = store.settings;
   const dark = theme === "dark" || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
@@ -117,7 +116,6 @@ async function start() {
       try {
         text = (await navigator.clipboard.readText()).trim();
       } catch {
-        // No clipboard access: just open the Download view.
       }
       if (looksLikeUrl(text) && text !== lastQuickLink) {
         lastQuickLink = text;
@@ -129,7 +127,6 @@ async function start() {
     })();
   });
 
-  // Notices follow status transitions, starting from the jobs loaded at startup.
   const transitions = new StatusTransitions();
   transitions.seed(store.jobList());
   store.on("jobs", () => transitions.prune(store.jobList().map((job) => job.id)));

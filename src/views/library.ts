@@ -14,7 +14,6 @@ import type { MountView } from "./shell";
 
 const fail = (error: unknown) => toast(errorMessage(error), { tone: "error" });
 
-/** Opens the folder of an entry's kept subtitle files and says what happened, success or not. */
 export async function showKept(id: string) {
   try {
     const outcome = keptOutcome(await api.showKeptFiles(id));
@@ -130,7 +129,6 @@ export const mountLibrary: MountView = (container, ctx) => {
   });
   ctx.setActions([searchBox, clearAll]);
 
-  // Folders that could not be checked for kept subtitle files of older downloads, with a retry.
   const keptNote = h("div", { class: "kept-note glass", attrs: { role: "status" } });
   keptNote.hidden = true;
   const paintKeptNote = (report: Parameters<typeof repairNote>[0]) => {

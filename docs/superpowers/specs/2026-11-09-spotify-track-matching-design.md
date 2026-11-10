@@ -1,6 +1,6 @@
 # Spotify track matching design
 
-Status: implemented in source following the user's execution request. See `docs/spotify-track-matching-verification.md` for evidence and remaining acceptance limits.
+Status: implemented and packaged in Claws 1.0.8. [Spotify verification](../../spotify-track-matching-verification.md) records checks and remaining acceptance limits.
 
 ## Intent and scope
 
@@ -30,7 +30,7 @@ Sources: [Spotify's documented oEmbed API](https://developer.spotify.com/documen
 
 Recommended approach: implement a small native Rust metadata resolver and YouTube candidate search, with a separate frontend confirmation state. This follows Claws' current Rust/TypeScript stack and reuses its managed yt-dlp installation.
 
-Alternatives considered: bundling spotDL adds Python/tool installation and configuration obligations; manual search only is simpler but does not deliver the Spotify-link workflow. Keep editable manual search as the fallback within the native approach. These are planning recommendations, not decisions previously approved by the user.
+Alternatives considered: bundling spotDL adds Python/tool installation and configuration obligations; manual search only is simpler but does not deliver the Spotify-link workflow. Keep editable manual search as the fallback within the native approach. The native implementation uses the existing Rust/TypeScript stack.
 
 ## Metadata and request contract
 
@@ -45,15 +45,15 @@ Alternatives considered: bundling spotDL adds Python/tool installation and confi
 
 ## Search and ranking
 
-Use a separate `search_spotify_matches` command. Construct exactly one argv search operand `ytsearch5:<query>` after `--`; query defaults to `<artists joined by comma> - <title> audio`, or title alone when artist is unknown. User edits are literal search text, never URLs/options/extractor prefixes. Reuse `tools::common_args`, the engine read lock and `probe::run_lookup`, with flat search results; no media downloads or five full candidate probes. Existing cookie settings apply to YouTube only, never Spotify HTTP requests.
+Use a separate `search_spotify_matches` command. Construct exactly one argv search operand `ytsearch5:<query>` after `--`; the derived query reserves the title and ` audio` suffix, then adds whole artist names within 300 Unicode code points. Oversized titles use a code-point-safe prefix; missing title requires manual input. User edits are literal search text, never URLs/options/extractor prefixes. Reuse `tools::common_args`, the engine read lock and `probe::run_lookup`, with flat search results; no media downloads or five full candidate probes. Existing cookie settings apply to YouTube only, never Spotify HTTP requests.
 
 Accept at most 5 distinct potentially playable YouTube video identities from the returned entries. Normalize to `https://www.youtube.com/watch?v=<id>` with a valid 11-character ID. Ignore malformed, unavailable, live/upcoming entries and external URLs; preserve stable ordering on ties. Search results have their own DTO, not `ProbeResult` or a downloadable playlist. Probe only the user-selected candidate with the existing `api.probe` to verify audio formats and obtain actual preview/estimate data.
 
 Extend `ProbeResult` with backward-compatible `audioAvailable: boolean|null` (`#[serde(default)]` Rust `Option<bool>`; optional/nullable in TypeScript). Full single-video probing sets true only if a format has a nonempty audio codec other than `none`, an HTTP(S) media URL, and `has_drm` absent or false; audio-only and muxed formats both qualify. Explicit empty formats or formats without a qualifying audio stream give false; absent format data, playlists and older cached records give null/unknown. A Spotify match must have a fresh selected-candidate probe with `audioAvailable === true`; false or unknown stays unconfirmed with a retry/change-match explanation. This is availability evidence at lookup time, not a guarantee that later source access will succeed. Ordinary preview/download behavior remains unchanged by the new field.
 
-Ranking is a deterministic ordering aid, never an accuracy probability. Normalize Unicode letters/numbers by lowercasing and punctuation-to-space; preserve non-Latin text and diacritics initially. Title similarity uses token-set Dice similarity. Artist similarity uses the maximum token Dice overlap against candidate title or uploader for each requested artist, then the mean. Duration closeness is `max(0, 1 - abs(candidate-target)/max(10, 0.10*target))`. Weighted score: title 0.55, artist 0.30, duration 0.15; renormalize weights over available signals. Missing artist/duration and partial metadata produce visible warnings, never fabricated values.
+Ranking is a deterministic ordering aid, never an accuracy probability. Normalize Unicode letters/numbers by lowercasing and punctuation-to-space; preserve non-Latin text and diacritics initially. Title similarity uses token-set Dice similarity. Artist similarity computes per-artist token Dice overlap against candidate title/uploader, then blends `0.70 * max + 0.30 * mean`. Anchored Topic/known VEVO suffixes and explicit trailing presentation annotations are normalized for scoring only; recording-version words and raw display metadata remain intact. Duration closeness is `max(0, 1 - abs(candidate-target)/max(10, 0.10*target))`. Weighted score: title 0.55, artist 0.30, duration 0.15; renormalize weights over available signals. Missing artist/duration and partial metadata produce visible warnings, never fabricated values.
 
-Subtract 0.25 for each distinct unwanted version category (live, cover, remix, karaoke, instrumental, sped-up, slowed), capped at 0.75, when that category occurs in the candidate title but not the requested title. Use explicit whole-token/phrase categories; avoid substrings such as `live` inside `Believe`. Clamp final score to [0,1]. Display reasons such as “Similar title”, “Duration differs by 45 s” and “May be a live recording”; do not label any match exact or verified. Mark duration differences above `max(10 seconds, 10% of target)` as a warning. No threshold hides otherwise valid candidates.
+Subtract 0.25 for each distinct unwanted version category (live, cover, remix, karaoke, instrumental, sped-up, slowed), capped at 0.75, when that category occurs in the candidate title but not the requested title. Use explicit whole-token/phrase categories; avoid substrings such as `live` inside `Believe`. Clamp final score to [0,1]. Display uncertainty such as “Artist/channel differs”, “Duration differs by 45 s” and “May be a live recording”; positive title overlap is not a warning. Do not label any match exact or verified. Mark duration differences above `max(10 seconds, 10% of target)` as a warning. No threshold hides otherwise valid candidates.
 
 ## Interaction and lifecycle
 

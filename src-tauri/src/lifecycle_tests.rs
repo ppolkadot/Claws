@@ -312,7 +312,6 @@ impl SampleGate {
         }
     }
 
-    /// Called by the provider for each sample.
     fn enter(&self) -> std::io::Result<()> {
         use std::sync::atomic::Ordering::SeqCst;
         let index = self.started.fetch_add(1, SeqCst);
@@ -339,7 +338,6 @@ impl SampleGate {
         self.hold_from.store(index, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// Makes the sample numbered `index` panic, as a failing provider would.
     pub fn panic_at(&self, index: usize) {
         self.panic_at.store(index, std::sync::atomic::Ordering::SeqCst);
     }
@@ -393,7 +391,6 @@ impl TestApp {
         Some(Self::with_data(dir, out, Vec::new()))
     }
 
-    /// An app started on an existing data folder (a restart), restoring `queue`.
     pub fn with_data(dir: PathBuf, out: PathBuf, queue: Vec<Job>) -> Self {
         let app = tauri::test::mock_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -438,12 +435,10 @@ impl TestApp {
         *self.free.lock().unwrap() = readings.iter().copied().collect();
     }
 
-    /// Closes this app the way Claws exits and starts a new one on the same data.
     pub fn restart(self) -> Self {
         self.restart_after(|_| {})
     }
 
-    /// Like `restart`, with `change` applied to the data folder while Claws is closed.
     pub fn restart_after(self, change: impl FnOnce(&Path)) -> Self {
         let (dir, out) = (self.dir.clone(), self.out.clone());
         downloader::shutdown(self.handle());
@@ -489,14 +484,12 @@ impl TestApp {
         }
     }
 
-    /// Lines the fixture tool logged, one per start.
     pub fn starts(&self) -> Vec<String> {
         std::fs::read_to_string(self.out.join("fixture-starts.log"))
             .map(|t| t.lines().map(str::to_string).collect())
             .unwrap_or_default()
     }
 
-    /// Makes saves of `name` in the data folder fail.
     pub fn block(&self, name: &str) {
         let path = self.dir.join(name);
         let _ = std::fs::remove_file(&path);
@@ -780,7 +773,6 @@ fn held(t: &TestApp, id: &str) -> Option<u64> {
     t.state().disk_ledger.lock().unwrap().held(id)
 }
 
-/// Whether another thread holds the ledger right now (without waiting for it).
 fn ledger_is_locked(t: &TestApp) -> bool {
     matches!(t.state().disk_ledger.try_lock(), Err(std::sync::TryLockError::WouldBlock))
 }
@@ -1130,7 +1122,6 @@ fn startup_recovery_returns_before_library_work_and_prevents_duplicate_starts() 
     assert_eq!(t.starts().len(), 1);
 }
 
-// ---- Video presets ------------------------------------------------------------------------
 
 fn original(max_height: Option<u32>) -> DownloadOptions {
     DownloadOptions { max_height, video_preset: crate::download_policy::VideoPreset::Original, ..DownloadOptions::default() }
@@ -1195,7 +1186,6 @@ fn a_completed_queue_job_drags_only_its_recorded_library_file() {
     assert_eq!(crate::file_drag::recorded_file(&history, &id).unwrap(), dunce::canonicalize(&saved).unwrap());
     assert_eq!(std::fs::read(&saved).unwrap(), b"merged", "resolving never touches the file");
 
-    // Removed from the Library, the queue row's id no longer resolves.
     crate::history_mutation::delete_entry(t.handle(), &id, false).unwrap();
     let history = { t.state().history.lock().unwrap().clone() };
     let error = crate::file_drag::recorded_file(&history, &id).unwrap_err().to_string();
@@ -1217,7 +1207,6 @@ fn a_completed_download_records_the_identity_that_proves_it_is_ours() {
     };
     assert_eq!(recorded(&t).file_identity, Some(crate::download_files::identify(&saved).unwrap()));
 
-    // Saved with the entry, so it is there after a restart too.
     let t = t.restart();
     assert_eq!(recorded(&t).file_identity, Some(crate::download_files::identify(&saved).unwrap()));
 
@@ -1255,13 +1244,11 @@ fn a_saved_job_with_a_preset_this_version_cannot_make_fails_without_starting() {
     assert_eq!(t.starts().len(), 1, "yt-dlp was never started for it");
 }
 
-// ---- Transcripts ----------------------------------------------------------------------------
 
 fn transcript(code: &str, auto: bool, format: crate::transcript::TranscriptFormat) -> DownloadOptions {
     DownloadOptions { mode: "transcript".into(), subtitle_langs: vec![code.into()], auto_subs: auto, transcript_format: format, ..DownloadOptions::default() }
 }
 
-/// Files in the output folder, apart from the fixture's log and Claws' work folders.
 fn published(t: &TestApp) -> Vec<String> {
     if !t.out.is_dir() {
         return Vec::new();
@@ -1289,7 +1276,6 @@ fn a_transcript_is_saved_to_the_folder_and_library_without_any_media() {
     let text = std::fs::read_to_string(&saved).unwrap();
     assert_eq!(text, "Ana: Hello & welcome\r\nこれは字幕です 🎬\r\n");
     assert_eq!(published(&t), ["papa [en].txt"], "only the transcript is published, not the raw captions");
-    // No media bytes were ever reported.
     assert_eq!((job.downloaded_bytes, job.total_bytes), (None, None));
     let starts = t.starts();
     assert_eq!(starts.len(), 1);
@@ -1407,7 +1393,6 @@ fn a_transcript_job_resumes_with_its_choices_after_a_restart() {
     assert_eq!(saved["jobs"][0]["options"]["transcriptFormat"], "srt");
 }
 
-/// Every `job-update` the app emits, as the interface receives them.
 fn record_job_events(t: &TestApp) -> Arc<Mutex<Vec<Job>>> {
     use tauri::Listener;
     let events: Arc<Mutex<Vec<Job>>> = Default::default();
@@ -1497,9 +1482,7 @@ fn a_network_failure_after_a_pre_download_postprocessor_is_not_reported_as_proce
     assert!(!error.contains("processing the file failed"), "a transfer failure was reported as a processing failure: {error}");
 }
 
-// ---- Kept side files (W4) ---------------------------------------------------------------------
 
-/// A video with English and Spanish caption files next to it, saved as separate files.
 fn with_captions() -> DownloadOptions {
     DownloadOptions { subtitle_langs: vec!["en".into(), "es".into()], embed_subs: false, ..DownloadOptions::default() }
 }
@@ -1513,7 +1496,6 @@ fn library_entry_count(t: &TestApp, id: &str) -> usize {
     t.state().history.lock().unwrap().iter().filter(|h| h.id == id).count()
 }
 
-/// The Library as `history.json` holds it: what the next start (or a reload) reads.
 fn saved_library(t: &TestApp) -> Vec<crate::history::HistoryItem> {
     serde_json::from_str(&std::fs::read_to_string(t.dir.join("history.json")).unwrap()).unwrap()
 }

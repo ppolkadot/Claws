@@ -26,7 +26,6 @@ export interface SpotifyMatchDependencies {
   probe(url: string): Promise<ProbeResult>;
 }
 
-/** Route recognizable Spotify inputs to their dedicated explanation, even unsupported entities. */
 export function isSpotifyInput(raw: string): boolean {
   if (/^spotify:/i.test(raw.trim())) return true;
   try {
@@ -39,12 +38,8 @@ export const MAX_QUERY_CODE_POINTS = 300;
 const QUERY_SUFFIX = " audio";
 const length = (text: string) => Array.from(text).length;
 
-/**
- * The automatic search: `Artist, Artist - Title audio`, kept within the backend's 300
- * code points. The title and the ` audio` suffix are reserved first; whole artist names
- * fill what is left, in order. A title too long for the cap is cut at a word boundary
- * where possible. Only this derived query is shortened, never the Spotify metadata.
- */
+/** Reserve title and suffix within the backend's 300-code-point cap, then add whole artist names.
+ * Only the query is shortened; Spotify metadata stays intact. */
 export function initialSpotifyQuery(track: SpotifyTrack): string {
   const title = track.title?.trim();
   if (!title) return "";
@@ -65,7 +60,6 @@ export function initialSpotifyQuery(track: SpotifyTrack): string {
   return `${names.length ? `${names.join(", ")} - ` : ""}${title}${QUERY_SUFFIX}`;
 }
 
-/** Normalizes whatever a failed lookup threw into a readable issue. */
 export function toLookupIssue(error: unknown): SpotifyLookupIssue {
   if (error && typeof error === "object" && typeof (error as SpotifyLookupIssue).message === "string" && (error as SpotifyLookupIssue).message.trim()) {
     const issue = error as Partial<SpotifyLookupIssue>;
@@ -162,7 +156,6 @@ export class SpotifyMatchController {
 
   async search(): Promise<void> {
     if (this.disposed) return;
-    // The same query is already being searched: another request would only repeat the work.
     if (this.current.stage === "searching" && this.searchingQuery === this.current.query.trim()) return;
     const ticket = ++this.epoch;
     const next = this.copy();

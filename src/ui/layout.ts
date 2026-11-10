@@ -2,7 +2,6 @@ import { h } from "./dom.js";
 
 type Control = Node | string;
 
-/** One row of an inset-grouped list: label and optional hint on the left, control on the right. */
 export function row(label: string, control: Control | null, hint?: string | Node): HTMLElement {
   return h(
     "div",
@@ -17,7 +16,6 @@ export function row(label: string, control: Control | null, hint?: string | Node
   );
 }
 
-/** A glass panel that stacks rows separated by hairlines. */
 export function group(...rows: (Node | null)[]): HTMLElement {
   return h("div", { class: "group glass" }, ...rows);
 }

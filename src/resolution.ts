@@ -1,6 +1,3 @@
-// Video size choices and presets: pure logic, no DOM, so Node tests can run it
-// (scripts/tests/resolution.test.mjs).
-//
 // yt-dlp's `-S res:N` caps the shorter side of the picture, so a choice's value is a
 // shorter side: a portrait 1080×1920 stream is the "1080p" choice. Choices come from the
 // sizes the source offers (probe.rs `resolutions`), never a fixed ladder, and a class name

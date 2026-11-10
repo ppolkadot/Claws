@@ -1,7 +1,4 @@
-// What the Download view keeps for a single link while another view is open: the details that
-// were looked up, the choices made over them, and the estimates already read. Plain data only,
-// bounded, and owned by the store (store.ts), so it outlives the view that made it. No DOM, and
-// no imports beyond types, so the Node tests can run it (scripts/tests/preview-session.test.mjs).
+// Bounded preview data belongs to the store so it survives view changes.
 //
 // A running lookup or estimate is never kept: the view cancels those when it is left, and what
 // they would have said is dropped, not revived. Only a finished run (EstimateRun.snapshot) and

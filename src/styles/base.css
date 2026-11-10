@@ -174,7 +174,6 @@ img {
 ::selection {
   background: rgba(10, 132, 255, 0.32);
 }
-/* Read by screen readers, not shown. */
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -427,7 +426,6 @@ html[data-backdrop="none"] .sidebar-panel {
   display: block;
 }
 
-/* ---- content and toolbar ---------------------------------------------------- */
 .content {
   position: relative;
   min-width: 0;

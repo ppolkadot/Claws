@@ -48,7 +48,6 @@ pub struct Resolution {
     /// Absent when the site gives only a height; then `short_side` is that height.
     pub width: Option<u32>,
     pub height: Option<u32>,
-    /// What the site says about the stream at this size, when it says anything.
     pub vcodec: Option<String>,
     pub dynamic_range: Option<String>,
     pub fps: Option<f64>,
@@ -202,7 +201,6 @@ fn collect_captions(value: &Value) -> Vec<SubtitleLang> {
     out
 }
 
-/// The smallest size offered as a choice.
 const MIN_SHORT_SIDE: u32 = 144;
 
 fn dimension(value: &Value) -> Option<u32> {
@@ -266,8 +264,6 @@ fn parse(url: &str, value: &Value) -> ProbeResult {
                     .enumerate()
                     .filter(|(_, e)| e.is_object())
                     .map(|(position, e)| {
-                        // Flat entries usually carry a link, but some extractors give only an
-                        // id. Those are fetched by their position in the playlist instead.
                         let own_url = str_field(e, "webpage_url")
                             .and_then(|u| validate_url(&u).ok())
                             .or_else(|| str_field(e, "url").and_then(|u| validate_url(&u).ok()));
@@ -328,7 +324,6 @@ fn parse(url: &str, value: &Value) -> ProbeResult {
     }
 }
 
-/// Removes a lookup from `AppState::probes` however `probe` returns.
 struct ProbeSlot<'a> {
     state: &'a AppState,
     id: u64,
@@ -387,7 +382,6 @@ pub async fn probe(app: &AppHandle, raw_url: &str) -> Result<ProbeResult> {
         remember(app, &result.url, &stdout).await;
     }
     remember_recent(&state, &url, &result);
-    // A link the user downloaded before keeps its saved details current.
     links::refresh(app, &[url.as_str(), result.url.as_str()], &result);
     Ok(result)
 }
@@ -726,7 +720,6 @@ mod tests {
         left.sort();
         assert_eq!(left, ["newer.json", "newest.json"], "stale first, then the oldest until 1000 bytes fit");
 
-        // Within its budget, nothing fresh is touched.
         prune_cache_within(&dir, Duration::from_secs(20 * 60), 1_000);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
         let _ = std::fs::remove_dir_all(&dir);
@@ -880,7 +873,6 @@ mod tests {
         assert_eq!(automatic, ["de-orig"], "only the speech-recognition track; the rest are machine translations");
         assert!(!kinds.iter().any(|(c, _)| c == "live_chat"), "{kinds:?}");
         assert!(kinds.iter().position(|(_, a)| *a) > kinds.iter().rposition(|(_, a)| !*a), "human tracks first");
-        // The video-mode subtitle list is unchanged.
         assert!(result.subtitles.iter().all(|s| !(s.code == "en" && s.auto)));
 
         // A video with human captions and no `-orig` track: YouTube's automatic list is
@@ -891,14 +883,11 @@ mod tests {
         }
         let translated = json!({ "subtitles": { "en": [{ "name": "English" }] }, "automatic_captions": translations });
         assert_eq!(caption_kinds(&parse("https://example.com/t", &translated)), [("en".to_string(), false)]);
-        // A site with a few automatic tracks offers all of them.
         let few = json!({ "automatic_captions": { "nl": [{ "name": "Dutch" }], "sv": [{}] } });
         assert_eq!(caption_kinds(&parse("https://example.com/x", &few)), [("nl".to_string(), true), ("sv".to_string(), true)]);
-        // No captions at all: an empty list, which the interface shows as unavailable.
         assert_eq!(parse("https://example.com/y", &json!({ "title": "Silent" })).captions.map(|c| c.len()), Some(0));
     }
 
-    /// `count` automatic tracks named l0.. plus, optionally, YouTube's chat replay entry.
     fn automatic_tracks(count: usize, live_chat: bool) -> Value {
         let mut map = serde_json::Map::new();
         for i in 0..count {
@@ -919,7 +908,6 @@ mod tests {
         let twelve = auto_codes(json!({ "automatic_captions": automatic_tracks(12, true) }));
         assert_eq!(twelve.len(), 12, "{twelve:?}");
         assert!(!twelve.iter().any(|c| c == "live_chat"));
-        // Thirteen real tracks are a long machine-translated list.
         assert!(auto_codes(json!({ "automatic_captions": automatic_tracks(13, false) })).is_empty());
         assert!(auto_codes(json!({ "automatic_captions": automatic_tracks(13, true) })).is_empty());
         // A -orig track decides it however long the list: only that track, chat or not.
@@ -929,7 +917,6 @@ mod tests {
         let mut short_orig = automatic_tracks(2, false);
         short_orig.as_object_mut().unwrap().insert("fr-orig".into(), json!([{}]));
         assert_eq!(auto_codes(json!({ "automatic_captions": short_orig })), ["fr-orig"]);
-        // Only a chat entry: nothing to offer, and the video has no captions.
         assert!(auto_codes(json!({ "automatic_captions": automatic_tracks(0, true) })).is_empty());
     }
 
@@ -944,7 +931,6 @@ mod tests {
         let result = parse("https://example.com/v", &value);
         let offered: Vec<_> = result.subtitles.iter().map(|s| (s.code.as_str(), s.auto)).collect();
         assert_eq!(offered, [("es", false), ("en", true)]);
-        // Transcripts still keep the two Spanish kinds apart.
         let kinds = caption_kinds(&result);
         assert!(kinds.contains(&("es".to_string(), false)) && kinds.contains(&("es".to_string(), true)) && kinds.contains(&("en".to_string(), true)), "{kinds:?}");
     }
@@ -1064,7 +1050,6 @@ mod tests {
         let result = parse("https://example.com/g", &value);
         assert_eq!(sides(&result), vec![(2160, Some(3840), Some(2160)), (1440, None, Some(1440))], "a width alone says nothing about res");
         assert_eq!(result.resolutions[0].vcodec, None);
-        // The same size given once with and once without its width keeps the width.
         let value = json!({ "formats": [{ "format_id": "a", "height": 2160 }, { "format_id": "b", "width": 4096, "height": 2160, "vcodec": "hvc1" }] });
         assert_eq!(sides(&parse("https://example.com/x", &value)), vec![(2160, Some(4096), Some(2160))]);
     }
@@ -1075,7 +1060,6 @@ mod tests {
         let result: ProbeResult = serde_json::from_str(saved).unwrap();
         assert!(result.resolutions.is_empty());
         assert_eq!(result.heights, vec![2160, 1080], "the old heights still load; the UI offers them only as caps");
-        // Its own shape round-trips with the new field.
         let again: ProbeResult = serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
         assert_eq!(again.heights, result.heights);
     }

@@ -43,7 +43,6 @@ type Phase = "idle" | "loading" | "result" | "error" | "batch" | "spotify";
 
 /** Batch rows built per frame, as in the Queue view: about a frame's worth of work. */
 const ROWS_PER_FRAME = 40;
-/** Skipped lines listed by name; the rest are counted. */
 const ISSUES_SHOWN = 6;
 
 const AUDIO_FORMATS = [
@@ -74,12 +73,9 @@ function presetRow(value: VideoPreset, onChange: (next: VideoPreset) => void): H
   return row("Format", control.el, hint);
 }
 
-/** Why the Transcript type cannot be chosen for this video. */
 const NO_CAPTIONS = "No captions available for this video";
-/** Shown where a size estimate would be: a transcript downloads no media. */
 const TEXT_ONLY = "Text only — the video is not downloaded";
 
-/** The caption track for a transcript, human and automatic tracks in their own groups. */
 function captionSelect(choices: CaptionChoices, value: string | null, onChange: (key: string) => void): HTMLSelectElement {
   const optgroup = (label: string, tracks: CaptionChoices["human"]) =>
     tracks.length === 0
@@ -96,7 +92,6 @@ function captionSelect(choices: CaptionChoices, value: string | null, onChange: 
   return select;
 }
 
-/** The Quality chips: Best, then each choice with its cap as the hint. */
 function qualityChips(choices: { value: number; label: string; hint: string }[], value: number | null, onChange: (next: number | null) => void): HTMLElement {
   return chipRadio<number>("Quality", [{ value: 0, label: "Best" }, ...choices], value ?? 0, (next) => onChange(next === 0 ? null : next));
 }
@@ -139,7 +134,6 @@ type EstimateLine = {
   detail: HTMLElement;
   /** Visually hidden; written only when an estimate starts or settles, never per step. */
   status: HTMLElement;
-  /** Asks again for what failed; shown only then. It never blocks Download. */
   retry: HTMLButtonElement;
   busy: boolean;
 };
@@ -278,7 +272,6 @@ export const mountDownload: MountView = (container, ctx) => {
   let errorText = "";
   let errorRetry = true;
   let lastUrl = "";
-  /** Lines skipped beside the one link being looked up (several lines, one link in them). */
   let skipped: ParsedInput | null = null;
   /** Bumped by every submission; an older lookup's reply is dropped. */
   let ticket = 0;
@@ -292,10 +285,8 @@ export const mountDownload: MountView = (container, ctx) => {
   let subs = new Set<string>();
   let embedSubs = false;
   let fastSave = false;
-  /** The caption track a transcript is made from (transcript-options.ts captionKey). */
   let caption: string | null = null;
   let transcriptFormat: TranscriptFormat = "txt";
-  /** Names the Download button after the type (a transcript is saved, not downloaded). */
   let paintActionLabel: (() => void) | null = null;
   let selected = new Set<number>();
   /** True while an enqueue is in flight or its confirmation is showing. */
@@ -310,13 +301,11 @@ export const mountDownload: MountView = (container, ctx) => {
   /** The link the queue has accepted; its details are never kept for a return to this view. */
   let enqueuedResult: ProbeResult | null = null;
   let spotify: SpotifyMatchController | null = null;
-  /** The matching panel and what holds it with the confirmed recording's details. */
   let matchView: SpotifyMatchView | null = null;
   let reviewHost: HTMLElement | null = null;
   let resultSlot: HTMLElement | null = null;
   let matchingSessionId = "";
 
-  // ---- Size previews (display only; the download checks free space when it starts) ----
   /** One link: follows the choices, debounced, latest answer only. */
   let previewLine: EstimateLine | null = null;
   const preview = new PreviewEstimator(
@@ -338,10 +327,8 @@ export const mountDownload: MountView = (container, ctx) => {
   const estimateItem = (item: EstimateItem) => api.estimate(item.url, item.playlistIndex, item.options);
   // Repeats are dropped by the queue's identity (enqueue adds each item once).
   const runOptions = { calls: estimateCalls, id: (item: EstimateItem) => itemKey(item) };
-  /** A playlist's selected entries, only when asked ("Estimate Sizes"). */
   let paintListEstimate: (() => void) | null = null;
   const listRun = new EstimateRun<EstimateItem>(estimateItem, { ...runOptions, onChange: () => paintListEstimate?.() });
-  /** The batch's selected links, only when asked. */
   let paintBatchEstimate: (() => void) | null = null;
   const batchRun = new EstimateRun<EstimateItem>(estimateItem, { ...runOptions, onChange: () => paintBatchEstimate?.() });
 
@@ -387,7 +374,6 @@ export const mountDownload: MountView = (container, ctx) => {
   });
 
   const multiline = () => /[\r\n]/.test(input.value.trim());
-  /** Grows the field with its lines (up to six, then it scrolls) and names the button. */
   function fitInput() {
     const lines = input.value.replace(/\s+$/, "").split(/\r\n|\r|\n/).length;
     input.rows = Math.min(Math.max(lines, 1), 6);
@@ -450,7 +436,6 @@ export const mountDownload: MountView = (container, ctx) => {
     if (!store.tools.ytdlp && !store.toolBusy.ytdlp && !store.toolError.ytdlp) void installEngine();
   });
 
-  /** Shows a lookup result with every option back at its default. */
   function showResult(next: ProbeResult) {
     result = next;
     store.previews.begin(next.url); // a new link replaces the one kept, with its choices and estimates
@@ -528,7 +513,6 @@ export const mountDownload: MountView = (container, ctx) => {
     return controller;
   }
 
-  /** Brings the panel up to date; its controls stay frozen while a download is being added. */
   function paintMatching() {
     if (!spotify || !matchView) return;
     reviewHost?.setAttribute("data-confirmed", String(spotify.state.stage === "confirmed"));
@@ -546,7 +530,6 @@ export const mountDownload: MountView = (container, ctx) => {
     });
   }
 
-  /** Takes refreshed details while keeping the choices already made. */
   function adoptRefresh(next: ProbeResult) {
     const before = result;
     result = next;
@@ -625,7 +608,6 @@ export const mountDownload: MountView = (container, ctx) => {
     }
     lastUrl = url;
 
-    // Saved details show at once; the lookup below checks them.
     const cached = await api.cachedLink(url).catch(() => null);
     if (mine !== ticket) return; // a newer request replaced this one
     if (cached) {
@@ -674,7 +656,6 @@ export const mountDownload: MountView = (container, ctx) => {
     render();
   }
 
-  /** Several links: each is looked up (three at a time); nothing downloads until asked. */
   async function submitBatch(parsed: ParsedInput) {
     const mine = ++ticket;
     activeEnqueue = null;
@@ -757,12 +738,10 @@ export const mountDownload: MountView = (container, ctx) => {
     paintLine(previewLine, size, detail, preview.state.status === "loading", false, preview.failed);
   }
 
-  /** The line under a list, and its button, for a run of estimates. */
   function paintRun(run: EstimateRun<EstimateItem>, line: EstimateLine, btn: HTMLButtonElement, count: number) {
     const s = run.state;
     const finished = run.key !== null && !s.running && s.done > 0;
     paintLine(line, describeRun(run), finished ? (aggregate(s.results).tempText ?? "") : "", s.running, true, run.canRetry);
-    // Named apart from the batch's own Stop (which stops reading links).
     setText(btn.querySelector("span")!, s.running ? "Stop Estimating" : "Estimate Sizes");
     const title = s.running
       ? "Stops estimating. Sizes already read stay; estimates already running finish in the background and are ignored."
@@ -816,7 +795,6 @@ export const mountDownload: MountView = (container, ctx) => {
             },
           ];
     try {
-      // The looked-up link, so its details are saved in the link cache.
       store.previews.adding(sent.url); // a view left from here is not shown as new on a return
       const origin = match?.track ? { kind: "spotifyYouTube" as const, spotifyUrl: match.track.url, spotifyTitle: match.track.title, spotifyArtists: [...match.track.artists] } : null;
       const added = await api.enqueue(items.map((item) => ({ ...item, matchOrigin: origin })), currentOptions(), spotify ? sent.url : lastUrl || sent.url);
@@ -841,7 +819,6 @@ export const mountDownload: MountView = (container, ctx) => {
       fitInput();
       lastUrl = "";
       result = null;
-      // Back to the list this link was looked up over, if there is one.
       phase = store.batch ? "batch" : "idle";
       render();
     } catch (error) {
@@ -1109,7 +1086,6 @@ export const mountDownload: MountView = (container, ctx) => {
         );
       }
       if (mode !== "transcript") rows.push(fastSaveRow());
-      // Everything after the Type row is replaced; the Type row itself stays.
       while (typeRow.nextSibling) typeRow.nextSibling.remove();
       append(panel, rows);
       paintActionLabel?.();
@@ -1175,7 +1151,6 @@ export const mountDownload: MountView = (container, ctx) => {
     return wrap;
   }
 
-  // ---- Several links ---------------------------------------------------------------
 
   async function addBatch() {
     const session = store.batch;
@@ -1208,7 +1183,6 @@ export const mountDownload: MountView = (container, ctx) => {
   }
 
   function rowNote(r: BatchRow<ProbeResult>): [string, string] {
-    // Created now, or already waiting there with the same choices: either way it is queued.
     if (r.added) return ["In the queue", "done"];
     switch (r.status) {
       case "waiting":
@@ -1554,7 +1528,6 @@ export const mountDownload: MountView = (container, ctx) => {
     );
   }
 
-  /** Shown above a single link's details, or an error, while a batch is kept behind them. */
   function batchReturn(): HTMLElement | null {
     if (!store.batch || phase === "batch") return null;
     const total = store.links.rows.length;
@@ -1606,7 +1579,6 @@ export const mountDownload: MountView = (container, ctx) => {
     const changed = key !== shownKey;
     shownKey = key;
     const back = batchReturn();
-    // Shown with the single link's loading, error and details; never with a batch.
     const issues = skipped && phase !== "idle" && phase !== "batch" ? renderIssues(skipped) : null;
     switch (phase) {
       case "loading":

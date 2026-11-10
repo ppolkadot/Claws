@@ -8,10 +8,6 @@
 //!
 //! A preview is display only. Admission still reads the actual free space when the
 //! download starts (downloader.rs `Budget`), whatever the preview said.
-//!
-//! Extension points for later options: a clipped range scales `download_bytes` and the
-//! plan's inputs by the kept fraction (yt-dlp's sizes ignore sections), and a processing
-//! output (an editing transcode) adds its term to `RunPlan`. Both belong in `build`.
 
 #[cfg(test)]
 use std::path::Path;
@@ -48,7 +44,6 @@ pub enum Confidence {
     Unknown,
 }
 
-/// Whether a figure could be had at all.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum EstimateState {
@@ -62,7 +57,6 @@ pub enum EstimateState {
     Failed,
 }
 
-/// One selected stream.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct EstimatePart {
@@ -107,7 +101,6 @@ pub struct DownloadEstimate {
     pub diagnostic: Option<String>,
 }
 
-/// What yt-dlp printed about its selection.
 #[derive(Debug)]
 struct Selection {
     top: EstimatePart,
@@ -320,7 +313,6 @@ pub async fn estimate(app: &AppHandle, raw_url: &str, playlist_index: Option<u32
     let playlist_index = playlist_index.filter(|i| *i > 0);
     let state = app.state::<AppState>();
     let settings = state.settings.lock().unwrap().clone();
-    // What the download would bind (JobExecution::freeze) if it started now.
     let execution = JobExecution::freeze(&settings, options.fast_save);
     let rewrite = download_policy::ProcessingPolicy::new(&options, &execution).rewrites_output();
     // Waits while yt-dlp is being replaced, and keeps it from being replaced meanwhile.
@@ -577,7 +569,6 @@ mod tests {
         }
     }
 
-    // ---- Available, unknown and failed ------------------------------------------------------
 
     #[test]
     fn a_known_size_is_available_and_a_site_with_no_size_is_unknown_not_failed() {
@@ -722,7 +713,6 @@ mod tests {
         assert_eq!((estimate.download_bytes, estimate.peak_temp_bytes), (None, None));
     }
 
-    // ---- The installed yt-dlp, offline, on made-up info ----------------------------------
 
     fn audio(id: &str, ext: &str, acodec: &str, abr: f64) -> serde_json::Value {
         json!({"format_id": id, "ext": ext, "acodec": acodec, "vcodec": "none", "abr": abr, "tbr": abr, "url": format!("https://example.invalid/{id}"), "protocol": "https"})

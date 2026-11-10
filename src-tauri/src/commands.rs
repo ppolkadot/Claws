@@ -161,7 +161,6 @@ pub fn save_settings(
     .flatten()
     .collect();
     let warning = (!warnings.is_empty()).then(|| warnings.join(" "));
-    // A higher concurrency limit can start waiting jobs right away.
     downloader::pump(&app);
     Ok(SavedSettings { settings, warning })
 }
@@ -231,7 +230,6 @@ pub async fn repair_kept_files(app: AppHandle) -> Result<RepairReport> {
     Ok(tauri::async_runtime::spawn_blocking(move || history::repair_kept_files(&app)).await?)
 }
 
-/// What the last look for kept side files found (see `repair_kept_files`).
 #[tauri::command]
 pub fn kept_files_report(app: AppHandle) -> RepairReport {
     history::last_repair(&app)

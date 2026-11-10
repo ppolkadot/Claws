@@ -46,7 +46,6 @@ export function formatDate(timestamp: number): string {
   return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 }
 
-/** Last path segment, for showing where a file went without the whole path. */
 export function folderName(path: string): string {
   const parts = path.split(/[\\/]+/).filter(Boolean);
   return parts.slice(-2).join("\\") || path;

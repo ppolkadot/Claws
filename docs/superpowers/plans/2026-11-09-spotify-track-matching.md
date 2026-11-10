@@ -10,7 +10,7 @@
 
 **Spec:** [Spotify track matching design](../specs/2026-11-09-spotify-track-matching-design.md). Read both documents. Scope and numerical constants below are proposed implementation decisions for review.
 
-**Execution status (2026-11-09):** Tasks 1–5 implemented; Task 6 automated, mounted-frontend and live native format checks completed. Real short-link, listening-based and manual WebView2 acceptance checks remain unverified. See [verification report](../../spotify-track-matching-verification.md) for exact commands/results and boundaries. Implementation is on `codex/spotify-track-matching`; no installer or release was produced.
+**Execution status:** Implemented and packaged in Claws 1.0.8. The tasks below are the historical implementation specification, not unfinished work. Current checks and remaining real-short-link/listening/WebView2 limits are in [Spotify verification](../../spotify-track-matching-verification.md) and [release notes](../../releases/1.0.8.md).
 
 ## Global Constraints
 

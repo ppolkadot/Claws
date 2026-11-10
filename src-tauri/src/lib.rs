@@ -174,7 +174,6 @@ pub fn run() {
         .expect("error while starting Claws");
 
     app.run(|app, event| {
-        // Stop yt-dlp and ffmpeg and save the queue before exiting.
         match event {
             tauri::RunEvent::Exit => downloader::shutdown(app),
             // Claws does not open or enqueue files dropped on it. A drop is only noted, so a
