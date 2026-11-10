@@ -13,6 +13,8 @@
 //! of a work folder), with the selection it was given (`-S` and `--merge-output-format`).
 //!
 //! ok    two streams (video, audio) with progress, a merge, then CLAWSDONE; exit 0
+//! merge-hold  like ok, but the merge lasts until `fixture-merge-release` exists in the output
+//!             folder (at most 30 s), so tests can keep several jobs processing at once
 //! ok-fast  like ok, but the merge does not pause (for races with a late notification)
 //! ok-subs  like ok-fast, and it leaves caption files `<name>.en.srt` and `<name>.es.srt` next to
 //!          the merged file, as yt-dlp does for `--write-subs`
@@ -114,7 +116,7 @@ fn main() {
     };
 
     match scenario.as_str() {
-        "ok" | "ok-fast" | "ok-subs" | "ok-preconvert" | "late-progress" => {
+        "ok" | "merge-hold" | "ok-fast" | "ok-subs" | "ok-preconvert" | "late-progress" => {
             writeln!(out, "CLAWSFMT|137|{bytes}|NA|140|{}|NA|137+140|NA|NA", bytes / 10).unwrap();
             if scenario == "ok-preconvert" {
                 // A postprocessor that yt-dlp runs before the download (a subtitle
@@ -141,7 +143,13 @@ fn main() {
                 audio
             };
             // A merge takes a while (ffmpeg reads and writes the whole file).
-            if scenario != "ok-fast" && scenario != "ok-subs" {
+            if scenario == "merge-hold" {
+                let release = dir.parent().and_then(|p| p.parent()).map(|output| output.join("fixture-merge-release"));
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                while !release.as_ref().is_some_and(|r| r.exists()) && std::time::Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            } else if scenario != "ok-fast" && scenario != "ok-subs" {
                 std::thread::sleep(Duration::from_millis(1500));
             }
             let merged = dir.join(format!("{name}.{merged_ext}"));

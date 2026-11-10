@@ -31,6 +31,8 @@ const settings: Settings = {
   glassIntensity: 70,
   backdrop: "glass",
   maxConcurrent: 3,
+  maxProcessing: 2,
+  speedLimitKib: 0,
   embedMetadata: true,
   quickOpenShortcut: "ctrl+alt+d",
   keepRunning: true,
