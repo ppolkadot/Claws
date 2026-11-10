@@ -495,6 +495,8 @@ export const mountDownload: MountView = (container, ctx) => {
       if (spotify !== controller) return;
       ticket += 1;
       const before = phase;
+      const focusDownload = state.stage === "confirmed"
+        && document.activeElement === matchView?.el.querySelector(".spotify-status");
       if (state.stage === "confirmed" && state.confirmed) {
         if (result?.url !== state.confirmed.url) showResult(controller.snapshot().confirmed!);
         mode = "audio";
@@ -511,6 +513,7 @@ export const mountDownload: MountView = (container, ctx) => {
       // place: rebuilding the stage would drop the query field and an IME composition.
       if (phase !== before || phase === "result" || !matchView || !stage.contains(matchView.el)) render();
       else paintMatching();
+      if (focusDownload) resultSlot?.querySelector<HTMLButtonElement>(".actions .btn-primary")?.focus({ preventScroll: true });
     });
     spotify = controller;
     matchView = mountSpotifyMatch({

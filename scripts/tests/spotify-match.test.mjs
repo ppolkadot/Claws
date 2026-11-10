@@ -342,3 +342,9 @@ test("an empty search has one status explanation instead of a duplicate error", 
   const {controller:c}=setup({search:async()=>[]});await c.open(url);
   assert.equal(c.state.stage,'choosing');assert.equal(c.state.error,null);
 });
+
+test("short-link failure uses the backend recovery instruction once", async () => {
+ const text="Couldn't resolve this Spotify short link. Try again, or paste the full Spotify track link.";
+ const {controller:c}=setup({resolve:async()=>{throw {code:'shortLinkUnresolved',message:text,retryable:true}}});
+ await c.open('https://spotify.link/test');assert.equal(c.state.error,text);assert.equal(c.state.retryable,true);
+});

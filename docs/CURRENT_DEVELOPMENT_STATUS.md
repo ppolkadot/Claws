@@ -1,6 +1,6 @@
 # Current development status
 
-Current version: **1.0.7**, requested by the owner on 2026-11-09. This includes the approved feature set and fixes Windows yt-dlp reporting corrupted Unicode finished paths. Current artifact and validation details are in [1.0.7 release notes](releases/1.0.7.md); the 1.0.0 and 1.1.0 installers are historical artifacts. GitHub release target: `v1.0.7` (Latest, standard release).
+Current local build: **1.0.8**, requested by the owner on 2026-11-09 and prepared on `codex/release-1.0.8`. This includes the reviewed Spotify-to-YouTube matching flow, recovery/layout fixes and the Unicode-path correction from 1.0.7. Current artifact and validation details are in [1.0.8 release notes](releases/1.0.8.md). This local build is not published or installed; the previous published version remains 1.0.7. Earlier installers are preserved.
 
 Startup recovery's suppressed kept-file save failure is fixed and has a red/green lifecycle regression. The implementation and regression tests were committed in `356569d` and published as 1.0.0 Beta. Application identifier and queue schema remain unchanged; installer downgrades are explicitly allowed. Live native drag/editor, real-site speed and clean-install/upgrade acceptance remain pending.
 
