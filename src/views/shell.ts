@@ -1,3 +1,4 @@
+import type { ToolName } from "../setup";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { api } from "../api";
@@ -195,16 +196,16 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
   store.on("jobStatus", paintBadge);
   paintBadge();
 
-  let lastTool: "ytdlp" | "ffmpeg" | null = null;
+  let lastTool: ToolName | null = null;
   const paintTools = () => {
-    const busy = store.toolBusy.ytdlp || store.toolBusy.ffmpeg;
-    const tool = store.toolBusy.ytdlp ? "ytdlp" : "ffmpeg";
+    const busy = store.toolBusy.ytdlp || store.toolBusy.ffmpeg || store.toolBusy.deno;
+    const tool: ToolName = store.toolBusy.ytdlp ? "ytdlp" : store.toolBusy.ffmpeg ? "ffmpeg" : "deno";
     const progress = store.toolProgress[tool];
     toolChip.classList.toggle("busy", Boolean(busy));
     toolDot.dataset.state = !store.toolsKnown ? "" : store.toolError.ytdlp ? "error" : store.tools.ytdlp ? "ok" : "missing";
     if (busy) {
       const pct = progress && progress.total > 0 ? progress.received / progress.total : null;
-      const name = tool === "ytdlp" ? "yt-dlp" : "ffmpeg";
+      const name = tool === "ytdlp" ? "yt-dlp" : tool === "ffmpeg" ? "ffmpeg" : "Deno";
       toolText.textContent =
         progress?.stage === "extract"
           ? `Unpacking ${name}…`

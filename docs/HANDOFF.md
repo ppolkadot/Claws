@@ -24,6 +24,7 @@ Claws is a Windows Tauri 2 desktop app with plain TypeScript/CSS. Rust invokes y
 - Download into an owned `.claws-work` folder, then publish verified outputs without overwriting existing files. A recorded path alone is not permission to delete; keep file identities, publication evidence, history mutations and kept-file recovery intact.
 - `max_concurrent` counts transferring jobs. Up to `max_processing` jobs in final processing hold no transfer slot; each one beyond that does, so at most the two limits added together run at once. A merge already running inside yt-dlp is never held back.
 - A speed limit is read when a download starts and is passed only to downloads, never to lookups or previews. yt-dlp applies `--limit-rate` to each fragment connection, so a limited start runs with one fragment; the job's frozen `fragment_concurrency` is not rewritten.
+- Tools are installed only when the user asks (the setup panel or Settings); there is no update check at launch. Every tool archive is checked against its publisher's SHA-256 before it is opened. Deno publishes PowerShell `Get-FileHash` output rather than a checksum listing; `tools::checksum_in` reads both and requires the `Path` line to name the archive. The Deno that Claws installs is passed to yt-dlp as `--js-runtimes deno:<path>`.
 - Progress reaches 100% only after publication. Late telemetry cannot undo Processing. Queue event revisions prevent older replies from reverting state.
 - Keep size preview, admission and processing policy consistent. Processing monitoring is best effort; a preview is not a reservation or a strict gate before every FFmpeg launch.
 - yt-dlp calls include `--encoding utf-8`; environment variables alone did not preserve printed Unicode paths on Windows.
@@ -51,7 +52,7 @@ cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --featu
 git diff --check
 ```
 
-`npm run dev` uses labelled synthetic data when no native backend is present. `npm run tauri dev` runs the native app and can access its profile; isolate data before testing lifecycle actions. Native fixture tests use disposable data. Real-tool fixture tests require Python, yt-dlp and, where applicable, FFmpeg/ffprobe; see `CLAWS_TEST_YTDLP` and `CLAWS_TEST_FFMPEG_DIR` in `download_tests.rs`. The three live Spotify tests are opt-in and are not exercised by the default suite.
+`npm run dev` uses labelled synthetic data when no native backend is present; open it with `?setup=fresh` to see first-run setup with sample installs. `npm run tauri dev` runs the native app and can access its profile; isolate data before testing lifecycle actions. Native fixture tests use disposable data. Real-tool fixture tests require Python, yt-dlp and, where applicable, FFmpeg/ffprobe; see `CLAWS_TEST_YTDLP` and `CLAWS_TEST_FFMPEG_DIR` in `download_tests.rs`. The three live Spotify tests are opt-in and are not exercised by the default suite.
 
 Repository-wide `cargo fmt --check` has pre-existing drift. Keep unrelated formatting out of focused edits.
 

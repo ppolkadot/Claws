@@ -79,7 +79,7 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 
 1. Download `Claws_<version>_x64-setup.exe` from the [Releases](https://github.com/ppolkadot/Claws/releases) page.
 2. Run it. Releases are not code-signed yet, so Windows SmartScreen may warn on first run; choose **More info → Run anyway**.
-3. On first launch Claws downloads yt-dlp into its own folder and verifies it against the checksum yt-dlp publishes. This happens once and takes a few seconds.
+3. On first launch the Download page shows **Set up Claws** with the tools that are missing: yt-dlp, ffmpeg and a JavaScript runtime (Deno). Press **Set Up Everything** and Claws downloads each one into its own folder from its project's GitHub releases and verifies it against the published checksum before using it. Nothing is downloaded until you press the button. A tool already on your `PATH` counts as ready; ffmpeg and Deno can be skipped with **Not Now**.
 
 **Claws 1.0.8**: [GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.8), [Windows installer](https://github.com/ppolkadot/Claws/releases/download/v1.0.8/Claws_1.0.8_x64-setup.exe), [SHA-256 checksum](installers/Claws_1.0.8_x64-setup.exe.sha256) and [release notes](docs/releases/1.0.8.md). It adds Spotify track matching through explicitly confirmed YouTube recordings and includes the Unicode-path correction from 1.0.7.
 
@@ -92,7 +92,7 @@ The application identifier and data location remain unchanged. Queue schema rema
 | OS | Windows 11. Windows 10 has not been tested. |
 | Runtime | Microsoft Edge WebView2, included with Windows 11. |
 | ffmpeg | Needed to merge HD video with audio and to convert audio. Claws uses the copy on your `PATH`, or installs one from **Settings → Tools**. |
-| JavaScript runtime | Recent YouTube extraction needs Deno or Node.js. Claws finds either on your `PATH`; **Settings → Tools** shows which one it uses. |
+| JavaScript runtime | Recent YouTube extraction needs Deno or Node.js. Claws installs Deno for you (first-run setup, or **Settings → Tools**), or uses either one found on your `PATH`; **Settings → Tools** shows which one it uses. |
 
 ## Using Claws
 
@@ -121,7 +121,7 @@ The application identifier and data location remain unchanged. Queue schema rema
 | **Quick Access** | Quick Open shortcut (Ctrl+Alt+D, Ctrl+Alt+Space, Ctrl+Shift+Space or off), keep running when closed, open at login |
 | **Appearance** | Theme (System, Light, Dark), window material (Glass, Acrylic, Mica, Solid), transparency, font status |
 | **Sign-in** | Cookies from none, a browser (Firefox, Chrome, Edge, Brave, Opera, Vivaldi), or a `cookies.txt` file |
-| **Tools** | yt-dlp version and one-click update, ffmpeg status and install, and whether a JavaScript runtime (Deno or Node.js) was found |
+| **Tools** | yt-dlp version and one-click update, ffmpeg status and install, and the JavaScript runtime (Deno or Node.js) with a Deno install when none is found |
 
 The window materials:
 - **Glass** is the default. It shows your desktop through the window, blurred.

@@ -232,6 +232,61 @@
   margin-top: 8px;
 }
 
+.setup-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 16px;
+}
+.setup-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.setup-step {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: 10px;
+}
+.setup-step .tool-dot {
+  margin-top: 6px;
+}
+.setup-step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.setup-step-text strong {
+  font-weight: 600;
+}
+.setup-step-text span,
+.setup-step-state {
+  color: var(--text-2);
+  font-size: 12px;
+}
+.setup-step[data-state="error"] .setup-step-text span {
+  color: var(--red-text);
+}
+.setup-step-text .bar {
+  max-width: 320px;
+  margin-top: 6px;
+}
+.setup-step-state {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.setup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .notice {
   display: flex;
   align-items: center;

@@ -24,6 +24,11 @@ const YTDLP_LATEST_API: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/relea
 const FFMPEG_URL: &str = "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip";
 const FFMPEG_SUMS_URL: &str = "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download/checksums.sha256";
 const FFMPEG_ZIP_NAME: &str = "ffmpeg-master-latest-win64-gpl.zip";
+// Deno publishes one checksum file per archive, in PowerShell's Get-FileHash layout
+// ("Hash : <SHA-256>"), not a shared "<sha256>  <name>" listing. See `checksum_in`.
+const DENO_URL: &str = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip";
+const DENO_SUMS_URL: &str = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip.sha256sum";
+const DENO_ZIP_NAME: &str = "deno-x86_64-pc-windows-msvc.zip";
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +46,8 @@ pub struct ToolInfo {
 pub struct ToolsStatus {
     pub ytdlp: Option<ToolInfo>,
     pub ffmpeg: Option<ToolInfo>,
+    /// Deno, from the app's own folder or PATH. Missing while Node.js alone is present.
+    pub deno: Option<ToolInfo>,
     pub latest_ytdlp: Option<String>,
     /// "Deno" or "Node.js": the JavaScript runtime yt-dlp uses for sites such as YouTube.
     pub js_runtime: Option<String>,
@@ -98,6 +105,27 @@ pub fn find_ffmpeg(app: &AppHandle) -> Option<PathBuf> {
     on_path("ffmpeg").cloned()
 }
 
+/// The copy of Deno Claws installed itself, if there is one.
+fn managed_deno(app: &AppHandle) -> Option<PathBuf> {
+    let managed = app.state::<AppState>().bin_dir().join("deno.exe");
+    managed.is_file().then_some(managed)
+}
+
+pub fn find_deno(app: &AppHandle) -> Option<PathBuf> {
+    managed_deno(app).or_else(|| on_path("deno").cloned())
+}
+
+/// How yt-dlp is told which JavaScript runtime to use. The Deno that Claws installed is
+/// named by its path, because it is not on PATH; a Deno on PATH is found by yt-dlp
+/// unaided; Node.js is named when it is all there is.
+fn js_runtime_args(managed_deno: Option<&Path>, deno_on_path: bool, node_on_path: bool) -> Vec<String> {
+    match managed_deno {
+        Some(path) => vec!["--js-runtimes".into(), format!("deno:{}", path.display())],
+        None if !deno_on_path && node_on_path => vec!["--js-runtimes".into(), "node".into()],
+        None => Vec::new(),
+    }
+}
+
 pub fn common_args(app: &AppHandle, settings: &Settings) -> Vec<String> {
     // The Windows frozen executable can choose its legacy output code page despite
     // PYTHONIOENCODING/PYTHONUTF8. Its machine-readable paths must match the Unicode
@@ -123,12 +151,8 @@ pub fn common_args(app: &AppHandle, settings: &Settings) -> Vec<String> {
         }
     }
 
-    // Recent YouTube extraction needs a JavaScript runtime. yt-dlp finds Deno on its
-    // own; point it at Node when that is all there is.
-    if on_path("deno").is_none() && on_path("node").is_some() {
-        args.push("--js-runtimes".into());
-        args.push("node".into());
-    }
+    // Recent YouTube extraction needs a JavaScript runtime.
+    args.extend(js_runtime_args(managed_deno(app).as_deref(), on_path("deno").is_some(), on_path("node").is_some()));
     args
 }
 
@@ -156,23 +180,21 @@ pub async fn status(app: &AppHandle) -> ToolsStatus {
     // "not installed".
     let state = app.state::<AppState>();
     let _engine = state.engine.read().await;
-    let (ytdlp, ffmpeg) = tokio::join!(ytdlp_info(app), ffmpeg_info(app));
-    ToolsStatus {
-        ytdlp,
-        ffmpeg,
-        latest_ytdlp: None,
-        js_runtime: js_runtime().map(str::to_string),
-    }
-}
-
-/// The runtime `common_args` makes yt-dlp use: Deno when present, else Node.js.
-pub fn js_runtime() -> Option<&'static str> {
-    if on_path("deno").is_some() {
+    let (ytdlp, ffmpeg, deno) = tokio::join!(ytdlp_info(app), ffmpeg_info(app), deno_info(app));
+    // The runtime `common_args` makes yt-dlp use: Deno when present, else Node.js.
+    let js_runtime = if deno.is_some() {
         Some("Deno")
     } else if on_path("node").is_some() {
         Some("Node.js")
     } else {
         None
+    };
+    ToolsStatus {
+        ytdlp,
+        ffmpeg,
+        deno,
+        latest_ytdlp: None,
+        js_runtime: js_runtime.map(str::to_string),
     }
 }
 
@@ -216,6 +238,17 @@ async fn ffmpeg_info(app: &AppHandle) -> Option<ToolInfo> {
     }
 }
 
+async fn deno_info(app: &AppHandle) -> Option<ToolInfo> {
+    let path = find_deno(app)?;
+    run_version(&path, "--version").await.map(|line| ToolInfo {
+        managed: is_managed(app, &path),
+        fast_start: false,
+        path: path.to_string_lossy().into_owned(),
+        // "deno 2.9.8 (stable, release, x86_64-pc-windows-msvc)" -> the version token.
+        version: line.split_whitespace().nth(1).unwrap_or("unknown").to_string(),
+    })
+}
+
 fn emit_progress(app: &AppHandle, tool: &'static str, received: u64, total: u64, stage: &'static str) {
     let _ = app.emit(
         "tool-progress",
@@ -255,6 +288,7 @@ struct Bounds {
 /// Compressed download caps, far above the real archives (about 20 MB and 150 MB).
 const YTDLP_ZIP_MAX: u64 = 256 * 1024 * 1024;
 const FFMPEG_ZIP_MAX: u64 = 512 * 1024 * 1024;
+const DENO_ZIP_MAX: u64 = 256 * 1024 * 1024;
 const CHECKSUM_MAX: u64 = 1024 * 1024;
 const RELEASE_JSON_MAX: u64 = 2 * 1024 * 1024;
 
@@ -280,6 +314,14 @@ const FFMPEG_RELEASE: Release<'static> = Release {
     sums_url: FFMPEG_SUMS_URL,
     archive_name: FFMPEG_ZIP_NAME,
     archive_max: FFMPEG_ZIP_MAX,
+};
+
+const DENO_RELEASE: Release<'static> = Release {
+    tool: "deno",
+    archive_url: DENO_URL,
+    sums_url: DENO_SUMS_URL,
+    archive_name: DENO_ZIP_NAME,
+    archive_max: DENO_ZIP_MAX,
 };
 
 fn size_text(bytes: u64) -> String {
@@ -419,19 +461,41 @@ async fn fetch_capped(client: &reqwest::Client, url: &str, accept: Option<&str>,
     tokio::time::timeout(bounds.total, read).await.unwrap_or_else(|_| Err(too_slow(bounds.total)))
 }
 
-/// Looks up `file_name` in a "<sha256>  <name>" checksum listing.
+fn is_sha256(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The SHA-256 published for `file_name`, in either layout the tool publishers use:
+/// a "<sha256>  <name>" listing (yt-dlp, FFmpeg-Builds), or the output of PowerShell's
+/// Get-FileHash for one file (Deno): a "Hash : <SHA-256>" line beside a "Path : ...\<name>"
+/// line that must name the same file.
+fn checksum_in(text: &str, file_name: &str) -> Option<String> {
+    let listed = text.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        let hash = parts.next()?;
+        let name = parts.next()?.trim_start_matches('*');
+        (name == file_name && is_sha256(hash)).then(|| hash.to_ascii_lowercase())
+    });
+    if listed.is_some() {
+        return listed;
+    }
+    let field = |key: &str| {
+        text.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            (name.trim() == key).then(|| value.trim().to_string())
+        })
+    };
+    let hash = field("Hash").filter(|hash| is_sha256(hash))?;
+    let path = field("Path")?;
+    let named = path.rsplit(['\\', '/']).next()?;
+    (field("Algorithm").as_deref() == Some("SHA256") && named == file_name).then(|| hash.to_ascii_lowercase())
+}
+
+/// Fetches the checksum document and looks `file_name` up in it (see `checksum_in`).
 async fn expected_checksum(client: &reqwest::Client, sums_url: &str, file_name: &str, timing: Timing) -> Result<String> {
     let bounds = Bounds { idle: timing.idle, total: timing.text_total, max_bytes: CHECKSUM_MAX };
     let bytes = fetch_capped(client, sums_url, None, bounds).await?;
-    String::from_utf8_lossy(&bytes)
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            let hash = parts.next()?;
-            let name = parts.next()?.trim_start_matches('*');
-            (name == file_name).then(|| hash.to_ascii_lowercase())
-        })
-        .next()
+    checksum_in(&String::from_utf8_lossy(&bytes), file_name)
         .ok_or_else(|| AppError::msg(format!("No published checksum for {file_name}.")))
 }
 
@@ -574,6 +638,8 @@ const YTDLP_LIMITS: Limits = Limits {
     total_bytes: 512 * 1024 * 1024,
 };
 const FFMPEG_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
+/// deno.exe unpacks to roughly 130 MB.
+const DENO_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Entries no tool release contains. Encrypted entries cannot be read without a password
 /// and links could point out of the folder, so either means the archive is not ours.
@@ -746,10 +812,71 @@ fn commit_ffmpeg(staged: &[(PathBuf, PathBuf)]) -> Result<()> {
     Ok(())
 }
 
+/// Unpacks `deno.exe` from the root of the archive to a temporary name in `staging`,
+/// returning the `(temporary, final)` pair for `replace_all`. Nothing else is read.
+fn stage_deno(zip_path: &Path, staging: &Path, bin: &Path, entry_limit: u64) -> Result<Vec<(PathBuf, PathBuf)>> {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path)?)?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        if !matches!(entry.name(), Ok(name) if name == "deno.exe") {
+            continue;
+        }
+        check_entry(&entry)?;
+        let tmp = staging.join("deno.exe.part");
+        let copied = std::fs::File::create(&tmp)
+            .map_err(AppError::from)
+            .and_then(|mut f| copy_limited(&mut entry, &mut f, entry_limit));
+        if let Err(e) = copied {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        return Ok(vec![(tmp, bin.join("deno.exe"))]);
+    }
+    Err(AppError::msg("The Deno archive did not contain deno.exe."))
+}
+
+/// Installs Deno, the JavaScript runtime yt-dlp needs for sites such as YouTube, from the
+/// Deno project's own GitHub releases.
+pub async fn install_deno(app: &AppHandle) -> Result<()> {
+    install_deno_from(app, &DENO_RELEASE, TIMING).await
+}
+
+async fn install_deno_from(app: &AppHandle, release: &Release<'_>, timing: Timing) -> Result<()> {
+    let state = app.state::<AppState>();
+    let _install = reserve_install(&state)?;
+    drop(reserve_engine(&state)?);
+    let bin = state.bin_dir();
+    let attempt = Attempt::create(&bin).await?;
+    let archive = attempt.dir.join("archive.zip.part");
+
+    fetch_verified(app, release, timing, "Deno", &archive).await?;
+
+    emit_progress(app, release.tool, 0, 0, "extract");
+    let (archive_for_task, staging_for_task, bin_for_task) = (archive.clone(), attempt.dir.clone(), bin.clone());
+    let staged = tokio::task::spawn_blocking(move || stage_deno(&archive_for_task, &staging_for_task, &bin_for_task, DENO_ENTRY_BYTES))
+        .await
+        .map_err(blocking_failed)??;
+    let _ = tokio::fs::remove_file(&archive).await;
+
+    // yt-dlp starts Deno itself, so the swap waits for the engine like the other tools.
+    let _engine = reserve_engine(&state)?;
+    tokio::task::spawn_blocking(move || {
+        if staged.iter().any(|(tmp, _)| !tmp.is_file()) {
+            return Err(AppError::msg("The prepared Deno file is gone, so nothing was changed. Try again."));
+        }
+        replace_all(&staged).map_err(|e| {
+            discard(&staged);
+            AppError::msg(format!("Could not install Deno because the file is in use ({e}). The previous copy was kept."))
+        })
+    })
+    .await
+    .map_err(blocking_failed)?
+}
+
 /// Startup repair after an exit mid-install: restores a tool left as `.old` and
 /// removes `.part` leftovers and abandoned install-attempt folders.
 pub fn recover_bin(bin: &Path) {
-    for name in ["yt-dlp", "ffmpeg.exe", "ffprobe.exe"] {
+    for name in ["yt-dlp", "ffmpeg.exe", "ffprobe.exe", "deno.exe"] {
         let target = bin.join(name);
         let backup = backup_of(&target);
         if !target.exists() && backup.exists() {
@@ -1730,6 +1857,91 @@ mod tests {
         let err = tauri::async_runtime::block_on(within(15, "install", ffmpeg_install(&rig.app, &server, MIB))).unwrap_err();
         assert!(err.to_string().contains("stalled"), "{err}");
         assert!(rig.app.state().engine.try_write().is_ok());
+        only_known_good(&rig);
+    }
+
+    /// The checksum file Deno publishes beside each archive: PowerShell's Get-FileHash.
+    fn deno_sums(archive: &[u8], path: &str) -> Vec<u8> {
+        format!("\r\nAlgorithm : SHA256\r\nHash      : {}\r\nPath      : {path}\r\n\r\n", sha_hex(archive).to_uppercase()).into_bytes()
+    }
+
+    const DENO_BUILD_PATH: &str = "C:\\a\\deno\\deno\\target\\release\\deno-x86_64-pc-windows-msvc.zip";
+
+    #[test]
+    fn checksums_are_read_from_a_listing_or_from_get_filehash_output() {
+        let hash = sha_hex(b"archive");
+        let listing = format!("{}  other.zip\n{hash} *wanted.zip\n", sha_hex(b"other"));
+        assert_eq!(checksum_in(&listing, "wanted.zip"), Some(hash.clone()));
+        assert_eq!(checksum_in(&listing, "missing.zip"), None);
+
+        let powershell = String::from_utf8(deno_sums(b"archive", DENO_BUILD_PATH)).unwrap();
+        assert_eq!(checksum_in(&powershell, DENO_ZIP_NAME), Some(hash), "the published upper-case hash is compared in lower case");
+        // The file it describes must be the one being installed.
+        assert_eq!(checksum_in(&powershell, "deno-aarch64-pc-windows-msvc.zip"), None);
+        assert_eq!(checksum_in(&powershell.replace("SHA256", "MD5"), DENO_ZIP_NAME), None);
+        assert_eq!(checksum_in("Algorithm : SHA256\nHash : abc\nPath : deno-x86_64-pc-windows-msvc.zip\n", DENO_ZIP_NAME), None);
+        assert_eq!(checksum_in("not-a-hash  wanted.zip\n", "wanted.zip"), None);
+    }
+
+    #[test]
+    fn the_javascript_runtime_is_named_only_when_yt_dlp_cannot_find_it() {
+        let managed = Path::new("C:\\Users\\me\\AppData\\Roaming\\dev.claws.downloader\\bin\\deno.exe");
+        // Claws' own copy is not on PATH, so it is named by its path, whatever else exists.
+        assert_eq!(js_runtime_args(Some(managed), true, true), ["--js-runtimes".to_string(), format!("deno:{}", managed.display())]);
+        assert!(js_runtime_args(None, true, true).is_empty(), "yt-dlp finds a Deno on PATH unaided");
+        assert_eq!(js_runtime_args(None, false, true), ["--js-runtimes", "node"]);
+        assert!(js_runtime_args(None, false, false).is_empty());
+    }
+
+    async fn deno_install(app: &TestApp, server: &Server, archive_max: u64) -> Result<()> {
+        let (archive, sums) = (server.url("/archive"), server.url("/sums"));
+        let release = Release { tool: "deno", archive_url: &archive, sums_url: &sums, archive_name: DENO_ZIP_NAME, archive_max };
+        install_deno_from(app.handle(), &release, quick()).await
+    }
+
+    fn deno_server(archive: Vec<u8>, sums: Vec<u8>) -> Server {
+        serve(vec![("/sums", Route::Body(sums)), ("/archive", Route::Body(archive))])
+    }
+
+    #[test]
+    fn tool_install_deno_is_verified_installed_and_then_named_to_yt_dlp() {
+        let rig = rig("ti-deno");
+        let before = common_args(rig.app.handle(), &Settings::default());
+        assert!(!before.iter().any(|a| a.starts_with("deno:")));
+
+        let archive = zip_bytes(&[("deno.exe", b"new-deno"), ("nested/deno.exe", b"not-this-one")]);
+        let server = deno_server(archive.clone(), deno_sums(&archive, DENO_BUILD_PATH));
+        tauri::async_runtime::block_on(within(20, "install", deno_install(&rig.app, &server, MIB))).unwrap();
+        assert_eq!(std::fs::read(rig.bin.join("deno.exe")).unwrap(), b"new-deno");
+        assert_eq!(names(&rig.bin), vec!["deno.exe", "yt-dlp"], "no staging or partial file may remain");
+
+        let after = common_args(rig.app.handle(), &Settings::default());
+        let flag = after.iter().position(|a| a == "--js-runtimes").expect("the runtime is named");
+        assert_eq!(after[flag + 1], format!("deno:{}", rig.bin.join("deno.exe").display()));
+    }
+
+    #[test]
+    fn tool_install_deno_bad_or_foreign_checksum_keeps_the_previous_copy() {
+        let rig = rig("ti-deno-sum");
+        std::fs::write(rig.bin.join("deno.exe"), b"old-deno").unwrap();
+        let archive = zip_bytes(&[("deno.exe", b"new-deno")]);
+        // A checksum of something else, then a correct checksum that describes another file.
+        for sums in [deno_sums(b"something else", DENO_BUILD_PATH), deno_sums(&archive, "C:\\a\\deno-aarch64-pc-windows-msvc.zip")] {
+            let server = deno_server(archive.clone(), sums);
+            let error = tauri::async_runtime::block_on(within(20, "install", deno_install(&rig.app, &server, MIB))).unwrap_err();
+            assert!(error.to_string().contains("checksum"), "{error}");
+            assert_eq!(std::fs::read(rig.bin.join("deno.exe")).unwrap(), b"old-deno");
+            assert_eq!(names(&rig.bin), vec!["deno.exe", "yt-dlp"]);
+        }
+    }
+
+    #[test]
+    fn tool_install_deno_archive_without_the_executable_changes_nothing() {
+        let rig = rig("ti-deno-empty");
+        let archive = zip_bytes(&[("nested/deno.exe", b"wrong place"), ("README.md", b"hello")]);
+        let server = deno_server(archive.clone(), deno_sums(&archive, DENO_BUILD_PATH));
+        let error = tauri::async_runtime::block_on(within(20, "install", deno_install(&rig.app, &server, MIB))).unwrap_err();
+        assert!(error.to_string().contains("deno.exe"), "{error}");
         only_known_good(&rig);
     }
 

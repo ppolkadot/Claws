@@ -3,7 +3,8 @@
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 
-import type { DownloadEstimate, DownloadOptions, EnqueueItem, HistoryItem, Job, JobEvent, JobRemoved, JobsAdded, ProbeResult, Resolution, Settings } from "./api";
+import type { DownloadEstimate, DownloadOptions, EnqueueItem, HistoryItem, Job, JobEvent, JobRemoved, JobsAdded, ProbeResult, Resolution, Settings, ToolsStatus } from "./api";
+import type { ToolName } from "./setup";
 import { ALREADY_QUEUED } from "./download-input";
 import { transcriptFileSuffix, transcriptText } from "./transcript-options";
 
@@ -427,6 +428,31 @@ function removeJobs(ids: string[]) {
   }
 }
 
+// Open the dev page with `?setup=fresh` to see first-run setup: no tool is installed,
+// and each sample "install" only counts up a progress bar.
+const freshSetup = new URLSearchParams(location.search).get("setup") === "fresh";
+const sampleTools: ToolsStatus = {
+  ytdlp: { path: "C:\\sample\\yt-dlp\\yt-dlp.exe", version: "2026.10.26", managed: true, fastStart: true },
+  ffmpeg: { path: "C:\\sample\\ffmpeg.exe", version: "8.0", managed: false, fastStart: false },
+  deno: { path: "C:\\sample\\deno.exe", version: "2.9.8", managed: true, fastStart: false },
+  latestYtdlp: null,
+  jsRuntime: "Deno",
+};
+const mockTools: ToolsStatus = freshSetup ? { ytdlp: null, ffmpeg: null, deno: null, latestYtdlp: null, jsRuntime: null } : { ...sampleTools };
+
+async function sampleInstall(tool: ToolName): Promise<ToolsStatus> {
+  const total = 40 * 1024 * 1024;
+  for (let step = 1; step <= 10; step++) {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    void emit("tool-progress", { tool, received: (total * step) / 10, total, stage: "download" });
+  }
+  void emit("tool-progress", { tool, received: 0, total: 0, stage: "extract" });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  mockTools[tool] = sampleTools[tool];
+  if (tool === "deno") mockTools.jsRuntime = "Deno";
+  return { ...mockTools };
+}
+
 export function installMock() {
   mockWindows("main");
   mockIPC(
@@ -438,12 +464,13 @@ export function installMock() {
         case "bootstrap":
           return { settings, jobs, history, notices: [] };
         case "tools_status":
-          return {
-              ytdlp: { path: "C:\\sample\\yt-dlp\\yt-dlp.exe", version: "2026.10.26", managed: true, fastStart: true },
-              ffmpeg: { path: "C:\\sample\\ffmpeg.exe", version: "8.0", managed: false, fastStart: false },
-              latestYtdlp: null,
-              jsRuntime: "Deno",
-          };
+          return { ...mockTools };
+        case "install_ytdlp":
+          return sampleInstall("ytdlp");
+        case "install_ffmpeg":
+          return sampleInstall("ffmpeg");
+        case "install_deno":
+          return sampleInstall("deno");
         case "list_history":
           return history;
         case "kept_files_report":
