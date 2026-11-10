@@ -1,6 +1,6 @@
 # Spotify track matching verification
 
-Packaged implementation: **Claws 1.0.8**, branch `codex/release-1.0.8`. [Release notes](releases/1.0.8.md) and the installer build record identify source commit `6794ea9`, artifact hashes and payload checks. Subsequent comment/documentation cleanup does not rebuild that artifact.
+Packaged implementation: **Claws 1.0.8**, merged into `main` from `codex/release-1.0.8`; [GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.8). [Release notes](releases/1.0.8.md) and the installer build record identify source commit `6794ea9`, artifact hashes and payload checks. Subsequent comment/documentation cleanup does not rebuild that artifact.
 
 ## Behavior covered
 
@@ -56,4 +56,4 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml spotify_live_audio_save
 
 ## Remaining limits
 
-No real `spotify.link` share was tested; redirect policy and typed terminal/transport failures are covered by local HTTP fixtures. No manual WebView2/OS-IME, listening-based playback, real-source outage/removal, installation or upgrade acceptance was performed. Native saves/ffprobe, synthetic browser tests and historical live metadata/search are separate evidence. They do not guarantee future site availability or the correct recording version. The installer was built locally and the branch pushed; no GitHub release or installation was performed.
+No real `spotify.link` share was tested; redirect policy and typed terminal/transport failures are covered by local HTTP fixtures. No manual WebView2/OS-IME, listening-based playback, real-source outage/removal, installation or upgrade acceptance was performed. Native saves/ffprobe, synthetic browser tests and historical live metadata/search are separate evidence. They do not guarantee future site availability or the correct recording version. The verified local installer is attached to the GitHub release; no installation was performed.
