@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  checks:
+    name: Tests, build and Clippy (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend tests
+        run: |
+          npm run test:fonts
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run test:spotify
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run test:logic
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run test:queue
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run test:motion
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      # Also produces dist/, which the Tauri context macro needs to compile the backend.
+      - name: Frontend build
+        run: npm run build
+
+      # Process tests skip without this stand-in for yt-dlp.
+      - name: Build the fixture tool
+        run: cargo build --locked --manifest-path src-tauri/Cargo.toml --features test-tools --bin claws-fixture-tool
+
+      # Tests needing a real yt-dlp or FFmpeg skip here; the three live Spotify tests are opt-in.
+      - name: Backend tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --features test-tools -- -D warnings
+
+      - name: Whitespace check
+        run: git diff --check
