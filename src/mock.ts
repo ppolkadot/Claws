@@ -34,6 +34,7 @@ const settings: Settings = {
   maxConcurrent: 3,
   maxProcessing: 2,
   speedLimitKib: 0,
+  notifyWhenDone: true,
   embedMetadata: true,
   quickOpenShortcut: "ctrl+alt+d",
   keepRunning: true,
@@ -501,6 +502,23 @@ export function installMock() {
           return enqueue(payload.items as EnqueueItem[], payload.options as DownloadOptions);
         case "cancel_job":
           return cancelJob(String(payload.id));
+        case "pause_all": {
+          const ids = [...mockJobs.values()].filter((j) => ["queued", "downloading", "processing"].includes(j.status)).map((j) => j.id);
+          ids.forEach((id) => updateJob(id, { status: "paused", speed: null, eta: null }));
+          return ids.length;
+        }
+        case "resume_all": {
+          const ids = [...mockJobs.values()].filter((j) => j.status === "paused").map((j) => j.id);
+          ids.forEach((id) => updateJob(id, { status: "queued" }));
+          return ids.length;
+        }
+        case "retry_failed":
+          return 0;
+        case "prioritize_job": {
+          const top = Math.max(0, ...[...mockJobs.values()].map((j) => j.priority ?? 0));
+          updateJob(String(payload.id), { priority: top + 1 });
+          return null;
+        }
         case "remove_job":
           return removeJobs([String(payload.id)]);
         case "clear_finished":

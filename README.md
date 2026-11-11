@@ -53,12 +53,18 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 - **Queue.** Several downloads at once, with live progress, speed and time left.
   - Progress is weighted by bytes across the video and audio streams.
   - When a size is only an estimate it says "about"; when it is unknown, the row shows bytes downloaded instead of a guessed percentage.
-  - Pause, resume, cancel and retry.
+  - Pause, resume, cancel and retry, one download at a time or all at once (**Pause All**, **Resume All**, **Retry Failed**).
+  - **Move to top** puts a waiting download first in line; the order survives a restart.
+  - A summary line counts what is downloading, processing, waiting, paused and failed. It adds the combined speed, and the time left only when every running download reports one and nothing is still waiting. Nothing in it is guessed.
+  - While a file is processed the row names the step (merging, converting audio, writing metadata) when yt-dlp reports it.
+  - A failed download shows its full message with a **Copy** button.
+  - The taskbar button shows the progress of the running downloads, weighted by bytes, and a Windows notification says when a download finishes or fails while Claws is hidden or behind another window.
   - Unfinished downloads survive a restart as paused.
   - A paused download keeps the folder and file name it started with, even if you change them in Settings.
 - **Safe with your files.** Each download works in its own hidden folder until it is finished. Cancelling deletes that folder and nothing else. A finished file never replaces a file that already exists.
 - **Disk space check.** Before a large download starts, Claws estimates the space it will need, including the extra copy while merging, and monitors space when processing starts. Processing checks are best effort; if stopped, owned files are kept for retry.
-- **Library.** Finished downloads with artwork and search. Open them or show them in their folder.
+- **Library.** Finished downloads with artwork and search. Sort them by date, title or size, and show only video, audio or transcripts. Click the artwork to open a file, or show it in its folder.
+- **Remembers your choices.** The type, audio format, quality limit, format preset and Fast Save of your last download are offered again for the next link. A quality the new link does not offer goes back to Best.
 - **Sign-in.** Use cookies from your browser, or a `cookies.txt` file, for sites that need you to be logged in.
 - **Instant repeat lookups.** Links you have downloaded keep their details, so looking one up again shows it at once while Claws checks the site for changes. Pick any item under **Recent** to see it again.
 
@@ -118,7 +124,7 @@ The application identifier and data location remain unchanged. Queue schema rema
 | Section | Options |
 | --- | --- |
 | **Downloads** | Output folder (default `Downloads\Claws`), filename template (a yt-dlp output template), simultaneous downloads (1–8), processing alongside (1–8, default 2: downloads that may be merging or converting without holding up the next transfer), speed limit (per download, off by default; applies from the next download that starts or resumes), embed metadata, prefer matching source audio |
-| **Quick Access** | Quick Open shortcut (Ctrl+Alt+D, Ctrl+Alt+Space, Ctrl+Shift+Space or off), keep running when closed, open at login |
+| **Quick Access** | Quick Open shortcut (Ctrl+Alt+D, Ctrl+Alt+Space, Ctrl+Shift+Space or off), notify when a download finishes, keep running when closed, open at login |
 | **Appearance** | Theme (System, Light, Dark), window material (Glass, Acrylic, Mica, Solid), transparency, font status |
 | **Sign-in** | Cookies from none, a browser (Firefox, Chrome, Edge, Brave, Opera, Vivaldi), or a `cookies.txt` file |
 | **Tools** | yt-dlp version and one-click update, ffmpeg status and install, and the JavaScript runtime (Deno or Node.js) with a Deno install when none is found |

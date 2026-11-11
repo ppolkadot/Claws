@@ -12,6 +12,7 @@
     "core:window:allow-destroy",
     "core:window:allow-hide",
     "core:window:allow-is-maximized",
+    "core:window:allow-set-progress-bar",
     "dialog:allow-open"
   ]
 }

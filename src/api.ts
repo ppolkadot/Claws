@@ -30,6 +30,8 @@ export interface Settings {
   maxProcessing: number;
   /** Speed limit for each download in KiB/s; 0 is no limit. */
   speedLimitKib: number;
+  /** A Windows notification when a download finishes or fails while Claws is not in front. */
+  notifyWhenDone: boolean;
   embedMetadata: boolean;
   /** System-wide Quick Open shortcut, e.g. "ctrl+alt+d", or "off". */
   quickOpenShortcut: QuickOpenShortcut;
@@ -110,6 +112,10 @@ export interface Job {
   cancelRequested?: boolean;
   /** Increases with every change; older or repeated events are ignored. */
   revision: number;
+  /** Raised by Move to Top: listed and started before jobs with a lower value. */
+  priority?: number;
+  /** What the final processing is doing right now, when the backend can name it. */
+  stage?: string | null;
 }
 
 export interface JobExecution {
@@ -319,6 +325,11 @@ export const api = {
   cancel: (id: string) => invoke<void>("cancel_job", { id }),
   remove: (id: string) => invoke<void>("remove_job", { id }),
   clearFinished: () => invoke<void>("clear_finished"),
+  /** The bulk actions answer with how many downloads they acted on. */
+  pauseAll: () => invoke<number>("pause_all"),
+  resumeAll: () => invoke<number>("resume_all"),
+  retryFailed: () => invoke<number>("retry_failed"),
+  prioritize: (id: string) => invoke<void>("prioritize_job", { id }),
   saveSettings: (settings: Settings) => invoke<SavedSettings>("save_settings", { settings }),
   listHistory: () => invoke<HistoryItem[]>("list_history"),
   openDownload: (id: string) => invoke<void>("open_download", { id }),

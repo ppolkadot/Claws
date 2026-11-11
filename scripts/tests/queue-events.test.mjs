@@ -44,7 +44,7 @@ test("the enqueue reply after the jobs-added event changes nothing", () => {
   const added = batch([event(job("a", 1), 10), event(job("b", 2), 11)]);
   table.applyBatch(added);
   const again = table.applyBatch(added);
-  assert.deepEqual(again, { added: [], updated: [], statusChanged: false });
+  assert.deepEqual(again, { added: [], updated: [], statusChanged: false, moved: false });
 });
 
 test("a delayed Queued never reverts a newer Downloading or Completed", () => {
@@ -78,8 +78,8 @@ test("updates report status changes and keep the row position", () => {
   const table = new JobTable();
   table.applyBatch(batch([event(job("a", 1), 1), event(job("b", 2), 2), event(job("c", 3), 3)]));
   const list = table.list();
-  assert.deepEqual(table.apply(event(job("b", 2, "queued", { progress: 0 }), 4)), { kind: "updated", statusChanged: false });
-  assert.deepEqual(table.apply(event(job("b", 2, "downloading", { progress: 0.5 }), 5)), { kind: "updated", statusChanged: true });
+  assert.deepEqual(table.apply(event(job("b", 2, "queued", { progress: 0 }), 4)), { kind: "updated", statusChanged: false, moved: false });
+  assert.deepEqual(table.apply(event(job("b", 2, "downloading", { progress: 0.5 }), 5)), { kind: "updated", statusChanged: true, moved: false });
   assert.equal(table.list(), list, "an update must not rebuild the ordered list");
   assert.equal(table.list()[1].progress, 0.5);
 });
@@ -111,7 +111,7 @@ test("eight streams of progress keep only each job's newest state", () => {
 test("events of an unknown schema are refused, not partly applied", () => {
   const table = new JobTable();
   assert.deepEqual(table.apply(event(job("a", 1), 1, 2)), { kind: "ignored" });
-  assert.deepEqual(table.applyBatch({ schemaVersion: 2, jobs: [event(job("b", 1), 1)] }), { added: [], updated: [], statusChanged: false });
+  assert.deepEqual(table.applyBatch({ schemaVersion: 2, jobs: [event(job("b", 1), 1)] }), { added: [], updated: [], statusChanged: false, moved: false });
   assert.equal(table.remove({ schemaVersion: 0, jobId: "a", revision: 1 }), false);
   assert.equal(table.size, 0);
   assert.equal(table.rejected, 3);
@@ -123,5 +123,31 @@ test("load replaces the table with a sorted snapshot", () => {
   table.load([job("b", 2), job("a", 1)], () => 7);
   assert.deepEqual(table.list().map((j) => j.id), ["a", "b"]);
   assert.deepEqual(table.apply(event(job("a", 1, "downloading"), 7)), { kind: "ignored" });
-  assert.deepEqual(table.apply(event(job("a", 1, "downloading"), 8)), { kind: "updated", statusChanged: true });
+  assert.deepEqual(table.apply(event(job("a", 1, "downloading"), 8)), { kind: "updated", statusChanged: true, moved: false });
+});
+
+
+test("a job moved to the top is listed first, and the move is reported as a change of order", () => {
+  const table = new JobTable();
+  table.load([job("a", 1), job("b", 2), job("c", 3)], () => 1);
+  assert.deepEqual(table.list().map((j) => j.id), ["a", "b", "c"]);
+
+  const moved = table.apply(event(job("c", 3, "queued", { priority: 1 }), 2));
+  assert.deepEqual(moved, { kind: "updated", statusChanged: false, moved: true });
+  assert.deepEqual(table.list().map((j) => j.id), ["c", "a", "b"]);
+
+  // A later move goes above an earlier one; an ordinary update keeps the place.
+  table.apply(event(job("b", 2, "queued", { priority: 2 }), 3));
+  assert.deepEqual(table.list().map((j) => j.id), ["b", "c", "a"]);
+  const same = table.apply(event(job("c", 3, "downloading", { priority: 1 }), 4));
+  assert.deepEqual(same, { kind: "updated", statusChanged: true, moved: false });
+  assert.deepEqual(table.list().map((j) => j.id), ["b", "c", "a"]);
+  assert.equal(table.list()[1].status, "downloading");
+
+  // A new job goes below the moved ones, in creation order; a snapshot sorts the same way.
+  table.apply(event(job("d", 4), 5));
+  assert.deepEqual(table.list().map((j) => j.id), ["b", "c", "a", "d"]);
+  const fresh = new JobTable();
+  fresh.load([job("a", 1), job("b", 2, "queued", { priority: 2 }), job("c", 3, "queued", { priority: 1 }), job("d", 4)], () => 1);
+  assert.deepEqual(fresh.list().map((j) => j.id), ["b", "c", "a", "d"]);
 });

@@ -142,6 +142,11 @@ function buildSettings(container: HTMLElement): () => void {
       "Brings Claws forward from any app, and looks up a link that is on the clipboard. Press it again to put Claws away.",
     ),
     row(
+      "Notify when a download finishes",
+      toggle("Notify when a download finishes", s().notifyWhenDone, (value) => update({ notifyWhenDone: value })),
+      "A Windows notification when a download finishes or fails while Claws is hidden or behind another window.",
+    ),
+    row(
       "Keep running when closed",
       toggle("Keep running when closed", s().keepRunning, (value) => update({ keepRunning: value })),
       "Closing the window leaves Claws in the notification area, so downloads continue and Quick Open keeps working. Quit from its icon there.",
