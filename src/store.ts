@@ -12,6 +12,7 @@ import {
   type ProbeResult,
   type Settings,
   type ToolProgress,
+  type SponsorBlockMode,
   type ToolsStatus,
   type TranscriptFormat,
   type VideoPreset,
@@ -51,6 +52,10 @@ export interface PreviewChoices {
   fastSave: boolean;
   caption: string | null;
   transcriptFormat: TranscriptFormat;
+  /** Absent in sessions kept before these choices existed: off, sponsor only, no folder. */
+  sponsorblock?: SponsorBlockMode;
+  sponsorCategories?: string[];
+  playlistFolder?: boolean;
 }
 
 /** Several links pasted at once, being looked up or waiting to be added to the queue. */

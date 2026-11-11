@@ -462,7 +462,7 @@ impl TestApp {
     }
 
     pub fn enqueue_with(&self, link: &str, options: DownloadOptions) -> String {
-        let item = EnqueueItem { url: link.into(), match_origin: None, playlist_index: None, title: link.into(), thumbnail: None, uploader: None, duration: None };
+        let item = EnqueueItem { url: link.into(), match_origin: None, playlist_index: None, title: link.into(), thumbnail: None, uploader: None, duration: None, playlist: None };
         let added = downloader::enqueue(self.handle(), vec![item], options).expect("enqueue");
         added.jobs[0].job_id.clone()
     }
@@ -1857,4 +1857,44 @@ fn the_processing_stage_is_named_while_it_runs_and_is_not_saved() {
     assert!(!text.contains("\"stage\""), "the stage was written to the queue file");
     release_merges(&t);
     t.wait_job(&id, |j| j.status == JobStatus::Completed, "the completion");
+}
+
+fn playlist_item(link: &str, title: &str, position: u32, count: u32) -> EnqueueItem {
+    let place = downloader::PlaylistPlace { title: title.into(), position, count };
+    EnqueueItem { url: link.into(), match_origin: None, playlist_index: None, title: link.into(), thumbnail: None, uploader: None, duration: None, playlist: Some(place) }
+}
+
+#[test]
+fn a_playlist_saved_into_a_folder_is_numbered_published_there_and_never_overwrites() {
+    let Some(t) = TestApp::new("playlist-folder") else { return };
+    let foldered = DownloadOptions { playlist_folder: true, ..DownloadOptions::default() };
+    let items = vec![
+        playlist_item("https://fixture.invalid/ok-fast/alpha", "Road: trips?", 3, 12),
+        playlist_item("https://fixture.invalid/ok-fast/beta", "Road: trips?", 4, 12),
+    ];
+    // Something of the user's already has the second file's name.
+    let folder = t.out.join("Road trips");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("04 - beta.mp4"), b"mine").unwrap();
+
+    let added = downloader::enqueue(t.handle(), items, foldered.clone()).expect("enqueue");
+    let (first, second) = (added.jobs[0].job_id.clone(), added.jobs[1].job_id.clone());
+    assert_eq!(t.job(&first).unwrap().name_prefix.as_deref(), Some("Road trips/03 - "));
+
+    let done = t.wait_job(&first, |j| j.status == JobStatus::Completed, "the first video");
+    assert_eq!(std::fs::read(folder.join("03 - alpha.mp4")).unwrap(), b"merged");
+    assert_eq!(Path::new(done.file_path.as_deref().unwrap()), folder.join("03 - alpha.mp4"));
+    assert!(done.execution.unwrap().filename_template.starts_with("Road trips/03 - "), "the folder is frozen with the template");
+
+    // The taken name is never replaced; the download is kept for Try Again.
+    let refused = t.wait_job(&second, |j| j.status == JobStatus::Failed, "the second video to be refused its name");
+    assert!(refused.error.unwrap_or_default().contains("already"), "the reason names the existing file");
+    assert_eq!(std::fs::read(folder.join("04 - beta.mp4")).unwrap(), b"mine");
+
+    // Without the option the same playlist item is saved flat, as before.
+    let flat = downloader::enqueue(t.handle(), vec![playlist_item("https://fixture.invalid/ok-fast/gamma", "Road: trips?", 5, 12)], DownloadOptions::default()).expect("enqueue");
+    let id = flat.jobs[0].job_id.clone();
+    assert_eq!(t.job(&id).unwrap().name_prefix, None);
+    t.wait_job(&id, |j| j.status == JobStatus::Completed, "the flat download");
+    assert_eq!(std::fs::read(t.out.join("gamma.mp4")).unwrap(), b"merged");
 }

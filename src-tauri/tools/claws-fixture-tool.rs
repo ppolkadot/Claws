@@ -9,6 +9,8 @@
 //!
 //! When Claws itself runs it as yt-dlp, the scenario and name come from the job's link,
 //! `https://fixture.invalid/<scenario>[/<name>[/<planned bytes>[/<merged extension>]]]`, and
+//! literal text in front of the first field of `-o` (a folder and a number) is put in front of
+//! each file's name, as yt-dlp would, and
 //! every start is appended to `fixture-starts.log` two folders above `-P` (the output folder
 //! of a work folder), with the selection it was given (`-S` and `--merge-output-format`).
 //!
@@ -43,6 +45,7 @@ fn main() {
     let mut scenario = "ok".to_string();
     let mut bytes: u64 = 1 << 20;
     let mut name = "clip".to_string();
+    let mut prefix = String::new();
     let mut merged_ext = "mp4".to_string();
     let (mut sort, mut merge) = (String::from("-"), String::from("-"));
     let (mut skip_download, mut human_subs, mut auto_subs) = (false, false, false);
@@ -50,6 +53,12 @@ fn main() {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-P" => dir = PathBuf::from(args.next().expect("-P needs a directory")),
+            // The literal text in front of the template's first field (a playlist's folder
+            // and number, with `%%` for a percent sign) goes in front of every file name.
+            "-o" => {
+                let template = args.next().expect("-o needs a template");
+                prefix = template.split("%(").next().unwrap_or_default().replace("%%", "%");
+            }
             "-S" => sort = args.next().expect("-S needs a value"),
             "--merge-output-format" => merge = args.next().expect("--merge-output-format needs a value"),
             "--skip-download" => skip_download = true,
@@ -79,7 +88,15 @@ fn main() {
         }
     }
     std::fs::create_dir_all(&dir).expect("cannot create the output directory");
-    if let Some(output) = dir.parent().and_then(|p| p.parent()) {
+    let log_dir = dir.clone();
+    if !prefix.is_empty() {
+        // Like yt-dlp, files go under `-P` at the path the template gives.
+        let named = dir.join(format!("{prefix}{name}"));
+        name = named.file_name().expect("a file name").to_string_lossy().into_owned();
+        dir = named.parent().expect("a folder").to_path_buf();
+        std::fs::create_dir_all(&dir).expect("cannot create the template's folder");
+    }
+    if let Some(output) = log_dir.parent().and_then(|p| p.parent()) {
         use std::io::Write as _;
         if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(output.join("fixture-starts.log")) {
             let kind = match (human_subs, auto_subs) {

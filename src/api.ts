@@ -55,7 +55,15 @@ export type JobStatus =
 
 export type DownloadMode = "video" | "audio" | "transcript";
 
+export type SponsorBlockMode = "off" | "mark" | "remove";
+
 export interface DownloadOptions {
+  /** SponsorBlock for this download (YouTube only). Absent is off. Skipped by Fast Save. */
+  sponsorblock?: SponsorBlockMode;
+  /** The kinds of segment it applies to; empty or absent when off. */
+  sponsorblockCategories?: string[];
+  /** A playlist's videos go into a folder named after it, numbered by position. */
+  playlistFolder?: boolean;
   /** "transcript" saves text made from one of the site's caption tracks; no media. */
   mode: DownloadMode;
   /** Largest video to fetch, as its shorter side (yt-dlp's `res`); null is the best. */
@@ -236,6 +244,8 @@ export interface CachedLink {
 }
 
 export interface EnqueueItem {
+  /** Where the video sits in the playlist it was chosen from, for a numbered folder. */
+  playlist?: { title: string; position: number; count: number } | null;
   matchOrigin?: MatchOrigin | null;
   url: string;
   playlistIndex?: number | null;

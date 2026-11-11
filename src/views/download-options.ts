@@ -1,15 +1,15 @@
 // The Options panel of one link (a single video or a playlist): type, quality, format,
 // subtitles, transcript choices and Fast Save. It edits the choices it is given in place.
-import type { DownloadMode, ProbeResult, TranscriptFormat } from "../api";
+import type { DownloadMode, ProbeResult, SponsorBlockMode, TranscriptFormat } from "../api";
 import { fastSaveHint } from "../processing-options";
 import { hasExactSizes, qualityChoices } from "../resolution";
 import { TRANSCRIPT_FORMATS, captionChoices, subtitleLimitHint } from "../transcript-options";
 import { store } from "../store";
-import { chipRadio, segmented, toggle } from "../ui/components";
+import { chipCheck, chipRadio, segmented, toggle } from "../ui/components";
 import { append, h } from "../ui/dom";
 import { group, row } from "../ui/layout";
 import { subtitleChips } from "../ui/subtitle-chips";
-import { AUDIO_FORMATS, NO_CAPTIONS, audioHint, captionSelect, presetRow, qualityChips, type LinkChoices } from "./download-shared";
+import { AUDIO_FORMATS, NO_CAPTIONS, SPONSOR_CATEGORIES, audioHint, captionSelect, offersSponsorBlock, presetRow, qualityChips, type LinkChoices } from "./download-shared";
 
 export interface OptionsDeps {
   /** A Spotify match is being downloaded: the type is fixed to audio. */
@@ -138,11 +138,62 @@ export function mountOptions(r: ProbeResult, choice: LinkChoices, deps: OptionsD
         ),
       );
     }
-    if (choice.mode !== "transcript") rows.push(fastSaveRow());
+    if (choice.mode !== "transcript") {
+      if (playlist) rows.push(playlistFolderRow());
+      if (offersSponsorBlock(r)) rows.push(...sponsorBlockRows());
+      rows.push(fastSaveRow());
+    }
     while (typeRow.nextSibling) typeRow.nextSibling.remove();
     append(panel, rows);
     deps.paintActionLabel();
     deps.scheduleEstimate();
+  };
+
+  const playlistFolderRow = () =>
+    row(
+      "Playlist folder",
+      toggle("Save into a playlist folder", choice.playlistFolder, (v) => {
+        choice.playlistFolder = v;
+      }),
+      "Saves the videos into a folder named after the playlist, each numbered by its place in it.",
+    );
+
+  // SponsorBlock asks a service Claws does not otherwise contact, so the row says so and
+  // nothing is asked while it is off. Fast Save skips it (it rewrites the file).
+  const sponsorBlockRows = (): Node[] => {
+    const about = "Uses the community SponsorBlock database: yt-dlp asks sponsor.ajay.app about this video.";
+    if (choice.fastSave) return [row("SponsorBlock", h("span", { class: "row-note", text: "Off while Fast Save is on" }), "Marking or removing segments rewrites the file, which Fast Save skips.")];
+    const hints: Record<SponsorBlockMode, string> = {
+      off: `${about} Nothing is asked while this is off.`,
+      mark: `${about} The chosen segments become chapter markers; nothing is cut.`,
+      remove: `${about} The chosen segments are cut out of the file. A cut can leave a brief glitch, and the saved file is smaller than the size shown.`,
+    };
+    const hint = h("span", { text: hints[choice.sponsorblock] });
+    const mode = segmented<SponsorBlockMode>(
+      "SponsorBlock",
+      [
+        { value: "off", label: "Off" },
+        { value: "mark", label: "Mark" },
+        { value: "remove", label: "Remove" },
+      ],
+      choice.sponsorblock,
+      (next) => {
+        choice.sponsorblock = next;
+        paint();
+      },
+    );
+    const rows: Node[] = [row("SponsorBlock", mode.el, hint)];
+    if (choice.sponsorblock !== "off") {
+      const chips = chipCheck("Kinds of segment", SPONSOR_CATEGORIES, choice.sponsorCategories, () => {
+        // At least one kind stays chosen: "on, for nothing" is not a choice.
+        if (choice.sponsorCategories.size === 0) {
+          choice.sponsorCategories.add("sponsor");
+          paint();
+        } else deps.scheduleEstimate();
+      });
+      rows.push(row("Segments", chips, "The kinds of segment to mark or remove."));
+    }
+    return rows;
   };
 
   // Fast Save names exactly what it changes for these choices (processing-options.ts, the
@@ -154,6 +205,7 @@ export function mountOptions(r: ProbeResult, choice: LinkChoices, deps: OptionsD
       metadata: store.settings.embedMetadata,
       embeddedSubs: choice.mode === "video" && choice.subs.size > 0 && choice.embedSubs,
       fastSave: choice.fastSave,
+      sponsorBlock: offersSponsorBlock(r) && choice.sponsorblock !== "off",
     });
     return row(
       "Fast Save",

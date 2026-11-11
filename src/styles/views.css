@@ -685,6 +685,10 @@
   color: var(--accent-text);
 }
 
+.row-note {
+  color: var(--text-2);
+  font-size: 12.5px;
+}
 .queue-summary {
   margin: 0 2px 10px;
   color: var(--text-2);

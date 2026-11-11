@@ -24,6 +24,7 @@ import {
   estimateLine,
   estimateSettings,
   looksLikeUrl,
+  offersSponsorBlock,
   paintLine,
   renderIssues,
   thumbnailEl,
@@ -75,6 +76,9 @@ export const mountDownload: MountView = (container, ctx) => {
     caption: null,
     transcriptFormat: "txt",
     selected: new Set<number>(),
+    sponsorblock: "off",
+    sponsorCategories: new Set<string>(["sponsor"]),
+    playlistFolder: false,
   };
   let paintActionLabel: (() => void) | null = null;
   /** True while an enqueue is in flight or its confirmation is showing. */
@@ -199,6 +203,10 @@ export const mountDownload: MountView = (container, ctx) => {
     choice.fastSave = false;
     choice.caption = defaultCaption(captionChoices(next), navigator.languages ?? []);
     choice.transcriptFormat = "txt";
+    // Asked for again for each link: SponsorBlock contacts a service of its own.
+    choice.sponsorblock = "off";
+    choice.sponsorCategories = new Set(["sponsor"]);
+    choice.playlistFolder = false;
     // The choices of the last download come back, as far as this link offers them.
     const last = loadLastChoices();
     if (last) {
@@ -471,7 +479,15 @@ export const mountDownload: MountView = (container, ctx) => {
       embedSubs: choice.embedSubs,
       fastSave: choice.fastSave,
       transcriptFormat: "txt",
+      ...sponsorBlockOptions(),
+      playlistFolder: result?.kind === "playlist" && choice.playlistFolder,
     };
+  }
+
+  /** SponsorBlock as it will run: only for a YouTube link, and never with Fast Save. */
+  function sponsorBlockOptions(): Pick<DownloadOptions, "sponsorblock" | "sponsorblockCategories"> {
+    const on = result !== null && offersSponsorBlock(result) && !choice.fastSave && choice.sponsorblock !== "off";
+    return on ? { sponsorblock: choice.sponsorblock, sponsorblockCategories: [...choice.sponsorCategories].sort() } : { sponsorblock: "off", sponsorblockCategories: [] };
   }
 
   /**
@@ -527,16 +543,22 @@ export const mountDownload: MountView = (container, ctx) => {
     if (trigger) trigger.disabled = true;
     const items =
       result.kind === "playlist"
-        ? result.entries
-            .filter((_, i) => choice.selected.has(i))
-            .map((e) => ({
-              url: e.url,
-              playlistIndex: e.playlistIndex,
-              title: e.title,
-              thumbnail: e.thumbnail,
-              uploader: e.uploader,
-              duration: e.duration,
-            }))
+        ? result.entries.flatMap((e, i) =>
+            choice.selected.has(i)
+              ? [
+                  {
+                    url: e.url,
+                    playlistIndex: e.playlistIndex,
+                    title: e.title,
+                    thumbnail: e.thumbnail,
+                    uploader: e.uploader,
+                    duration: e.duration,
+                    // Its place in the whole playlist, not among the ticked ones.
+                    playlist: { title: sent.title, position: i + 1, count: sent.entries.length },
+                  },
+                ]
+              : [],
+          )
         : [
             {
               url: result.url,
@@ -923,6 +945,9 @@ export const mountDownload: MountView = (container, ctx) => {
     choice.transcriptFormat = kept.transcriptFormat;
     choice.subs = new Set(kept.subs);
     choice.selected = new Set(returning.selected);
+    choice.sponsorblock = kept.sponsorblock ?? "off";
+    choice.sponsorCategories = new Set(kept.sponsorCategories?.length ? kept.sponsorCategories : ["sponsor"]);
+    choice.playlistFolder = kept.playlistFolder ?? false;
     freshness = returning.freshness;
     staleReason = returning.staleReason;
     refreshNotices = returning.notices;
@@ -960,6 +985,9 @@ export const mountDownload: MountView = (container, ctx) => {
           fastSave: choice.fastSave,
           caption: choice.caption,
           transcriptFormat: choice.transcriptFormat,
+          sponsorblock: choice.sponsorblock,
+          sponsorCategories: [...choice.sponsorCategories],
+          playlistFolder: choice.playlistFolder,
         },
         selected: [...choice.selected].sort((a, b) => a - b),
         // The check for changes is dropped with the view, so it cannot be shown as still running.
