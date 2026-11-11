@@ -119,6 +119,27 @@ pub fn cancel_job(app: AppHandle, id: String) {
     downloader::cancel(&app, &id);
 }
 
+/// The bulk actions answer with how many jobs they acted on.
+#[tauri::command]
+pub fn pause_all(app: AppHandle) -> usize {
+    downloader::pause_all(&app)
+}
+
+#[tauri::command]
+pub fn resume_all(app: AppHandle) -> usize {
+    downloader::resume_all(&app)
+}
+
+#[tauri::command]
+pub fn retry_failed(app: AppHandle) -> usize {
+    downloader::retry_failed(&app)
+}
+
+#[tauri::command]
+pub fn prioritize_job(app: AppHandle, id: String) {
+    downloader::prioritize(&app, &id);
+}
+
 #[tauri::command]
 pub fn remove_job(app: AppHandle, id: String) -> Result<()> {
     downloader::remove(&app, &id)

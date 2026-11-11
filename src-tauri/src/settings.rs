@@ -51,6 +51,8 @@ pub struct Settings {
     /// Transfer speed limit for each download, in KiB per second; 0 is no limit. Read when
     /// a download starts, so a change applies from the next start.
     pub speed_limit_kib: u32,
+    /// A Windows notification when a download finishes or fails while Claws is not in front.
+    pub notify_when_done: bool,
     /// Costs one extra full rewrite of each file after it is merged.
     pub embed_metadata: bool,
     /// System-wide shortcut that brings Claws forward (one of `SHORTCUTS`).
@@ -80,6 +82,7 @@ impl Default for Settings {
             max_concurrent: 3,
             max_processing: 2,
             speed_limit_kib: 0,
+            notify_when_done: true,
             embed_metadata: true,
             quick_open_shortcut: "ctrl+alt+d".into(),
             keep_running: true,

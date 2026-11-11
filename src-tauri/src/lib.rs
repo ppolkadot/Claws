@@ -58,6 +58,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(desktop::shortcut_plugin())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -150,6 +151,10 @@ pub fn run() {
             commands::pause_job,
             commands::resume_job,
             commands::cancel_job,
+            commands::pause_all,
+            commands::resume_all,
+            commands::retry_failed,
+            commands::prioritize_job,
             commands::remove_job,
             commands::clear_finished,
             commands::save_settings,

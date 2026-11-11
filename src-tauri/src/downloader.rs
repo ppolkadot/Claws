@@ -216,6 +216,14 @@ pub struct Job {
     /// new work folder, so the cancelled attempt's cleanup can never reach its files.
     #[serde(default)]
     pub attempt: u32,
+    /// Raised by "Move to Top": the queued job with the highest value starts next, and the
+    /// list shows it first. Zero for a job that was never moved.
+    #[serde(default)]
+    pub priority: i64,
+    /// What the final processing is doing right now ("Merging", "Converting audio"). Shown
+    /// only while the job is processing, and never written to the queue file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
 }
 
 pub const EVENT_SCHEMA: u16 = 1;
@@ -320,6 +328,8 @@ pub fn queue_snapshot(state: &AppState) -> QueueSnapshot {
         .iter()
         .filter(|j| j.status != JobStatus::Completed && j.status != JobStatus::Cancelled)
         .cloned()
+        // The processing stage describes a running process, which a restart does not have.
+        .map(|j| Job { stage: None, ..j })
         .collect();
     QueueSnapshot { schema_version: QUEUE_SCHEMA, revision, jobs }
 }
@@ -580,6 +590,8 @@ pub fn enqueue(app: &AppHandle, items: Vec<EnqueueItem>, mut options: DownloadOp
             cancel_requested: false,
             revision: 0,
             attempt: 0,
+            priority: 0,
+            stage: None,
         });
     }
     if created.is_empty() {
@@ -648,11 +660,15 @@ pub fn pump(app: &AppHandle) {
                 let mut live = state.live_jobs.lock().unwrap();
                 // A job whose earlier worker is still alive waits for it to exit; that
                 // worker pumps again on its way out.
+                // The job moved to the top most recently goes first; otherwise list order.
+                // (`min_by_key` keeps the first of equals, which `max_by_key` would not.)
                 jobs.iter_mut()
-                    .find(|j| j.status == JobStatus::Queued && !live.contains(&j.id))
+                    .filter(|j| j.status == JobStatus::Queued && !live.contains(&j.id))
+                    .min_by_key(|j| std::cmp::Reverse(j.priority))
                     .map(|job| {
                         job.status = JobStatus::Downloading;
                         job.error = None;
+                        job.stage = None;
                         job.revision = next_revision(&state);
                         live.insert(job.id.clone());
                         job.clone()
@@ -721,27 +737,90 @@ pub fn pause(app: &AppHandle, id: &str) {
 }
 
 pub fn resume(app: &AppHandle, id: &str) {
-    let state = app.state::<AppState>();
-    {
-        let running = state.running.lock().unwrap();
-        // A job whose process is still winding down is settled by `finish` first.
-        if !running.contains_key(id) {
-            update_job(app, id, |j| match j.status {
-                JobStatus::Paused | JobStatus::Failed => {
-                    j.status = JobStatus::Queued;
-                    j.error = None;
-                }
-                JobStatus::Cancelled => {
-                    start_new_attempt(j);
-                    j.status = JobStatus::Queued;
-                }
-                _ => {}
-            });
-        }
-    }
+    requeue(app, id);
     // The reset is saved by the start's own barrier before anything is written.
     persist_queue(app);
     pump(app);
+}
+
+/// Puts a paused, failed or cancelled job back in line. The caller saves and pumps.
+fn requeue(app: &AppHandle, id: &str) {
+    let state = app.state::<AppState>();
+    let running = state.running.lock().unwrap();
+    // A job whose process is still winding down is settled by `finish` first.
+    if !running.contains_key(id) {
+        update_job(app, id, |j| match j.status {
+            JobStatus::Paused | JobStatus::Failed => {
+                j.status = JobStatus::Queued;
+                j.error = None;
+            }
+            JobStatus::Cancelled => {
+                start_new_attempt(j);
+                j.status = JobStatus::Queued;
+            }
+            _ => {}
+        });
+    }
+}
+
+/// The ids of the jobs in one of `statuses`, in list order, read under the jobs lock.
+fn ids_with(app: &AppHandle, statuses: &[JobStatus]) -> Vec<String> {
+    let state = app.state::<AppState>();
+    let jobs = state.jobs.lock().unwrap();
+    jobs.iter().filter(|j| statuses.contains(&j.status)).map(|j| j.id.clone()).collect()
+}
+
+/// Pauses everything that is waiting, transferring or processing. Each job goes through
+/// the same `pause` as its own button, so a job that finishes meanwhile still completes.
+pub fn pause_all(app: &AppHandle) -> usize {
+    let ids = ids_with(app, &[JobStatus::Queued, JobStatus::Downloading, JobStatus::Processing]);
+    for id in &ids {
+        pause(app, id);
+    }
+    ids.len()
+}
+
+/// Puts every paused job back in line, then starts as many as the limits allow.
+pub fn resume_all(app: &AppHandle) -> usize {
+    requeue_all(app, &[JobStatus::Paused])
+}
+
+/// Tries every failed job again, each from what it had already downloaded.
+pub fn retry_failed(app: &AppHandle) -> usize {
+    requeue_all(app, &[JobStatus::Failed])
+}
+
+fn requeue_all(app: &AppHandle, statuses: &[JobStatus]) -> usize {
+    let ids = ids_with(app, statuses);
+    for id in &ids {
+        requeue(app, id);
+    }
+    if !ids.is_empty() {
+        persist_queue(app);
+        pump(app);
+    }
+    ids.len()
+}
+
+/// "Move to Top": the job starts before every other waiting job and is listed first. Only
+/// a job that is still waiting (queued or paused) is moved; the order is saved.
+pub fn prioritize(app: &AppHandle, id: &str) {
+    let state = app.state::<AppState>();
+    let moved = {
+        let mut jobs = state.jobs.lock().unwrap();
+        let top = jobs.iter().map(|j| j.priority).max().unwrap_or(0);
+        jobs.iter_mut()
+            .find(|j| j.id == id && matches!(j.status, JobStatus::Queued | JobStatus::Paused) && (j.priority < top || top == 0))
+            .map(|job| {
+                job.priority = top + 1;
+                job.revision = next_revision(&state);
+                job.clone()
+            })
+    };
+    if let Some(job) = moved {
+        emit_job(app, &job);
+        persist_queue(app);
+    }
 }
 
 /// Trying a cancelled job again: its files went (or are going) with the cancel, so it
@@ -1281,7 +1360,7 @@ async fn run_prepared(
     if job.options.mode == "transcript" {
         // Only captions are fetched: there are no media bytes to count, so the job shows
         // as processing (an indeterminate bar), never as a made-up download percentage.
-        mark_processing(app, id);
+        mark_processing(app, id, None);
     }
 
     // yt-dlp prints download progress on stdout but post-processing progress and its
@@ -1596,18 +1675,38 @@ fn starts_final_processing(rest: &str) -> bool {
     !PRE_DOWNLOAD_PROCESSORS.contains(&name)
 }
 
+/// What a yt-dlp postprocessor is doing, in words for the queue row. Unknown ones give
+/// nothing, and the row keeps its general "Processing the file".
+fn stage_label(postprocessor: &str) -> Option<&'static str> {
+    Some(match postprocessor {
+        "Merger" => "Merging video and audio",
+        "FFmpegExtractAudio" => "Converting audio",
+        "FFmpegVideoConvertor" => "Converting video",
+        "FFmpegVideoRemuxer" => "Changing the container",
+        "FFmpegMetadata" => "Writing metadata",
+        "EmbedThumbnail" => "Embedding cover art",
+        "FFmpegEmbedSubtitle" => "Embedding subtitles",
+        "ModifyChapters" => "Editing chapters",
+        "MoveFiles" => "Moving the file",
+        name if name.starts_with("FFmpegFixup") => "Fixing the file",
+        _ => return None,
+    })
+}
+
 fn postprocessor_started(app: &AppHandle, id: &str, rest: &str) {
     if starts_final_processing(rest) {
-        mark_processing(app, id);
+        let name = rest.split('|').nth(1).unwrap_or_default().trim();
+        mark_processing(app, id, stage_label(name));
     }
 }
 
-fn mark_processing(app: &AppHandle, id: &str) {
+fn mark_processing(app: &AppHandle, id: &str, stage: Option<&'static str>) {
     let mut left_transfer = false;
     update_job(app, id, |j| {
         if j.status.is_active() {
             left_transfer = j.status == JobStatus::Downloading;
             j.status = JobStatus::Processing;
+            j.stage = stage.map(str::to_string);
         }
         j.speed = None;
         j.eta = None;
@@ -1905,6 +2004,14 @@ async fn run_job(app: AppHandle, id: String) {
 /// Final status for a job whose process exited. Success always wins, so a pause or
 /// cancel that arrived as it completed cannot hide a finished file.
 fn settle(app: &AppHandle, id: &str, intent: Intent, outcome: &Outcome) -> Option<Job> {
+    let settled = settle_status(app, id, intent, outcome);
+    if let Some(job) = find_job(app, id) {
+        crate::desktop::notify_finished(app, &job);
+    }
+    settled
+}
+
+fn settle_status(app: &AppHandle, id: &str, intent: Intent, outcome: &Outcome) -> Option<Job> {
     if outcome.success {
         return update_job(app, id, |j| {
             j.status = JobStatus::Completed;
@@ -2348,6 +2455,24 @@ mod tests {
         assert_eq!(value_after(&limited, "--concurrent-fragments").as_deref(), Some("1"));
         assert_eq!(limited.last(), open.last(), "the link stays the last argument");
         assert_eq!(execution.fragment_concurrency, 8, "the frozen choice is not rewritten");
+    }
+
+    #[test]
+    fn known_postprocessors_have_a_stage_label_and_unknown_ones_do_not() {
+        assert_eq!(stage_label("Merger"), Some("Merging video and audio"));
+        assert_eq!(stage_label("FFmpegExtractAudio"), Some("Converting audio"));
+        assert_eq!(stage_label("FFmpegFixupM3u8"), Some("Fixing the file"));
+        assert_eq!(stage_label("SomethingNew"), None);
+    }
+
+    #[test]
+    fn a_queue_saved_before_priorities_loads_and_the_stage_is_never_saved() {
+        let old = r#"{"id":"a","url":"https://example.com/v","title":"t","thumbnail":null,"uploader":null,"duration":null,"options":{},"status":"queued","progress":0,"speed":null,"eta":null,"filePath":null,"error":null,"createdAt":1}"#;
+        let mut job: Job = serde_json::from_str(old).unwrap();
+        assert_eq!((job.priority, job.stage.clone()), (0, None));
+        assert!(!serde_json::to_string(&job).unwrap().contains("stage"), "an empty stage is not written");
+        job.stage = Some("Merging video and audio".into());
+        assert!(serde_json::to_string(&job).unwrap().contains("\"stage\""), "the interface is sent the stage");
     }
 
     #[test]

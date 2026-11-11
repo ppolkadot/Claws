@@ -1774,3 +1774,87 @@ fn processing_beyond_its_limit_holds_a_transfer_slot() {
         wait_until("the finished job's disk claim to go", || t.state().disk_ledger.lock().unwrap().held(id).is_none());
     }
 }
+
+fn one_at_a_time(t: &TestApp) {
+    t.state().settings.lock().unwrap().max_concurrent = 1;
+}
+
+#[test]
+fn bulk_pause_resume_and_retry_act_on_every_matching_job_in_one_call() {
+    let Some(t) = TestApp::new("bulk") else { return };
+    one_at_a_time(&t);
+    let first = t.enqueue("https://fixture.invalid/hang/bulk-a");
+    let second = t.enqueue("https://fixture.invalid/hang/bulk-b");
+    let third = t.enqueue("https://fixture.invalid/hang/bulk-c");
+    t.wait_job(&first, running, "the first download");
+
+    assert_eq!(downloader::pause_all(t.handle()), 3);
+    for id in [&first, &second, &third] {
+        t.wait_job(id, |j| j.status == JobStatus::Paused, "the pause");
+    }
+    assert_eq!(downloader::pause_all(t.handle()), 0, "nothing is left to pause");
+
+    assert_eq!(downloader::resume_all(t.handle()), 3);
+    // One starts (whichever is free first: a paused job's old worker may still be leaving)
+    // and the other two wait in line.
+    let all = [&first, &second, &third];
+    wait_until("one of them to run again", || all.iter().any(|id| running(&t.job(id).unwrap())));
+    let waiting: Vec<&String> = all.iter().copied().filter(|id| t.job(id).unwrap().status == JobStatus::Queued).collect();
+    assert_eq!(waiting.len(), 2, "one slot, so two still wait");
+
+    // A failed job is tried again; the paused ones are left alone.
+    for id in &waiting {
+        downloader::pause(t.handle(), id);
+    }
+    t.state().settings.lock().unwrap().max_concurrent = 2;
+    let failing = t.enqueue("https://fixture.invalid/fail/bulk-fail");
+    t.wait_job(&failing, |j| j.status == JobStatus::Failed, "the failure");
+    let starts = |name: &str| t.starts().iter().filter(|line| line.contains(name)).count();
+    assert_eq!(starts("bulk-fail"), 1);
+    assert_eq!(downloader::retry_failed(t.handle()), 1);
+    wait_until("the failed job to start again", || starts("bulk-fail") == 2);
+    for id in &waiting {
+        assert_eq!(t.job(id).unwrap().status, JobStatus::Paused, "Retry Failed must not resume a paused job");
+    }
+}
+
+#[test]
+fn a_job_moved_to_the_top_starts_next_and_keeps_its_place_after_a_restart() {
+    let Some(t) = TestApp::new("prioritize") else { return };
+    one_at_a_time(&t);
+    let first = t.enqueue("https://fixture.invalid/hang/top-a");
+    let second = t.enqueue("https://fixture.invalid/hang/top-b");
+    let third = t.enqueue("https://fixture.invalid/hang/top-c");
+    t.wait_job(&first, running, "the first download");
+
+    downloader::prioritize(t.handle(), &third);
+    let moved = t.job(&third).unwrap().priority;
+    assert!(moved > 0);
+    downloader::prioritize(t.handle(), &third);
+    assert_eq!(t.job(&third).unwrap().priority, moved, "a job already on top is not moved again");
+    downloader::prioritize(t.handle(), &first);
+    assert_eq!(t.job(&first).unwrap().priority, 0, "a running job is not moved");
+
+    downloader::cancel(t.handle(), &first);
+    t.wait_job(&third, running, "the moved job to start before the older one");
+    assert_eq!(t.job(&second).unwrap().status, JobStatus::Queued);
+
+    wait_until("the order to be saved", || t.saved_queue().iter().any(|j| j.id == third && j.priority == moved));
+    let t = t.restart();
+    assert_eq!(t.job(&third).unwrap().priority, moved);
+    assert_eq!(t.job(&second).unwrap().priority, 0);
+}
+
+#[test]
+fn the_processing_stage_is_named_while_it_runs_and_is_not_saved() {
+    let Some(t) = TestApp::new("stage") else { return };
+    let id = t.enqueue("https://fixture.invalid/merge-hold/staged");
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Processing, "the merge");
+    assert_eq!(job.stage.as_deref(), Some("Merging video and audio"));
+    downloader::flush_queue(t.handle()).expect("the queue is saved");
+    let text = std::fs::read_to_string(t.dir.join("queue.json")).unwrap();
+    assert!(text.contains(&id) && text.contains("\"processing\""), "the processing job is in the saved queue");
+    assert!(!text.contains("\"stage\""), "the stage was written to the queue file");
+    release_merges(&t);
+    t.wait_job(&id, |j| j.status == JobStatus::Completed, "the completion");
+}
