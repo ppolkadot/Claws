@@ -8,10 +8,9 @@
 //!   claws-fixture-tool -P <dir> [--scenario ok|fail|hang|tree] [--bytes N] [--name clip]
 //!
 //! When Claws itself runs it as yt-dlp, the scenario and name come from the job's link,
-//! `https://fixture.invalid/<scenario>[/<name>[/<planned bytes>[/<merged extension>]]]`, and
-//! literal text in front of the first field of `-o` (a folder and a number) is put in front of
-//! each file's name, as yt-dlp would, and
-//! every start is appended to `fixture-starts.log` two folders above `-P` (the output folder
+//! `https://fixture.invalid/<scenario>[/<name>[/<planned bytes>[/<merged extension>]]]`. Literal
+//! text in front of the first field of `-o` (a folder and a number) is put in front of each
+//! file's name, as yt-dlp would, and every start is appended to `fixture-starts.log` two folders above `-P` (the output folder
 //! of a work folder), with the selection it was given (`-S` and `--merge-output-format`).
 //!
 //! ok    two streams (video, audio) with progress, a merge, then CLAWSDONE; exit 0
@@ -53,8 +52,7 @@ fn main() {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-P" => dir = PathBuf::from(args.next().expect("-P needs a directory")),
-            // The literal text in front of the template's first field (a playlist's folder
-            // and number, with `%%` for a percent sign) goes in front of every file name.
+            // Literal text before the template's first field (`%%` is a percent sign) prefixes every file name.
             "-o" => {
                 let template = args.next().expect("-o needs a template");
                 prefix = template.split("%(").next().unwrap_or_default().replace("%%", "%");
@@ -90,7 +88,6 @@ fn main() {
     std::fs::create_dir_all(&dir).expect("cannot create the output directory");
     let log_dir = dir.clone();
     if !prefix.is_empty() {
-        // Like yt-dlp, files go under `-P` at the path the template gives.
         let named = dir.join(format!("{prefix}{name}"));
         name = named.file_name().expect("a file name").to_string_lossy().into_owned();
         dir = named.parent().expect("a folder").to_path_buf();

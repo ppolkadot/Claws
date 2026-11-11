@@ -134,7 +134,6 @@ export function collapseOut(el: HTMLElement, height?: number): Animation | null 
   const from = height ?? el.getBoundingClientRect().height;
   cancelMotion(el);
   el.style.overflow = "hidden";
-  // The same sampled spring as a row arriving (expandIn), so the list closes as it opens.
   const { easing, duration } = spring("smooth");
   const animation = el.animate(
     [

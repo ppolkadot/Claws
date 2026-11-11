@@ -64,7 +64,6 @@ export const mountDownload: MountView = (container, ctx) => {
   let stageAnimation: Animation | null = null;
   let batchView: BatchView | null = null;
 
-  /** The choices for the link on screen; the option and playlist parts edit them in place. */
   const choice: LinkChoices = {
     mode: "video",
     height: null,
@@ -188,7 +187,6 @@ export const mountDownload: MountView = (container, ctx) => {
   const stage = h("div", { class: "stage" });
   container.append(urlBar, setup, stage);
 
-  // Nothing is installed until the panel's button is pressed.
   const offSetup = mountSetupPanel(setup);
 
   function showResult(next: ProbeResult) {
@@ -207,7 +205,6 @@ export const mountDownload: MountView = (container, ctx) => {
     choice.sponsorblock = "off";
     choice.sponsorCategories = new Set(["sponsor"]);
     choice.playlistFolder = false;
-    // The choices of the last download come back, as far as this link offers them.
     const last = loadLastChoices();
     if (last) {
       const playlist = next.kind === "playlist";

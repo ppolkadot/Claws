@@ -19,13 +19,7 @@ const STATE_TEXT: Record<StepState, string> = {
   missing: "Not installed",
 };
 
-/**
- * The first-run setup panel: one button installs whatever yt-dlp, ffmpeg and the
- * JavaScript runtime are missing, with a row per tool. Nothing is downloaded until the
- * button is pressed, and the panel goes away once all three are ready.
- */
 export function mountSetupPanel(slot: HTMLElement): () => void {
-  /** Tools this panel asked for that have not finished yet, so their rows read "Waiting". */
   const queued = new Set<ToolName>();
 
   const setUpEverything = () => {

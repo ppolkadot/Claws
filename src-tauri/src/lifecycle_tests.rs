@@ -1122,7 +1122,6 @@ fn startup_recovery_returns_before_library_work_and_prevents_duplicate_starts() 
     assert_eq!(t.starts().len(), 1);
 }
 
-
 fn original(max_height: Option<u32>) -> DownloadOptions {
     DownloadOptions { max_height, video_preset: crate::download_policy::VideoPreset::Original, ..DownloadOptions::default() }
 }
@@ -1243,7 +1242,6 @@ fn a_saved_job_with_a_preset_this_version_cannot_make_fails_without_starting() {
     assert!(job.error.unwrap_or_default().contains("editing preset"));
     assert_eq!(t.starts().len(), 1, "yt-dlp was never started for it");
 }
-
 
 fn transcript(code: &str, auto: bool, format: crate::transcript::TranscriptFormat) -> DownloadOptions {
     DownloadOptions { mode: "transcript".into(), subtitle_langs: vec![code.into()], auto_subs: auto, transcript_format: format, ..DownloadOptions::default() }
@@ -1481,7 +1479,6 @@ fn a_network_failure_after_a_pre_download_postprocessor_is_not_reported_as_proce
     assert!(error.contains("timed out"), "{error}");
     assert!(!error.contains("processing the file failed"), "a transfer failure was reported as a processing failure: {error}");
 }
-
 
 fn with_captions() -> DownloadOptions {
     DownloadOptions { subtitle_langs: vec!["en".into(), "es".into()], embed_subs: false, ..DownloadOptions::default() }
@@ -1759,8 +1756,7 @@ fn processing_beyond_its_limit_holds_a_transfer_slot() {
     let first = t.enqueue("https://fixture.invalid/merge-hold/first");
     let second = t.enqueue("https://fixture.invalid/merge-hold/second");
     let third = t.enqueue("https://fixture.invalid/hang/third");
-    // The first merge frees the only transfer slot for the second; the second merge is
-    // one more than the limit and keeps the slot, so the third waits.
+    // The second merge exceeds the limit and keeps the only slot, so the third waits.
     t.wait_job(&first, |j| j.status == JobStatus::Processing, "the first merge");
     t.wait_job(&second, |j| j.status == JobStatus::Processing, "the second merge");
     std::thread::sleep(Duration::from_millis(300));
@@ -1795,8 +1791,7 @@ fn bulk_pause_resume_and_retry_act_on_every_matching_job_in_one_call() {
     assert_eq!(downloader::pause_all(t.handle()), 0, "nothing is left to pause");
 
     assert_eq!(downloader::resume_all(t.handle()), 3);
-    // One starts (whichever is free first: a paused job's old worker may still be leaving)
-    // and the other two wait in line.
+    // One starts (a paused job's old worker may still be leaving); the other two wait.
     let all = [&first, &second, &third];
     wait_until("one of them to run again", || all.iter().any(|id| running(&t.job(id).unwrap())));
     let waiting: Vec<&String> = all.iter().copied().filter(|id| t.job(id).unwrap().status == JobStatus::Queued).collect();

@@ -10,7 +10,6 @@ export interface FastSaveChoices {
   /** Video only: subtitles are chosen and set to be embedded rather than saved beside it. */
   embeddedSubs: boolean;
   fastSave: boolean;
-  /** SponsorBlock is set to mark or remove segments for this download. */
   sponsorBlock?: boolean;
 }
 

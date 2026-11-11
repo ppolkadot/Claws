@@ -6,6 +6,7 @@ Use these documents for the current project:
 - [Developer handoff](HANDOFF.md): architecture, safety contracts, build/test commands and manual acceptance.
 - [User guide](../README.md): installation, features, settings and troubleshooting.
 - [Product brief](../PRODUCT.md) and [design system](../DESIGN.md): product scope and visual rules.
+- [1.0.9 release notes](releases/1.0.9.md): installer, checksum, build source and packaging evidence (not yet published).
 - [1.0.8 release notes](releases/1.0.8.md): installer, checksum, build source and packaging evidence.
 - [Spotify verification](spotify-track-matching-verification.md): feature contract, current checks and dated live evidence.
 - [Speed diagnosis](performance/speed-diagnosis.md) and [UI measurements](performance/queue-ui.md): measured results with raw data under `performance/`.

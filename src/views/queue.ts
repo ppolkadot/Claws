@@ -35,7 +35,6 @@ interface RowRefs {
   pressId: number;
   /** What the row last showed about kept subtitle files (kept-files.ts keptKey). */
   kept: string;
-  /** A failed job's full message, behind a disclosure, with a Copy button. */
   error: HTMLDetailsElement;
   /** The message `error` shows now, so a repaint does not close it while it is being read. */
   errorText: string;
@@ -66,7 +65,6 @@ function statusText(job: Job): string {
       return [amount, formatSpeed(job.speed), left].filter(Boolean).join("  ·  ");
     }
     case "processing":
-      // The backend names the step when it knows it (merging, converting audio, ...).
       return job.stage || "Processing the file";
     case "paused": {
       const at = percent(job) ?? (job.downloadedBytes ? formatBytes(job.downloadedBytes) : job.progress > 0 ? `${Math.round(job.progress * 100)}%` : null);
@@ -148,10 +146,6 @@ function buildRow(job: Job): RowRefs {
   return { el, status, bar, actions, thumb, refocus: null, pressed: false, guardUntil: 0, pressId: 0, kept: "", error, errorText: "" };
 }
 
-/**
- * A failed job's whole message. The status line shows one line of it; here it can be read
- * in full and copied (for a search, or a report). Rebuilt only when the message changes.
- */
 function paintError(refs: RowRefs, job: Job) {
   const text = job.status === "failed" ? (job.error ?? "").trim() : "";
   if (refs.errorText === text) return;
@@ -274,8 +268,6 @@ export const mountQueue: MountView = (container, ctx) => {
     size: "small",
     onClick: () => void api.clearFinished().catch(fail),
   });
-  // One call each, however long the list: the backend runs every job through the same
-  // code as its own button.
   const bulk = (label: string, title: string, run: () => Promise<number>) =>
     button({ label, title, variant: "secondary", size: "small", onClick: () => void run().catch(fail) });
   const pauseAll = bulk("Pause All", "Pauses every download that is waiting or running", api.pauseAll);
@@ -309,7 +301,6 @@ export const mountQueue: MountView = (container, ctx) => {
       if (!shown[i] && document.activeElement === btn) (bulkButtons.find((_, j) => shown[j]) ?? clearBtn).focus({ preventScroll: true });
       btn.hidden = !shown[i];
     });
-    // The speed and the time left appear only when the backend reported real values.
     const parts = [
       s.downloading > 0 ? `${s.downloading} downloading` : null,
       s.processing > 0 ? `${s.processing} processing` : null,

@@ -12,7 +12,7 @@ pub const SETTINGS_SCHEMA: u16 = 2;
 /// Chosen to avoid combinations Windows, browsers and AltGr layouts already use.
 pub const SHORTCUTS: &[&str] = &["ctrl+alt+d", "ctrl+alt+space", "ctrl+shift+space", "off"];
 
-/// The highest speed limit accepted (1 GiB/s); anything above it is no practical limit.
+/// 1 GiB/s; anything above is no practical limit.
 pub const MAX_SPEED_LIMIT_KIB: u32 = 1024 * 1024;
 
 pub const BROWSERS: &[&str] = &[
@@ -44,14 +44,11 @@ pub struct Settings {
     /// "glass", "acrylic", "mica", "tabbed" or "none".
     pub backdrop: String,
     pub max_concurrent: u8,
-    /// How many downloads may be in their final processing (merge, conversion, embedding)
-    /// without holding a transfer slot. Processing beyond this number counts against
-    /// `max_concurrent`, so at most `max_concurrent + max_processing` jobs run at once.
+    /// Jobs in final processing (merge, conversion, embedding) that do not hold a transfer slot;
+    /// beyond this they count against `max_concurrent`.
     pub max_processing: u8,
-    /// Transfer speed limit for each download, in KiB per second; 0 is no limit. Read when
-    /// a download starts, so a change applies from the next start.
+    /// Per download, KiB/s; 0 is no limit. Read at start, so a change applies from the next start.
     pub speed_limit_kib: u32,
-    /// A Windows notification when a download finishes or fails while Claws is not in front.
     pub notify_when_done: bool,
     /// Costs one extra full rewrite of each file after it is merged.
     pub embed_metadata: bool,

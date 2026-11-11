@@ -1,5 +1,3 @@
-// The Options panel of one link (a single video or a playlist): type, quality, format,
-// subtitles, transcript choices and Fast Save. It edits the choices it is given in place.
 import type { DownloadMode, ProbeResult, SponsorBlockMode, TranscriptFormat } from "../api";
 import { fastSaveHint } from "../processing-options";
 import { hasExactSizes, qualityChoices } from "../resolution";
@@ -12,7 +10,6 @@ import { subtitleChips } from "../ui/subtitle-chips";
 import { AUDIO_FORMATS, NO_CAPTIONS, SPONSOR_CATEGORIES, audioHint, captionSelect, offersSponsorBlock, presetRow, qualityChips, type LinkChoices } from "./download-shared";
 
 export interface OptionsDeps {
-  /** A Spotify match is being downloaded: the type is fixed to audio. */
   spotify: boolean;
   dismissRefreshNotices(): void;
   scheduleEstimate(): void;

@@ -136,7 +136,6 @@ test("a job moved to the top is listed first, and the move is reported as a chan
   assert.deepEqual(moved, { kind: "updated", statusChanged: false, moved: true });
   assert.deepEqual(table.list().map((j) => j.id), ["c", "a", "b"]);
 
-  // A later move goes above an earlier one; an ordinary update keeps the place.
   table.apply(event(job("b", 2, "queued", { priority: 2 }), 3));
   assert.deepEqual(table.list().map((j) => j.id), ["b", "c", "a"]);
   const same = table.apply(event(job("c", 3, "downloading", { priority: 1 }), 4));
@@ -144,7 +143,6 @@ test("a job moved to the top is listed first, and the move is reported as a chan
   assert.deepEqual(table.list().map((j) => j.id), ["b", "c", "a"]);
   assert.equal(table.list()[1].status, "downloading");
 
-  // A new job goes below the moved ones, in creation order; a snapshot sorts the same way.
   table.apply(event(job("d", 4), 5));
   assert.deepEqual(table.list().map((j) => j.id), ["b", "c", "a", "d"]);
   const fresh = new JobTable();

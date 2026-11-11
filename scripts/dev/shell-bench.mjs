@@ -95,7 +95,6 @@ const pageHelpers = `
       return this.emit('jobs-added', { schemaVersion: 1, jobs: jobs.map((j) => ({ schemaVersion: 1, jobId: j.id, revision: j.revision, job: j })) });
     },
     go(label) { [...document.querySelectorAll('.nav-item')].find((b) => b.querySelector('.nav-label')?.textContent === label).click(); },
-    // The view-transition parts and scripted movements running now, by name.
     moving() {
       const names = {};
       for (const a of document.getAnimations()) {
@@ -132,7 +131,6 @@ const pageHelpers = `
   new PerformanceObserver((list) => list.getEntries().forEach((e) => window.__lt.push(e.duration))).observe({ type: 'longtask' });
 `;
 
-// One effect: trigger it, then watch a fixed window.
 async function measure(trigger, ms, probe = "null") {
   await takeLongTasks();
   const before = await metrics();
@@ -174,7 +172,6 @@ async function run(reducedMotion) {
     out.sizes.push({ queueRows: rows, navigation: { toLibrary, toQueue }, sidebar: { close, open } });
   }
 
-  // Library search: how many cards move, and how it paces.
   await evaluate("window.__s.go('Library')");
   await evaluate("window.__s.wait(900)");
   const typed = await measure(
@@ -188,7 +185,6 @@ async function run(reducedMotion) {
     scriptMs: typed.scriptMs, layoutMs: typed.layoutMs, styleMs: typed.styleMs, longTasks: typed.longTasks, frames: typed.frames, maxFrameMs: typed.maxFrameMs, slowFrames: typed.slowFrames,
   };
 
-  // A lookup: what is shown while the link is read, and the details that replace it.
   await evaluate("window.__s.go('Download')");
   await evaluate("window.__s.wait(700)");
   out.lookup = await evaluate(`(async () => {

@@ -1,5 +1,3 @@
-// A pasted list of links: one row per link with its own status, the choices shared by the
-// whole list, its size estimate, and adding the selected rows to the queue.
 import { api, type ProbeResult } from "../api";
 import type { EstimateRun } from "../download-estimates";
 import { describeEnqueue, remainingItems, selectable, type BatchRow } from "../download-input";
@@ -30,10 +28,8 @@ import {
 
 export interface BatchDeps {
   run: EstimateRun<EstimateItem>;
-  /** The link field, which takes the keyboard when the list is cleared or all added. */
   input: HTMLTextAreaElement;
   stage: HTMLElement;
-  /** Repaints the counts of whichever batch view is on screen now. */
   refreshCurrent(): void;
 }
 
@@ -42,14 +38,9 @@ export interface BatchView {
   paintRow(row: BatchRow<ProbeResult>): void;
   refresh(): void;
   dispose(): void;
-  /** Repaints the size estimate for the current choices and selection. */
   paintEstimate(): void;
 }
 
-/**
- * The batch: one row per link with its own status, built ROWS_PER_FRAME rows a frame.
- * A row change repaints that row only; the counts repaint at most once a frame.
- */
 export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
   const { run: batchRun, input, stage } = deps;
 
@@ -64,17 +55,15 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
       store.addJobs(added);
       return added;
     });
-    deps.refreshCurrent(); // disables the button while the rows are sent
+    deps.refreshCurrent();
     const summary = await sending;
     deps.refreshCurrent();
     if (!summary) return;
-    if (summary.added > 0 && store.batch === session) session.estimate = null; // sized links are in the queue now
+    if (summary.added > 0 && store.batch === session) session.estimate = null;
     toast(describeEnqueue(summary), {
       tone: summary.added === 0 && summary.failed > 0 ? "error" : "info",
       action: summary.added > 0 ? { label: "View Queue", run: () => store.go("queue") } : undefined,
     });
-    // Everything is queued: back to the empty page, with the keyboard in the link field.
-    // Otherwise the rest stays, to retry.
     if (store.batch === session && store.links.rows.every((r) => r.added)) {
       const active = document.activeElement;
       const wasHere = !active || active === document.body || stage.contains(active);
@@ -204,7 +193,7 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
   const paintRow = (r: BatchRow<ProbeResult>) => {
     scheduleCounts();
     const ref = refs.get(r.id);
-    if (!ref) return; // not built yet; it is painted when it is
+    if (!ref) return;
     const can = selectable(r);
     ref.pick.setAttribute("aria-checked", String(r.selected));
     // aria-disabled, not disabled: the row keeps keyboard focus when it changes.
@@ -235,7 +224,7 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
               size: "small",
               onClick: () => {
                 links.retry(r.id);
-                ref.pick.focus(); // the button goes away; focus stays on the row
+                ref.pick.focus();
               },
             })
           : null,
@@ -279,7 +268,7 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
     "Quality",
     qualityChips(capChoices(), choices.maxHeight, (value) => {
       choices.maxHeight = value;
-      scheduleCounts(); // an estimate for other choices no longer applies
+      scheduleCounts();
     }),
     "Each video is saved at the largest size it has, up to this limit. Nothing is upscaled.",
   );
