@@ -55,13 +55,10 @@ impl VideoPreset {
 pub enum SponsorBlock {
     #[default]
     Off,
-    /// Chapter markers for the chosen kinds of segment.
     Mark,
-    /// The chosen kinds of segment are cut out of the file.
     Remove,
 }
 
-/// The SponsorBlock categories Claws offers, by yt-dlp's names.
 pub const SPONSORBLOCK_CATEGORIES: [&str; 8] = ["sponsor", "selfpromo", "interaction", "intro", "outro", "preview", "music_offtopic", "filler"];
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -113,8 +110,8 @@ pub fn converts_audio(mode: &str, audio_format: &str) -> bool {
 /// What a download does to its streams after transferring them.
 ///
 /// Contract: Fast Save skips the optional passes (metadata and chapters, embedded subtitles,
-/// embedded cover art and SponsorBlock), because each can rewrite the finished file. Necessary work stays: audio
-/// conversion, a video merge and any container repair yt-dlp itself decides on. A transcript
+/// embedded cover art and SponsorBlock), because each can rewrite the finished file. Necessary
+/// work stays: audio conversion, a video merge and any container repair yt-dlp itself decides on. A transcript
 /// downloads no media, so nothing here applies to it.
 ///
 /// The Fast Save hint in the interface (`src/processing-options.ts`) restates this contract
@@ -127,8 +124,7 @@ pub struct ProcessingPolicy {
     /// MP3 and M4A only. A missing thumbnail makes yt-dlp skip the step, which cannot be
     /// known in advance, so sizing assumes the pass happens.
     pub embed_thumbnail: bool,
-    /// Marking writes chapters into the file and removing cuts it: either is a whole-file
-    /// pass, so Fast Save turns it off.
+    /// A whole-file pass either way (chapters written or segments cut), so Fast Save turns it off.
     pub sponsorblock: SponsorBlock,
 }
 
@@ -143,7 +139,6 @@ impl ProcessingPolicy {
             sponsorblock: if optional && !options.sponsorblock_categories.is_empty() { options.sponsorblock } else { SponsorBlock::Off },
         }
     }
-
 
     /// Whether a pass may write the finished file again (a temporary copy of it), which
     /// disk sizing must leave room for. Thumbnail embedding is a rewrite for MP3 (an ffmpeg
@@ -346,8 +341,7 @@ fn media_args(push: &mut impl FnMut(&[&str]), options: &DownloadOptions, executi
         }
     }
     if policy.embed_metadata {
-        // yt-dlp embeds chapters with the metadata by default; asked for by name, so that
-        // does not rest on the tool's default. It is the same pass, not another one.
+        // Asked for by name so chapter embedding does not rest on yt-dlp's default.
         push(&["--embed-metadata", "--embed-chapters"]);
     }
     let categories = options.sponsorblock_categories.join(",");
@@ -359,10 +353,8 @@ fn media_args(push: &mut impl FnMut(&[&str]), options: &DownloadOptions, executi
     }
 }
 
-/// The folder and number a playlist's video is saved under, as a prefix for the filename
-/// template: `<folder>/<NN> - `. The folder is the playlist's title made safe as a Windows
-/// folder name; the number is padded to the playlist's length (two digits at least). `%` is
-/// doubled, because the result becomes part of a yt-dlp output template.
+/// `<folder>/<NN> - ` prefix for a playlist item: Windows-safe title folder, number padded to
+/// the playlist's length (two digits minimum). `%` is doubled because this feeds a yt-dlp output template.
 pub fn playlist_prefix(title: &str, position: u32, count: u32) -> String {
     const RESERVED: [&str; 22] = [
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",
@@ -581,7 +573,6 @@ mod tests {
         assert_eq!(playlist_prefix("line\nbreak\ttab", 2, 5), "line break tab/02 - ");
         let long = playlist_prefix(&"x".repeat(300), 1, 5);
         assert_eq!(long, format!("{}/01 - ", "x".repeat(80)));
-        // A position past the stated length is still padded to its own width.
         assert_eq!(playlist_prefix("P", 123, 5), "P/123 - ");
         for prefix in [playlist_prefix("../../etc", 1, 2), playlist_prefix("C:\\Windows", 1, 2)] {
             assert!(!prefix.contains("..") && !prefix.contains(':') && !prefix.contains('\\'), "{prefix}");

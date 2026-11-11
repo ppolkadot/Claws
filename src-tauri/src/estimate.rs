@@ -235,8 +235,7 @@ fn build(selection: Selection, options: &DownloadOptions, rewrite: bool) -> Down
     let parts = selection.parts;
     let sizes: Vec<Option<u64>> = parts.iter().map(|p| p.bytes).collect();
     let download_bytes = disk_budget::known_total(&sizes);
-    // SponsorBlock removal cuts the kept file by an amount nobody knows in advance: the
-    // bytes downloaded are as stated, but the figures are no longer exact for the result.
+    // SponsorBlock removal shortens the kept file by an unknown amount, so result figures are not exact.
     let cut = options.sponsorblock == download_policy::SponsorBlock::Remove && !options.fast_save && !options.sponsorblock_categories.is_empty();
     let confidence = match download_bytes {
         None => Confidence::Unknown,

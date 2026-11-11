@@ -26,14 +26,11 @@ pub fn bring_forward(app: &AppHandle) {
     }
 }
 
-/// Whether a finished or failed download earns a system notification: only when the user
-/// asked for them and is not looking at Claws (the window is hidden, minimized or behind).
+/// Only when enabled and the window is hidden, minimized or behind.
 pub fn should_notify(enabled: bool, visible: bool, focused: bool, minimized: bool) -> bool {
     enabled && !(visible && focused && !minimized)
 }
 
-/// The notification's title and text for a job that just settled, or nothing for a status
-/// that is not news (paused, cancelled, still running).
 pub fn finished_notice(job: &crate::downloader::Job) -> Option<(&'static str, String)> {
     use crate::downloader::JobStatus;
     match job.status {
@@ -44,7 +41,6 @@ pub fn finished_notice(job: &crate::downloader::Job) -> Option<(&'static str, St
     }
 }
 
-/// Tells Windows about a download that finished or failed while Claws was not in front.
 pub fn notify_finished(app: &AppHandle, job: &crate::downloader::Job) {
     let Some((title, body)) = finished_notice(job) else { return };
     let enabled = app.state::<AppState>().settings.lock().unwrap().notify_when_done;
@@ -59,8 +55,7 @@ pub fn notify_finished(app: &AppHandle, job: &crate::downloader::Job) {
     if !should_notify(enabled, visible, focused, minimized) {
         return;
     }
-    // The test runtime has no notification plugin; what is sent is covered by the two
-    // functions above.
+    // The test runtime has no notification plugin.
     #[cfg(not(test))]
     {
         use tauri_plugin_notification::NotificationExt;

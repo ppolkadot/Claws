@@ -287,7 +287,6 @@ export function stepper(
 }
 
 let toastHost: HTMLElement | null = null;
-/** The least time a toast stays after the pointer or the keyboard leaves it. */
 const TOAST_LINGER_MS = 1500;
 
 export function toast(message: string, options: { tone?: "info" | "error"; action?: { label: string; run: () => void } } = {}) {

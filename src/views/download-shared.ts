@@ -1,6 +1,3 @@
-// Pieces the Download page's parts share: the choices made for one link, the small
-// controls, and the size-estimate line. Nothing here keeps state of its own except the
-// limit on estimate calls, which is shared on purpose.
 import type { DownloadMode, DownloadOptions, ProbeResult, SponsorBlockMode, TranscriptFormat, VideoPreset } from "../api";
 import { CallLimit, EstimateRun, aggregate, describeRun } from "../download-estimates";
 import { parseLinks, type BatchRow, type ParsedInput } from "../download-input";
@@ -13,7 +10,6 @@ import { h } from "../ui/dom";
 import { icon } from "../ui/icons";
 import { row } from "../ui/layout";
 
-/** What the user has chosen for the link on screen. The parts edit it in place. */
 export interface LinkChoices {
   mode: DownloadMode;
   height: number | null;
@@ -24,12 +20,10 @@ export interface LinkChoices {
   fastSave: boolean;
   caption: string | null;
   transcriptFormat: TranscriptFormat;
-  /** Ticked entries of a playlist, by position. */
   selected: Set<number>;
   sponsorblock: SponsorBlockMode;
   /** The kinds of segment SponsorBlock applies to; never empty. */
   sponsorCategories: Set<string>;
-  /** A playlist's videos go into a folder named after it, numbered by position. */
   playlistFolder: boolean;
 }
 
@@ -50,7 +44,6 @@ export function offersSponsorBlock(result: { site: string | null }): boolean {
   return (result.site ?? "").toLowerCase().startsWith("youtube");
 }
 
-/** Batch rows built per frame, as in the Queue view: about a frame's worth of work. */
 export const ROWS_PER_FRAME = 40;
 export const ISSUES_SHOWN = 6;
 
@@ -147,11 +140,6 @@ export type EstimateLine = {
   busy: boolean;
 };
 
-/**
- * The size and free-space lines of an estimate, separate so neither hides the other, and the
- * button that asks again for an estimate that failed (`onRetry`; the estimate state itself
- * enforces one retry at a time through the shared call limit).
- */
 export function estimateLine(onRetry: () => void, retryLabel = "Retry", retryTitle = "Asks again for this size. Download is not affected."): EstimateLine {
   const size = h("span", { class: "estimate-size" });
   const detail = h("span", { class: "estimate-detail" });
@@ -210,13 +198,8 @@ export function paintLine(line: EstimateLine, size: string, detail: string, busy
   line.busy = busy;
 }
 
-/** Ignores clicks for this long after a run starts (the second click of a double click). */
 export const STOP_GUARD_MS = 600;
 
-/**
- * The Estimate Sizes button of a list. It becomes Stop Estimating while a run goes; the
- * second click of a double click, or Enter held down, does not stop the run it started.
- */
 export function estimateButton(run: EstimateRun<EstimateItem>, start: () => void): HTMLButtonElement {
   let startedAt = -Infinity;
   const btn: HTMLButtonElement = button({
@@ -276,7 +259,6 @@ export function paintRun(run: EstimateRun<EstimateItem>, line: EstimateLine, btn
   btn.setAttribute("aria-disabled", String(!s.running && count === 0));
 }
 
-/** The settings the backend reads for an estimate; a change of them asks again. */
 export const estimateSettings = () => [store.settings.audioSelection, store.settings.embedMetadata];
 
 export function thumbnailEl(url: string | null, cls: string): HTMLElement {

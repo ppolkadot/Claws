@@ -2,13 +2,13 @@
 
 ## Version and delivery
 
-Source version: **1.0.8** on `main`, merged from the approved `codex/release-1.0.8` branch. The [GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.8) carries the verified installer; later comment/documentation cleanup does not rebuild or replace it.
+Source version on branch `improve/phase-0-safety-net`: **1.0.9**, not yet merged or published; see the [1.0.9 release notes](releases/1.0.9.md). `main` is 1.0.8, whose [GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.8) carries the verified installer.
 
 The [1.0.8 release notes](releases/1.0.8.md) and installer build record identify the packaged source (`6794ea9`), checksums and verification. The installer is unsigned; installation/upgrade remains unverified. Build records describe packaging-time state, while the GitHub release records publication. Older release records and binaries remain historical evidence.
 
 ## Unreleased work
 
-Branch `improve/phase-0-safety-net` ([pull request 1](https://github.com/ppolkadot/Claws/pull/1)) carries the improvement plan on top of 1.0.8. It is not packaged, and none of it has been exercised in the native app. The version files still read 1.0.8.
+Branch `improve/phase-0-safety-net` ([pull request 1](https://github.com/ppolkadot/Claws/pull/1)) carries the improvement plan on top of 1.0.8 and is packaged as the unpublished 1.0.9 installer. None of it has been exercised in the native app.
 
 - **Safety net:** Windows CI for every push and pull request; new installers are no longer committed.
 - **Download speed:** the benchmark gate did not justify `formats=dashy` or an aria2c transport ([real-source benchmark](performance/real-source-benchmark.md)); processing no longer holds a transfer slot (`max_processing`); a per-download speed limit; the fragment default stays at 8 ([fragment count](performance/fragment-count.md)).

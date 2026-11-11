@@ -1,11 +1,9 @@
-// What first-run setup still has to install. Pure, so it can be tested without the app.
 
 export type ToolName = "ytdlp" | "ffmpeg" | "deno";
 
 export interface SetupTools {
   ytdlp: unknown | null;
   ffmpeg: unknown | null;
-  /** "Deno" or "Node.js" when yt-dlp has a JavaScript runtime to use. */
   jsRuntime: string | null;
 }
 
@@ -27,7 +25,6 @@ export function toolReady(tools: SetupTools, tool: ToolName): boolean {
   return tools[tool] !== null;
 }
 
-/** The tools still to install, in the order setup installs them. */
 export function missingTools(tools: SetupTools): ToolName[] {
   return SETUP_STEPS.map((step) => step.tool).filter((tool) => !toolReady(tools, tool));
 }

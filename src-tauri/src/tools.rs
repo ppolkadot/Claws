@@ -24,8 +24,7 @@ const YTDLP_LATEST_API: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/relea
 const FFMPEG_URL: &str = "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip";
 const FFMPEG_SUMS_URL: &str = "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download/checksums.sha256";
 const FFMPEG_ZIP_NAME: &str = "ffmpeg-master-latest-win64-gpl.zip";
-// Deno publishes one checksum file per archive, in PowerShell's Get-FileHash layout
-// ("Hash : <SHA-256>"), not a shared "<sha256>  <name>" listing. See `checksum_in`.
+// Deno's per-archive checksum file uses PowerShell's Get-FileHash layout; see `checksum_in`.
 const DENO_URL: &str = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip";
 const DENO_SUMS_URL: &str = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip.sha256sum";
 const DENO_ZIP_NAME: &str = "deno-x86_64-pc-windows-msvc.zip";
@@ -46,7 +45,6 @@ pub struct ToolInfo {
 pub struct ToolsStatus {
     pub ytdlp: Option<ToolInfo>,
     pub ffmpeg: Option<ToolInfo>,
-    /// Deno, from the app's own folder or PATH. Missing while Node.js alone is present.
     pub deno: Option<ToolInfo>,
     pub latest_ytdlp: Option<String>,
     /// "Deno" or "Node.js": the JavaScript runtime yt-dlp uses for sites such as YouTube.
@@ -105,7 +103,6 @@ pub fn find_ffmpeg(app: &AppHandle) -> Option<PathBuf> {
     on_path("ffmpeg").cloned()
 }
 
-/// The copy of Deno Claws installed itself, if there is one.
 fn managed_deno(app: &AppHandle) -> Option<PathBuf> {
     let managed = app.state::<AppState>().bin_dir().join("deno.exe");
     managed.is_file().then_some(managed)
@@ -115,9 +112,7 @@ pub fn find_deno(app: &AppHandle) -> Option<PathBuf> {
     managed_deno(app).or_else(|| on_path("deno").cloned())
 }
 
-/// How yt-dlp is told which JavaScript runtime to use. The Deno that Claws installed is
-/// named by its path, because it is not on PATH; a Deno on PATH is found by yt-dlp
-/// unaided; Node.js is named when it is all there is.
+/// Claws' own Deno is named by path (not on PATH); yt-dlp finds a PATH Deno unaided; Node.js only as a fallback.
 fn js_runtime_args(managed_deno: Option<&Path>, deno_on_path: bool, node_on_path: bool) -> Vec<String> {
     match managed_deno {
         Some(path) => vec!["--js-runtimes".into(), format!("deno:{}", path.display())],
@@ -181,7 +176,6 @@ pub async fn status(app: &AppHandle) -> ToolsStatus {
     let state = app.state::<AppState>();
     let _engine = state.engine.read().await;
     let (ytdlp, ffmpeg, deno) = tokio::join!(ytdlp_info(app), ffmpeg_info(app), deno_info(app));
-    // The runtime `common_args` makes yt-dlp use: Deno when present, else Node.js.
     let js_runtime = if deno.is_some() {
         Some("Deno")
     } else if on_path("node").is_some() {
@@ -465,10 +459,8 @@ fn is_sha256(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// The SHA-256 published for `file_name`, in either layout the tool publishers use:
-/// a "<sha256>  <name>" listing (yt-dlp, FFmpeg-Builds), or the output of PowerShell's
-/// Get-FileHash for one file (Deno): a "Hash : <SHA-256>" line beside a "Path : ...\<name>"
-/// line that must name the same file.
+/// Accepts a "<sha256>  <name>" listing (yt-dlp, FFmpeg-Builds) or PowerShell Get-FileHash output
+/// (Deno), whose "Path" line must name `file_name`.
 fn checksum_in(text: &str, file_name: &str) -> Option<String> {
     let listed = text.lines().find_map(|line| {
         let mut parts = line.split_whitespace();
@@ -491,7 +483,6 @@ fn checksum_in(text: &str, file_name: &str) -> Option<String> {
     (field("Algorithm").as_deref() == Some("SHA256") && named == file_name).then(|| hash.to_ascii_lowercase())
 }
 
-/// Fetches the checksum document and looks `file_name` up in it (see `checksum_in`).
 async fn expected_checksum(client: &reqwest::Client, sums_url: &str, file_name: &str, timing: Timing) -> Result<String> {
     let bounds = Bounds { idle: timing.idle, total: timing.text_total, max_bytes: CHECKSUM_MAX };
     let bytes = fetch_capped(client, sums_url, None, bounds).await?;
@@ -812,8 +803,7 @@ fn commit_ffmpeg(staged: &[(PathBuf, PathBuf)]) -> Result<()> {
     Ok(())
 }
 
-/// Unpacks `deno.exe` from the root of the archive to a temporary name in `staging`,
-/// returning the `(temporary, final)` pair for `replace_all`. Nothing else is read.
+/// Only the root `deno.exe` is read; returns the `(temporary, final)` pair for `replace_all`.
 fn stage_deno(zip_path: &Path, staging: &Path, bin: &Path, entry_limit: u64) -> Result<Vec<(PathBuf, PathBuf)>> {
     let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path)?)?;
     for index in 0..archive.len() {
@@ -835,8 +825,6 @@ fn stage_deno(zip_path: &Path, staging: &Path, bin: &Path, entry_limit: u64) -> 
     Err(AppError::msg("The Deno archive did not contain deno.exe."))
 }
 
-/// Installs Deno, the JavaScript runtime yt-dlp needs for sites such as YouTube, from the
-/// Deno project's own GitHub releases.
 pub async fn install_deno(app: &AppHandle) -> Result<()> {
     install_deno_from(app, &DENO_RELEASE, TIMING).await
 }
@@ -1860,7 +1848,6 @@ mod tests {
         only_known_good(&rig);
     }
 
-    /// The checksum file Deno publishes beside each archive: PowerShell's Get-FileHash.
     fn deno_sums(archive: &[u8], path: &str) -> Vec<u8> {
         format!("\r\nAlgorithm : SHA256\r\nHash      : {}\r\nPath      : {path}\r\n\r\n", sha_hex(archive).to_uppercase()).into_bytes()
     }

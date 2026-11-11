@@ -26,11 +26,8 @@ export interface Settings {
   glassIntensity: number;
   backdrop: Backdrop;
   maxConcurrent: number;
-  /** Downloads that may be processing without holding a transfer slot. */
   maxProcessing: number;
-  /** Speed limit for each download in KiB/s; 0 is no limit. */
   speedLimitKib: number;
-  /** A Windows notification when a download finishes or fails while Claws is not in front. */
   notifyWhenDone: boolean;
   embedMetadata: boolean;
   /** System-wide Quick Open shortcut, e.g. "ctrl+alt+d", or "off". */
@@ -60,9 +57,7 @@ export type SponsorBlockMode = "off" | "mark" | "remove";
 export interface DownloadOptions {
   /** SponsorBlock for this download (YouTube only). Absent is off. Skipped by Fast Save. */
   sponsorblock?: SponsorBlockMode;
-  /** The kinds of segment it applies to; empty or absent when off. */
   sponsorblockCategories?: string[];
-  /** A playlist's videos go into a folder named after it, numbered by position. */
   playlistFolder?: boolean;
   /** "transcript" saves text made from one of the site's caption tracks; no media. */
   mode: DownloadMode;
@@ -122,7 +117,6 @@ export interface Job {
   revision: number;
   /** Raised by Move to Top: listed and started before jobs with a lower value. */
   priority?: number;
-  /** What the final processing is doing right now, when the backend can name it. */
   stage?: string | null;
 }
 
@@ -335,7 +329,6 @@ export const api = {
   cancel: (id: string) => invoke<void>("cancel_job", { id }),
   remove: (id: string) => invoke<void>("remove_job", { id }),
   clearFinished: () => invoke<void>("clear_finished"),
-  /** The bulk actions answer with how many downloads they acted on. */
   pauseAll: () => invoke<number>("pause_all"),
   resumeAll: () => invoke<number>("resume_all"),
   retryFailed: () => invoke<number>("retry_failed"),

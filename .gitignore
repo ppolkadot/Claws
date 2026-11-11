@@ -19,6 +19,7 @@ installers/*
 assets/fonts/*
 !assets/fonts/polaris/
 Salted-Flutters-Polaris/
+SaltedFluttersPolaris/
 
 # ---- Design tooling ---------------------------------------------------------------
 # Impeccable's machine-generated sidecar, hook cache and review captures.

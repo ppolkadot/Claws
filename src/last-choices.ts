@@ -1,6 +1,5 @@
 // The choices of the last download, offered again for the next link. Kept in localStorage
 // like the sidebar flag: losing them is harmless, so every read and write is guarded.
-// Pure apart from the storage it is handed, so it can be tested without the app.
 
 export interface LastChoices {
   mode: "video" | "audio" | "transcript";
@@ -18,7 +17,6 @@ const PRESETS = ["compatible", "original"];
 
 type Storage = Pick<globalThis.Storage, "getItem" | "setItem">;
 
-/** Reads saved choices, or null when there are none or they are not what this version wrote. */
 export function parseLastChoices(text: string | null): LastChoices | null {
   if (!text) return null;
   try {
@@ -54,12 +52,10 @@ export function saveLastChoices(choices: LastChoices, storage: Storage | null = 
   try {
     storage?.setItem(LAST_CHOICES_KEY, JSON.stringify(choices));
   } catch {
-    // Not remembering the choices is harmless.
   }
 }
 
 export interface LinkOffer {
-  /** The quality caps this link offers (shorter side). */
   heights: number[];
   audioFormats: string[];
   /** Whether this link can be saved as a transcript (it has captions and is not a playlist). */

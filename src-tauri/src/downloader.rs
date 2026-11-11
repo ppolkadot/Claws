@@ -74,11 +74,10 @@ pub struct DownloadOptions {
     pub fast_save: bool,
     /// What a transcript is saved as. Ignored (and kept at the default) for video and audio.
     pub transcript_format: TranscriptFormat,
-    /// SponsorBlock for this download (YouTube only): off, mark as chapters, or cut out.
+    /// YouTube only.
     pub sponsorblock: SponsorBlock,
-    /// The kinds of segment it applies to (`SPONSORBLOCK_CATEGORIES`), sorted. Empty when off.
+    /// Sorted `SPONSORBLOCK_CATEGORIES`; empty when off.
     pub sponsorblock_categories: Vec<String>,
-    /// A playlist's videos go into a folder named after it, each numbered by its position.
     pub playlist_folder: bool,
 }
 
@@ -243,16 +242,13 @@ pub struct Job {
     /// new work folder, so the cancelled attempt's cleanup can never reach its files.
     #[serde(default)]
     pub attempt: u32,
-    /// Raised by "Move to Top": the queued job with the highest value starts next, and the
-    /// list shows it first. Zero for a job that was never moved.
+    /// Highest value starts first; zero if never moved to top.
     #[serde(default)]
     pub priority: i64,
-    /// What the final processing is doing right now ("Merging", "Converting audio"). Shown
-    /// only while the job is processing, and never written to the queue file.
+    /// Shown only while processing; never persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
-    /// A folder and number put in front of the filename template when the job first starts
-    /// (`download_policy::playlist_prefix`), for a playlist saved into its own folder.
+    /// Set at first start; see `download_policy::playlist_prefix`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name_prefix: Option<String>,
 }
@@ -314,7 +310,6 @@ pub struct EnqueueItem {
     pub thumbnail: Option<String>,
     pub uploader: Option<String>,
     pub duration: Option<f64>,
-    /// Where the video sits in the playlist it was chosen from, for a numbered folder.
     #[serde(default)]
     pub playlist: Option<PlaylistPlace>,
 }
@@ -323,9 +318,7 @@ pub struct EnqueueItem {
 #[serde(rename_all = "camelCase")]
 pub struct PlaylistPlace {
     pub title: String,
-    /// The video's place in the whole playlist, from 1.
     pub position: u32,
-    /// How many videos the playlist has, which sets the number's width.
     pub count: u32,
 }
 
@@ -680,10 +673,8 @@ impl Drop for WorkerSlot {
     }
 }
 
-/// Transfer slots in use. A transferring job holds one. Jobs in their final processing
-/// hold none up to `processing_limit`; each one beyond it holds a slot, because a merge
-/// that has started inside yt-dlp cannot be made to wait. That bounds the processes
-/// running at once to the two limits added together.
+/// Transfer slots in use. Jobs processing beyond `processing_limit` also hold one, since a
+/// started merge cannot be made to wait; this bounds running processes to the two limits combined.
 fn occupied_slots(jobs: &[Job], processing_limit: usize) -> usize {
     let transferring = jobs.iter().filter(|j| j.status == JobStatus::Downloading).count();
     let processing = jobs.iter().filter(|j| j.status == JobStatus::Processing).count();
@@ -792,7 +783,7 @@ pub fn resume(app: &AppHandle, id: &str) {
     pump(app);
 }
 
-/// Puts a paused, failed or cancelled job back in line. The caller saves and pumps.
+/// The caller saves and pumps.
 fn requeue(app: &AppHandle, id: &str) {
     let state = app.state::<AppState>();
     let running = state.running.lock().unwrap();
@@ -812,15 +803,13 @@ fn requeue(app: &AppHandle, id: &str) {
     }
 }
 
-/// The ids of the jobs in one of `statuses`, in list order, read under the jobs lock.
 fn ids_with(app: &AppHandle, statuses: &[JobStatus]) -> Vec<String> {
     let state = app.state::<AppState>();
     let jobs = state.jobs.lock().unwrap();
     jobs.iter().filter(|j| statuses.contains(&j.status)).map(|j| j.id.clone()).collect()
 }
 
-/// Pauses everything that is waiting, transferring or processing. Each job goes through
-/// the same `pause` as its own button, so a job that finishes meanwhile still completes.
+/// Goes through `pause`, so a job that finishes meanwhile still completes.
 pub fn pause_all(app: &AppHandle) -> usize {
     let ids = ids_with(app, &[JobStatus::Queued, JobStatus::Downloading, JobStatus::Processing]);
     for id in &ids {
@@ -829,12 +818,10 @@ pub fn pause_all(app: &AppHandle) -> usize {
     ids.len()
 }
 
-/// Puts every paused job back in line, then starts as many as the limits allow.
 pub fn resume_all(app: &AppHandle) -> usize {
     requeue_all(app, &[JobStatus::Paused])
 }
 
-/// Tries every failed job again, each from what it had already downloaded.
 pub fn retry_failed(app: &AppHandle) -> usize {
     requeue_all(app, &[JobStatus::Failed])
 }
@@ -851,8 +838,7 @@ fn requeue_all(app: &AppHandle, statuses: &[JobStatus]) -> usize {
     ids.len()
 }
 
-/// "Move to Top": the job starts before every other waiting job and is listed first. Only
-/// a job that is still waiting (queued or paused) is moved; the order is saved.
+/// Only a waiting (queued or paused) job is moved; the order is saved.
 pub fn prioritize(app: &AppHandle, id: &str) {
     let state = app.state::<AppState>();
     let moved = {
@@ -1227,16 +1213,14 @@ fn build_args(
     if limit.is_empty() {
         return download_policy::download_args(common, &job.options, execution, workspace, source);
     }
-    // yt-dlp applies the limit to every fragment connection on its own, so eight
-    // fragments would run at up to eight times the chosen speed. A limited start
-    // fetches one fragment at a time; the job's frozen choice is left as it is.
+    // yt-dlp applies the limit per fragment connection, so eight fragments would run at up to
+    // eight times the chosen speed; a limited start fetches one fragment at a time.
     common.extend(limit);
     let limited = JobExecution { fragment_concurrency: 1, ..execution.clone() };
     download_policy::download_args(common, &job.options, &limited, workspace, source)
 }
 
-/// `--limit-rate` for a download starting now, or nothing when no limit is set. Only
-/// downloads get it: link lookups and size previews move no media.
+/// Only downloads get it: link lookups and size previews move no media.
 fn speed_limit_args(settings: &Settings) -> Vec<String> {
     match settings.speed_limit_kib {
         0 => Vec::new(),
@@ -1724,8 +1708,7 @@ fn starts_final_processing(rest: &str) -> bool {
     !PRE_DOWNLOAD_PROCESSORS.contains(&name)
 }
 
-/// What a yt-dlp postprocessor is doing, in words for the queue row. Unknown ones give
-/// nothing, and the row keeps its general "Processing the file".
+/// Queue-row wording for a postprocessor; unknown ones give nothing.
 fn stage_label(postprocessor: &str) -> Option<&'static str> {
     Some(match postprocessor {
         "Merger" => "Merging video and audio",
@@ -1828,8 +1811,7 @@ async fn prepare(
     let first_start = job.execution.is_none();
     let execution = job.execution.clone().unwrap_or_else(|| {
         let mut frozen = JobExecution::freeze(settings, job.options.fast_save);
-        // A playlist's folder and number go in front of the template once, at the first
-        // start; resumes and retries reuse the frozen template, so the folder never moves.
+        // Applied at first start only; retries reuse the frozen template so the folder never moves.
         if let Some(prefix) = &job.name_prefix {
             frozen.filename_template = format!("{prefix}{}", frozen.filename_template);
         }

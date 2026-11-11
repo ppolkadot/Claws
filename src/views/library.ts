@@ -225,7 +225,7 @@ export const mountLibrary: MountView = (container, ctx) => {
     if (before.size > 0 && !grid.hidden) {
       const kept = staying.filter((el) => el.parentElement === grid);
       cancelMotion(...kept);
-      const after = kept.map((el) => el.getBoundingClientRect()); // one read for all, at rest
+      const after = kept.map((el) => el.getBoundingClientRect());
       kept.forEach((el, i) => {
         const was = before.get(el)!;
         glideFrom(el, was.left - after[i].left, was.top - after[i].top);

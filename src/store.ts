@@ -125,7 +125,6 @@ class Store {
   tools: ToolsStatus = { ytdlp: null, ffmpeg: null, deno: null, latestYtdlp: null, jsRuntime: null };
   /** "Not Now" on the setup panel: optional tools are not offered again until the next launch. */
   setupDismissed = false;
-  /** How the Library is filtered and sorted; kept while the app runs. */
   libraryKind: LibraryKind = "all";
   libraryOrder: LibraryOrder = "date";
   toolProgress: Partial<Record<ToolName, ToolProgress>> = {};

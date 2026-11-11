@@ -1,5 +1,3 @@
-// The list of a playlist's videos: which ones are ticked, their size estimate and the
-// Download button. It edits the selection it is given in place.
 import type { DownloadOptions, ProbeResult } from "../api";
 import type { EstimateRun } from "../download-estimates";
 import { formatDuration, folderName } from "../format";
@@ -18,7 +16,6 @@ export interface PlaylistDeps {
 
 export interface PlaylistView {
   el: HTMLElement;
-  /** Repaints the size estimate for the current choices and ticks. */
   paintEstimate(): void;
 }
 

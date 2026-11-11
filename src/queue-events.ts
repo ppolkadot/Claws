@@ -47,7 +47,6 @@ export interface Ordered {
   id: string;
   createdAt: number;
   status: string;
-  /** Raised by "Move to Top"; a higher value is listed (and started) first. */
   priority?: number;
 }
 

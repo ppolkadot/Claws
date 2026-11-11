@@ -1,6 +1,3 @@
-// What the Queue's summary line and the taskbar button say about all the downloads
-// together. Pure, so it can be tested without the app. Nothing here is guessed: a combined
-// speed or a time left appears only when the backend reported real values for it.
 
 export interface SummaryJob {
   status: string;
@@ -18,7 +15,6 @@ export interface QueueSummary {
   queued: number;
   paused: number;
   failed: number;
-  /** Bytes per second across the transfers that reported a speed; null when none did. */
   speed: number | null;
   /** Seconds until every transfer is done; null unless that can be said (see `summarize`). */
   eta: number | null;
@@ -89,7 +85,6 @@ export function taskbarState(jobs: Iterable<SummaryJob>): TaskbarState {
   return { status: "normal", progress: Math.round((received / expected) * 100) };
 }
 
-/** Whether two taskbar states would look the same, so the window is not told twice. */
 export function sameTaskbarState(a: TaskbarState, b: TaskbarState): boolean {
   return a.status === b.status && (a.status !== "normal" || (b.status === "normal" && a.progress === b.progress));
 }

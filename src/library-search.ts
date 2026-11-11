@@ -31,7 +31,6 @@ export const LIBRARY_ORDERS: { value: LibraryOrder; label: string }[] = [
   { value: "size", label: "Largest first" },
 ];
 
-/** Whether the entry is of the kind the filter shows. */
 export function matchesLibraryKind(item: { mode: string }, kind: LibraryKind): boolean {
   return kind === "all" || item.mode === kind;
 }
