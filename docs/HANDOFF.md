@@ -66,6 +66,7 @@ For an authorized installer build, synchronize `package.json`, `package-lock.jso
 ## Development tools
 
 - `node scripts/dev/spotify-bench.mjs --out .test-build/spotify-bench/report.json` drives the actual frontend with synthetic IPC in an isolated headless Edge profile. Queue, batch and motion benchmarks use the same approach.
+- `node scripts/dev/shell-bench.mjs --browser <chromium exe> --out file.json` measures navigation, the sidebar toggle, Library card movement and the lookup skeleton, with the sample queue and with 500 more rows. The benches default to Edge's usual path; pass `--browser` when it is elsewhere.
 - `scripts/dev/download-fixtures.py` supplies controlled localhost transfer faults. `download-bench.mjs` measures integrity and transfer behavior; `processing-bench.mjs` measures processing. Raw evidence is in `docs/performance/`.
 - `scripts/dev/phases.mjs <yt-dlp> <info.json> <outdir> [args]` times transfer and processing phases.
 - `npx tauri dev --config scripts/dev/debug-config.json` enables the local WebView2 debugging port; that overlay does not isolate the production profile. Supply a separate test identifier/profile and output before native lifecycle tests. `node scripts/dev/cdp.mjs eval`, `wait` and `shot` control the view; inspect script arguments before use. A minimized renderer can throttle screenshots.

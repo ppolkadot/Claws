@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cancelMotion, collapseOut, completionFeedback, expandIn, pop, settleIn } from "../../.test-build/ui/motion.js";
+import { cancelMotion, collapseOut, completionFeedback, expandIn, glideFrom, pop, settleIn } from "../../.test-build/ui/motion.js";
 import { paintJobStatus } from "../../.test-build/ui/job-status.js";
 
 test("completion cancels superseded animation and respects reduced motion and hidden windows", () => {
@@ -165,4 +165,35 @@ test("settleIn and pop start nothing with reduced motion or in a hidden window",
     pop(el);
     assert.equal(el.running.length, 0, `reduced=${reduced} hidden=${hidden}`);
   }
+});
+
+test("a row leaves on the same sampled spring it arrived on", () => {
+  globalThis.matchMedia = () => ({ matches: false });
+  globalThis.document = { hidden: false };
+  const arriving = rowElement();
+  const leaving = rowElement();
+  expandIn(arriving);
+  collapseOut(leaving);
+  const [inOptions, outOptions] = [arriving.running[0].options, leaving.running[0].options];
+  assert.match(outOptions.easing, /^linear\(/, "a sampled spring, not a fixed cubic-bezier");
+  assert.equal(outOptions.easing, inOptions.easing);
+  assert.equal(outOptions.duration, inOptions.duration);
+});
+
+test("a glide moves by transform from the old place, replaces the one before it, and skips what did not move", () => {
+  globalThis.matchMedia = () => ({ matches: false });
+  globalThis.document = { hidden: false };
+  const el = rowElement();
+  const first = glideFrom(el, 120.4, -64);
+  assert.ok(first);
+  assert.deepEqual(el.running[0].frames, [{ transform: "translate(120px, -64px)" }, { transform: "none" }]);
+  const second = glideFrom(el, -30, 0);
+  assert.equal(first.cancelled, true, "a newer glide replaces the one still running");
+  assert.ok(second);
+  assert.equal(glideFrom(rowElement(), 0.4, -0.2), null, "less than a pixel is not a move");
+  globalThis.matchMedia = () => ({ matches: true });
+  assert.equal(glideFrom(rowElement(), 200, 200), null, "none with reduced motion");
+  globalThis.matchMedia = () => ({ matches: false });
+  globalThis.document = { hidden: true };
+  assert.equal(glideFrom(rowElement(), 200, 200), null, "none in a hidden window");
 });

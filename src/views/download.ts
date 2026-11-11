@@ -12,7 +12,7 @@ import { store, type EstimateItem } from "../store";
 import { button, toast } from "../ui/components";
 import { clear, h, replace } from "../ui/dom";
 import { icon } from "../ui/icons";
-import { group, sectionTitle, spinner } from "../ui/layout";
+import { group, sectionTitle } from "../ui/layout";
 import { settleIn } from "../ui/motion";
 import { mountBatch, type BatchView } from "./download-batch";
 import { mountOptions } from "./download-options";
@@ -781,7 +781,23 @@ export const mountDownload: MountView = (container, ctx) => {
     const issues = skipped && phase !== "idle" && phase !== "batch" ? renderIssues(skipped) : null;
     switch (phase) {
       case "loading":
-        replace(stage, back, issues, h("div", { class: "loading", attrs: { role: "status" } }, spinner(), h("span", { text: "Reading the link…" })));
+        // The preview card's own shape, so the page does not move when the details arrive.
+        replace(
+          stage,
+          back,
+          issues,
+          h(
+            "div",
+            { class: "result" },
+            h(
+              "section",
+              { class: "preview preview-skeleton glass", attrs: { role: "status", "aria-label": "Reading the link" } },
+              h("div", { class: "preview-thumb" }),
+              h("div", { class: "preview-info" }, h("div", { class: "skeleton-line" }), h("div", { class: "skeleton-line" }), h("div", { class: "skeleton-line" })),
+              h("span", { class: "visually-hidden", text: "Reading the link…" }),
+            ),
+          ),
+        );
         break;
       case "error":
         replace(
