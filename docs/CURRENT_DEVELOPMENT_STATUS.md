@@ -2,13 +2,13 @@
 
 ## Version and delivery
 
-Source version on branch `improve/phase-0-safety-net`: **1.0.9**, not yet merged or published; see the [1.0.9 release notes](releases/1.0.9.md). `main` is 1.0.8, whose [GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.8) carries the verified installer.
+Source version: **1.0.9** on `main`, merged from `improve/phase-0-safety-net` ([pull request 1](https://github.com/ppolkadot/Claws/pull/1)). The [GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.9) carries the installer; see the [1.0.9 release notes](releases/1.0.9.md). Earlier releases, including [1.0.8](https://github.com/ppolkadot/Claws/releases/tag/v1.0.8), stay as historical artifacts.
 
-The [1.0.8 release notes](releases/1.0.8.md) and installer build record identify the packaged source (`6794ea9`), checksums and verification. The installer is unsigned; installation/upgrade remains unverified. Build records describe packaging-time state, while the GitHub release records publication. Older release records and binaries remain historical evidence.
+The [1.0.9 release notes](releases/1.0.9.md) and installer build record identify the packaged source tree, checksums and verification. The installer is unsigned; upgrade over an earlier install and a clean-machine install remain unverified. Build records describe packaging-time state, while the GitHub release records publication. Older release records and binaries remain historical evidence.
 
-## Unreleased work
+## What 1.0.9 added
 
-Branch `improve/phase-0-safety-net` ([pull request 1](https://github.com/ppolkadot/Claws/pull/1)) carries the improvement plan on top of 1.0.8 and is packaged as the unpublished 1.0.9 installer. None of it has been exercised in the native app.
+The improvement plan on top of 1.0.8. The installer was installed and launched by the owner; the features below have not been exercised against real downloads.
 
 - **Safety net:** Windows CI for every push and pull request; new installers are no longer committed.
 - **Download speed:** the benchmark gate did not justify `formats=dashy` or an aria2c transport ([real-source benchmark](performance/real-source-benchmark.md)); processing no longer holds a transfer slot (`max_processing`); a per-download speed limit; the fragment default stays at 8 ([fragment count](performance/fragment-count.md)).
@@ -44,6 +44,6 @@ Clip sections remain deferred. Speech recognition, lyrics and replay metadata ar
 
 ## Verification
 
-The packaged 1.0.8 source passed 444 Rust tests (3 opt-in live tests ignored), 288 frontend tests, 37 mounted Edge checks, warning-denying Clippy and the production build. Installer archive, executable version and embedded font/CSS/JS/license checks passed. These are release-specific observations; use the [handoff commands](HANDOFF.md#build-and-checks) to validate subsequent source changes.
+The packaged 1.0.9 source passed 468 Rust tests (3 opt-in live tests ignored), 316 frontend tests, warning-denying Clippy and the production build; CI passed on the branch. Installer archive integrity and executable version were checked, and the owner installed and launched it. These are release-specific observations; use the [handoff commands](HANDOFF.md#build-and-checks) to validate subsequent source changes.
 
 Historical test counts and release chronology belong in release records and git history, not additional status sections. This page does not claim that fixture or headless-browser success proves native or live-site acceptance.
