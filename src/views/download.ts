@@ -4,6 +4,7 @@ import { api, errorMessage, type DownloadOptions, type ProbeResult } from "../ap
 import { EstimateRun, PreviewEstimator, describeSingle } from "../download-estimates";
 import { MAX_LINKS, isBatchInput, itemKey, parseLinks, type BatchRow, type ParsedInput } from "../download-input";
 import { formatDate, formatDuration, folderName } from "../format";
+import { applyLastChoices, loadLastChoices, saveLastChoices } from "../last-choices";
 import { keptQuality, qualityChoices } from "../resolution";
 import { captionChoices, defaultCaption, refreshSignature, refreshTrackChoices, transcriptOptions } from "../transcript-options";
 import { CHECK_INTERRUPTED, estimatesStillApply } from "../preview-session";
@@ -17,6 +18,7 @@ import { mountBatch, type BatchView } from "./download-batch";
 import { mountOptions } from "./download-options";
 import { mountEntries } from "./download-playlist";
 import {
+  AUDIO_FORMATS,
   TEXT_ONLY,
   estimateCalls,
   estimateLine,
@@ -197,6 +199,21 @@ export const mountDownload: MountView = (container, ctx) => {
     choice.fastSave = false;
     choice.caption = defaultCaption(captionChoices(next), navigator.languages ?? []);
     choice.transcriptFormat = "txt";
+    // The choices of the last download come back, as far as this link offers them.
+    const last = loadLastChoices();
+    if (last) {
+      const playlist = next.kind === "playlist";
+      const kept = applyLastChoices(last, {
+        heights: qualityChoices(next, playlist).map((c) => c.value),
+        audioFormats: AUDIO_FORMATS.map((f) => f.value),
+        transcript: !playlist && captionChoices(next).available,
+      });
+      choice.mode = kept.mode;
+      choice.audioFormat = kept.audioFormat;
+      choice.height = kept.height;
+      choice.videoPreset = kept.videoPreset;
+      choice.fastSave = kept.fastSave;
+    }
     refreshNotices = [];
     choice.selected = new Set(next.entries.map((_, i) => i));
     phase = "result";
@@ -535,6 +552,17 @@ export const mountDownload: MountView = (container, ctx) => {
       const added = await api.enqueue(items.map((item) => ({ ...item, matchOrigin: origin })), currentOptions(), spotify ? sent.url : lastUrl || sent.url);
       // Usually already applied from the jobs-added event; the revisions make this a no-op.
       store.addJobs(added);
+      // Remembered for the next link. A Spotify match is always audio, so it says nothing
+      // about what the user would choose.
+      if (!spotify) {
+        saveLastChoices({
+          mode: choice.mode,
+          audioFormat: choice.audioFormat,
+          height: choice.height,
+          videoPreset: choice.videoPreset === "original" ? "original" : "compatible",
+          fastSave: choice.fastSave,
+        });
+      }
       enqueuedResult = sent;
       // The mounted view handles its own success below; a replacement view receives this.
       if (mine !== ticket) settleMatch(true);

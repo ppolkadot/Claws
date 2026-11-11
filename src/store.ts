@@ -21,6 +21,7 @@ import { LinkBatch, type ParsedInput } from "./download-input";
 import { PreviewMemory } from "./preview-session";
 import { isSpotifyInput, type SpotifyMatchSnapshot } from "./spotify-match";
 import { JobTable } from "./queue-events";
+import type { LibraryKind, LibraryOrder } from "./library-search";
 
 export type Route = "download" | "queue" | "library" | "settings";
 
@@ -102,6 +103,7 @@ const defaultSettings: Settings = {
   maxConcurrent: 3,
   maxProcessing: 2,
   speedLimitKib: 0,
+  notifyWhenDone: true,
   embedMetadata: true,
   quickOpenShortcut: "ctrl+alt+d",
   keepRunning: true,
@@ -118,6 +120,9 @@ class Store {
   tools: ToolsStatus = { ytdlp: null, ffmpeg: null, deno: null, latestYtdlp: null, jsRuntime: null };
   /** "Not Now" on the setup panel: optional tools are not offered again until the next launch. */
   setupDismissed = false;
+  /** How the Library is filtered and sorted; kept while the app runs. */
+  libraryKind: LibraryKind = "all";
+  libraryOrder: LibraryOrder = "date";
   toolProgress: Partial<Record<ToolName, ToolProgress>> = {};
   toolBusy: Partial<Record<ToolName, boolean>> = {};
   toolError: Partial<Record<ToolName, string>> = {};
@@ -232,8 +237,10 @@ class Store {
     if (change.kind === "added") {
       this.emit("jobs");
       this.emit("jobStatus");
-    } else if (change.statusChanged) {
-      this.emit("jobStatus");
+    } else {
+      // Move to Top changes the order of the list, not just one row.
+      if (change.moved) this.emit("jobs");
+      if (change.statusChanged) this.emit("jobStatus");
     }
     this.emit("job", event.job);
   }
@@ -241,7 +248,7 @@ class Store {
   /** Jobs added together: the `jobs-added` event, and the enqueue reply (the same batch). */
   addJobs(batch: JobsAdded<Job>) {
     const result = this.jobs.applyBatch(batch);
-    if (result.added.length > 0) this.emit("jobs");
+    if (result.added.length > 0 || result.moved) this.emit("jobs");
     if (result.added.length > 0 || result.statusChanged) this.emit("jobStatus");
     for (const id of result.updated) this.emit("job", this.jobs.get(id));
   }

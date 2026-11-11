@@ -25,6 +25,9 @@ Claws is a Windows Tauri 2 desktop app with plain TypeScript/CSS. Rust invokes y
 - `max_concurrent` counts transferring jobs. Up to `max_processing` jobs in final processing hold no transfer slot; each one beyond that does, so at most the two limits added together run at once. A merge already running inside yt-dlp is never held back.
 - A speed limit is read when a download starts and is passed only to downloads, never to lookups or previews. yt-dlp applies `--limit-rate` to each fragment connection, so a limited start runs with one fragment; the job's frozen `fragment_concurrency` is not rewritten.
 - Tools are installed only when the user asks (the setup panel or Settings); there is no update check at launch. Every tool archive is checked against its publisher's SHA-256 before it is opened. Deno publishes PowerShell `Get-FileHash` output rather than a checksum listing; `tools::checksum_in` reads both and requires the `Path` line to name the archive. The Deno that Claws installs is passed to yt-dlp as `--js-runtimes deno:<path>`.
+- **Move to Top** raises a job's saved `priority`; `pump` starts the waiting job with the highest one, then list order, and the interface lists by priority, then creation time. The processing `stage` is transient: sent to the interface, never written to the queue file. Both are defaulted fields, so queue schema stays 3.
+- The bulk commands (`pause_all`, `resume_all`, `retry_failed`) go through the per-job `pause` and `requeue`, so they keep every per-job rule.
+- Notifications are sent from Rust (`desktop::notify_finished`) only when the setting is on and the window is hidden, minimized or unfocused. The capability file grants only `core:window:allow-set-progress-bar` beyond what was there; add nothing that is not used.
 - Progress reaches 100% only after publication. Late telemetry cannot undo Processing. Queue event revisions prevent older replies from reverting state.
 - Keep size preview, admission and processing policy consistent. Processing monitoring is best effort; a preview is not a reservation or a strict gate before every FFmpeg launch.
 - yt-dlp calls include `--encoding utf-8`; environment variables alone did not preserve printed Unicode paths on Windows.
@@ -81,6 +84,10 @@ Use disposable output and profiles. For native drag, keep the original Library f
 6. Exercise a stalled receiver on supported Windows versions without starting unlimited workers or forcibly terminating COM calls.
 
 Other outstanding acceptance: clean install/upgrade, native reduced-motion behavior, real WebView2/OS-IME editing, real Spotify share links, live selected-source failures and constrained-disk processing. See [current status](CURRENT_DEVELOPMENT_STATUS.md) for scope and [Spotify verification](spotify-track-matching-verification.md) for the existing evidence.
+
+## Deferred: dropping a link onto the window
+
+Not built. Read from the code, not measured: the window is created with Tauri's native drag-and-drop handler, which on Windows replaces HTML5 drop events in the WebView and reports only dropped file paths, not a dragged link's text. Accepting dropped links would mean turning that handler off (`dragDropEnabled: false`), and `file_drag.rs` relies on its `DragDrop` event (`note_window_drop`) to tell a drag that began in Claws and ended on it from an export. That change cannot be accepted without the outgoing-drag manual acceptance list above, which needs a real desktop session. Paste (Ctrl+V anywhere) and Quick Open cover the same need today.
 
 ## Documentation maintenance
 

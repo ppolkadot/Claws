@@ -5,11 +5,11 @@ import { formatBytes, formatDate, formatDuration } from "../format";
 import { keptClearWarning, keptLabel, keptOutcome, keptRemovalWarning, repairNote } from "../kept-files";
 import { TileCache, reconcileChildren } from "../library-cache";
 import { store } from "../store";
-import { button, confirmSheet, toast } from "../ui/components";
+import { button, confirmSheet, segmented, toast } from "../ui/components";
 import { h, replace } from "../ui/dom";
 import { icon } from "../ui/icons";
 import { fileDragButton } from "../ui/file-drag";
-import { matchesLibrarySearch } from "../library-search";
+import { LIBRARY_KINDS, LIBRARY_ORDERS, matchesLibraryKind, matchesLibrarySearch, sortLibrary, type LibraryKind, type LibraryOrder } from "../library-search";
 import type { MountView } from "./shell";
 
 const fail = (error: unknown) => toast(errorMessage(error), { tone: "error" });
@@ -63,7 +63,25 @@ function modeIcon(item: HistoryItem) {
   return item.mode === "audio" ? "music" : item.mode === "transcript" ? "captions" : "video";
 }
 
+/**
+ * A Library card. A click on its artwork opens the file, like the Open button over it; the
+ * buttons keep their own actions, and the keyboard uses them (the artwork is not another
+ * tab stop).
+ */
 function tile(item: HistoryItem): HTMLElement {
+  const el = buildTile(item);
+  const art = el.querySelector<HTMLElement>(".tile-art");
+  if (art) {
+    art.title = "Open file";
+    art.addEventListener("click", (event) => {
+      if ((event.target as HTMLElement).closest("button")) return;
+      void api.openDownload(item.id).catch(fail);
+    });
+  }
+  return el;
+}
+
+function buildTile(item: HistoryItem): HTMLElement {
   const art = thumbSrc(item);
   const thumb = art
     ? h("img", { class: "tile-img", attrs: { src: art, alt: "", loading: "lazy", decoding: "async", referrerpolicy: "no-referrer", draggable: false } })
@@ -158,9 +176,25 @@ export const mountLibrary: MountView = (container, ctx) => {
   const readReport = () => void api.keptFilesReport().then(paintKeptNote).catch(() => {});
   readReport();
 
+  const kindSeg = segmented<LibraryKind>("Show", LIBRARY_KINDS, store.libraryKind, (next) => {
+    store.libraryKind = next;
+    render();
+  });
+  const orderSelect = h(
+    "select",
+    { class: "select-input", attrs: { "aria-label": "Sort the library" } },
+    ...LIBRARY_ORDERS.map((order) => h("option", { attrs: { value: order.value }, text: order.label })),
+  );
+  orderSelect.value = store.libraryOrder;
+  orderSelect.addEventListener("change", () => {
+    store.libraryOrder = orderSelect.value as LibraryOrder;
+    render();
+  });
+  const toolbar = h("div", { class: "library-toolbar" }, kindSeg.el, orderSelect);
+
   const grid = h("ul", { class: "tiles", attrs: { "aria-label": "Downloaded videos" } });
   const note = h("div", { class: "empty" });
-  container.append(keptNote, grid, note);
+  container.append(keptNote, toolbar, grid, note);
 
   // Reused by id so a search keystroke moves cards instead of rebuilding them. A tile is rebuilt
   // once when a value it shows or acts on changed (library-cache.ts), and never for anything else.
@@ -169,9 +203,12 @@ export const mountLibrary: MountView = (container, ctx) => {
 
   const render = () => {
     const query = search.value.trim().toLowerCase();
-    const items = store.history.filter(
-      (i) => matchesLibrarySearch(i, query),
+    const kind = store.libraryKind;
+    const items = sortLibrary(
+      store.history.filter((i) => matchesLibrarySearch(i, query) && matchesLibraryKind(i, kind)),
+      store.libraryOrder,
     );
+    toolbar.hidden = store.history.length === 0;
     tiles.prune(new Set(store.history.map((i) => i.id)));
     clearAll.disabled = store.history.length === 0;
     searchBox.hidden = store.history.length === 0;
@@ -186,7 +223,11 @@ export const mountLibrary: MountView = (container, ctx) => {
         h("h2", { class: "empty-title", text: none ? "Your library is empty" : "No matches" }),
         h("p", {
           class: "empty-text",
-          text: none ? "Finished downloads show up here with their artwork, so you can find and open them again." : `Nothing in your library matches “${search.value.trim()}”.`,
+          text: none
+            ? "Finished downloads show up here with their artwork, so you can find and open them again."
+            : query
+              ? `Nothing ${kind === "all" ? "in your library" : `under ${LIBRARY_KINDS.find((k) => k.value === kind)?.label ?? kind}`} matches “${search.value.trim()}”.`
+              : `Nothing in your library was saved as ${kind === "audio" ? "audio" : `a ${kind}`}.`,
         }),
         none ? button({ label: "Paste a Link", icon: "link", variant: "primary", onClick: () => store.go("download") }) : null,
       );

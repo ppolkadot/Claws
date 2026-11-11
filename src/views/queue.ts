@@ -1,5 +1,6 @@
 import { api, errorMessage, type Job } from "../api";
 import { folderName, formatBytes, formatEta, formatSpeed } from "../format";
+import { summarize } from "../queue-summary";
 import { keptKey, keptLabel } from "../kept-files";
 import { store } from "../store";
 import { button, toast } from "../ui/components";
@@ -34,6 +35,10 @@ interface RowRefs {
   pressId: number;
   /** What the row last showed about kept subtitle files (kept-files.ts keptKey). */
   kept: string;
+  /** A failed job's full message, behind a disclosure, with a Copy button. */
+  error: HTMLDetailsElement;
+  /** The message `error` shows now, so a repaint does not close it while it is being read. */
+  errorText: string;
 }
 
 /** A percentage only when every stream's size is known; "about" when a size is an estimate. */
@@ -61,7 +66,8 @@ function statusText(job: Job): string {
       return [amount, formatSpeed(job.speed), left].filter(Boolean).join("  ·  ");
     }
     case "processing":
-      return "Processing the file";
+      // The backend names the step when it knows it (merging, converting audio, ...).
+      return job.stage || "Processing the file";
     case "paused": {
       const at = percent(job) ?? (job.downloadedBytes ? formatBytes(job.downloadedBytes) : job.progress > 0 ? `${Math.round(job.progress * 100)}%` : null);
       return at ? `Paused at ${at}` : "Paused";
@@ -123,6 +129,8 @@ function buildRow(job: Job): RowRefs {
     ? h("img", { class: "job-thumb", attrs: { src: job.thumbnail, alt: "", decoding: "async", referrerpolicy: "no-referrer", draggable: false } })
     : h("div", { class: "job-thumb thumb-fallback" }, icon(modeIcon(job.options.mode), 18));
   thumb.addEventListener("error", () => thumb.replaceWith(h("div", { class: "job-thumb thumb-fallback" }, icon(modeIcon(job.options.mode), 18))));
+  const error = h("details", { class: "job-error" });
+  error.hidden = true;
   const el = h(
     "li",
     { class: "job" },
@@ -133,10 +141,41 @@ function buildRow(job: Job): RowRefs {
       h("div", { class: "job-head" }, h("span", { class: "job-title", text: job.title, attrs: { title: job.title } }), h("span", { class: "job-kind", text: job.matchOrigin ? `${optionsText(job)} · Source: YouTube match` : optionsText(job) })),
       status,
       bar,
+      error,
     ),
     actions,
   );
-  return { el, status, bar, actions, thumb, refocus: null, pressed: false, guardUntil: 0, pressId: 0, kept: "" };
+  return { el, status, bar, actions, thumb, refocus: null, pressed: false, guardUntil: 0, pressId: 0, kept: "", error, errorText: "" };
+}
+
+/**
+ * A failed job's whole message. The status line shows one line of it; here it can be read
+ * in full and copied (for a search, or a report). Rebuilt only when the message changes.
+ */
+function paintError(refs: RowRefs, job: Job) {
+  const text = job.status === "failed" ? (job.error ?? "").trim() : "";
+  if (refs.errorText === text) return;
+  refs.errorText = text;
+  refs.error.hidden = !text;
+  refs.error.open = false;
+  if (!text) return replace(refs.error);
+  replace(
+    refs.error,
+    h("summary", { text: "Show the full message" }),
+    h("pre", { class: "job-error-text", text }),
+    button({
+      label: "Copy",
+      icon: "copy",
+      variant: "plain",
+      size: "small",
+      title: "Copy the message",
+      onClick: () =>
+        void navigator.clipboard.writeText(text).then(
+          () => toast("Copied the message."),
+          () => toast("The message could not be copied. Select it and press Ctrl+C.", { tone: "error" }),
+        ),
+    }),
+  );
 }
 
 function paintActions(refs: RowRefs, job: Job) {
@@ -183,6 +222,7 @@ function paintActions(refs: RowRefs, job: Job) {
       break;
     case "queued":
       items.push(button({ icon: "pause", title: "Pause", variant: "plain", onClick: act(() => api.pause(job.id)) }));
+      items.push(button({ icon: "top", title: "Move to top", variant: "plain", onClick: act(() => api.prioritize(job.id)) }));
       items.push(button({ icon: "x", title: "Cancel download", variant: "plain", onClick: act(() => api.cancel(job.id)) }));
       break;
     case "processing":
@@ -190,6 +230,7 @@ function paintActions(refs: RowRefs, job: Job) {
       break;
     case "paused":
       items.push(button({ icon: "play", title: "Resume", variant: "plain", onClick: act(() => api.resume(job.id)) }));
+      items.push(button({ icon: "top", title: "Move to top", variant: "plain", onClick: act(() => api.prioritize(job.id)) }));
       items.push(button({ icon: "x", title: "Cancel download", variant: "plain", onClick: act(() => api.cancel(job.id)) }));
       break;
     case "failed":
@@ -219,6 +260,7 @@ function paintRow(refs: RowRefs, job: Job, previous: Job | undefined) {
   refs.kept = kept;
   paintJobStatus(refs.status, statusText(job), job.status === "completed", changed, () => icon("check", 12));
   refs.status.title = job.status === "failed" ? job.error ?? "" : "";
+  paintError(refs, job);
   const unknown = job.status === "processing" || (job.status === "downloading" && !job.progressKnown);
   // The fill glides only forwards within one download; completion, retry and the rest snap.
   setProgress(refs.bar, unknown ? null : job.status === "completed" ? 1 : job.progress, progressMotion(previous, job, document.hidden));
@@ -232,8 +274,19 @@ export const mountQueue: MountView = (container, ctx) => {
     size: "small",
     onClick: () => void api.clearFinished().catch(fail),
   });
-  ctx.setActions([clearBtn]);
+  // One call each, however long the list: the backend runs every job through the same
+  // code as its own button.
+  const bulk = (label: string, title: string, run: () => Promise<number>) =>
+    button({ label, title, variant: "secondary", size: "small", onClick: () => void run().catch(fail) });
+  const pauseAll = bulk("Pause All", "Pauses every download that is waiting or running", api.pauseAll);
+  const resumeAll = bulk("Resume All", "Resumes every paused download", api.resumeAll);
+  const retryFailed = bulk("Retry Failed", "Tries every failed download again", api.retryFailed);
+  const bulkButtons = [pauseAll, resumeAll, retryFailed];
+  ctx.setActions([...bulkButtons, clearBtn]);
 
+  // Not a live region: it changes several times a second while downloads run.
+  const summaryLine = h("p", { class: "queue-summary" });
+  summaryLine.hidden = true;
   const list = h("ul", { class: "jobs glass", attrs: { "aria-label": "Downloads" } });
   const empty = h(
     "div",
@@ -243,7 +296,37 @@ export const mountQueue: MountView = (container, ctx) => {
     h("p", { class: "empty-text", text: "Links you download appear here with live progress. Finished files go to your Library." }),
     button({ label: "Paste a Link", icon: "link", variant: "primary", onClick: () => store.go("download") }),
   );
-  container.append(list, empty);
+  container.append(summaryLine, list, empty);
+
+  let summaryTimer = 0;
+  const paintSummary = () => {
+    window.clearTimeout(summaryTimer);
+    summaryTimer = 0;
+    const s = summarize(store.jobs.values());
+    const shown = [s.downloading + s.processing + s.queued > 0, s.paused > 0, s.failed > 0];
+    bulkButtons.forEach((btn, i) => {
+      // A button that goes away while it holds the keyboard hands it to the next one shown.
+      if (!shown[i] && document.activeElement === btn) (bulkButtons.find((_, j) => shown[j]) ?? clearBtn).focus({ preventScroll: true });
+      btn.hidden = !shown[i];
+    });
+    // The speed and the time left appear only when the backend reported real values.
+    const parts = [
+      s.downloading > 0 ? `${s.downloading} downloading` : null,
+      s.processing > 0 ? `${s.processing} processing` : null,
+      s.queued > 0 ? `${s.queued} waiting` : null,
+      s.paused > 0 ? `${s.paused} paused` : null,
+      s.failed > 0 ? `${s.failed} failed` : null,
+      s.speed !== null ? formatSpeed(s.speed) : null,
+      s.eta !== null ? `${s.etaApproximate ? "about " : ""}${formatEta(s.eta)}` : null,
+    ].filter(Boolean);
+    const text = parts.join("  ·  ");
+    if (summaryLine.textContent !== text) summaryLine.textContent = text;
+    summaryLine.hidden = parts.length === 0;
+  };
+  // Progress arrives many times a second; the line follows it at most a few times a second.
+  const scheduleSummary = () => {
+    if (!summaryTimer) summaryTimer = window.setTimeout(paintSummary, 400);
+  };
 
   const rows = new Map<string, RowRefs>();
   const known = new Map<string, Job>();
@@ -381,6 +464,7 @@ export const mountQueue: MountView = (container, ctx) => {
     const job = detail as Job;
     const refs = rows.get(job.id);
     if (refs) paint(refs, job);
+    scheduleSummary();
   });
   const offJobs = store.on("jobs", scheduleSync);
   // The Library entry (with its kept files) can arrive after the job's completion.
@@ -390,8 +474,12 @@ export const mountQueue: MountView = (container, ctx) => {
       if (job?.status === "completed" && refs.kept !== keptKey(libraryEntry(job))) paint(refs, job);
     }
   });
-  const offStatus = store.on("jobStatus", paintClear);
+  const offStatus = store.on("jobStatus", () => {
+    paintClear();
+    paintSummary();
+  });
   sync();
+  paintSummary();
 
   return () => {
     offJob();
@@ -400,6 +488,7 @@ export const mountQueue: MountView = (container, ctx) => {
     offStatus();
     cancelAnimationFrame(frame);
     window.clearTimeout(leaveTimer);
+    window.clearTimeout(summaryTimer);
     for (const refs of rows.values()) cancelMotion(refs.el, refs.status);
     // Rows still collapsing out are no longer in `rows`: stop them and take them out now.
     for (const el of collapsing) {
