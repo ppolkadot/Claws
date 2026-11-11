@@ -21,6 +21,8 @@ const STROKE: Record<string, string> = {
   paste: '<rect x="5.5" y="5" width="13" height="15" rx="2.4"/><path d="M9.5 5V4.2c0-.4.3-.7.7-.7h3.6c.4 0 .7.3.7.7V5"/><path d="M9 11h6M9 14.5h4"/>',
   alert: '<path d="M12 4.2 21 19.5H3z"/><path d="M12 10v4.2M12 17h.01"/>',
   clock: '<circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/>',
+  top: '<path d="M6 5.5h12"/><path d="M12 19V9.5"/><path d="m7.5 13.5 4.5-4.5 4.5 4.5"/>',
+  copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/>',
   sparkles: '<path d="M12 4.5 13.6 9l4.4 1.6-4.4 1.6L12 16.7l-1.6-4.5L6 10.6 10.4 9z"/><path d="M18.5 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>',
 };
 

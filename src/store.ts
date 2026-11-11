@@ -1,3 +1,4 @@
+import type { ToolName } from "./setup";
 import {
   api,
   errorMessage,
@@ -11,6 +12,7 @@ import {
   type ProbeResult,
   type Settings,
   type ToolProgress,
+  type SponsorBlockMode,
   type ToolsStatus,
   type TranscriptFormat,
   type VideoPreset,
@@ -20,6 +22,7 @@ import { LinkBatch, type ParsedInput } from "./download-input";
 import { PreviewMemory } from "./preview-session";
 import { isSpotifyInput, type SpotifyMatchSnapshot } from "./spotify-match";
 import { JobTable } from "./queue-events";
+import type { LibraryKind, LibraryOrder } from "./library-search";
 
 export type Route = "download" | "queue" | "library" | "settings";
 
@@ -49,6 +52,10 @@ export interface PreviewChoices {
   fastSave: boolean;
   caption: string | null;
   transcriptFormat: TranscriptFormat;
+  /** Absent in sessions kept before these choices existed: off, sponsor only, no folder. */
+  sponsorblock?: SponsorBlockMode;
+  sponsorCategories?: string[];
+  playlistFolder?: boolean;
 }
 
 /** Several links pasted at once, being looked up or waiting to be added to the queue. */
@@ -99,6 +106,9 @@ const defaultSettings: Settings = {
   glassIntensity: 70,
   backdrop: "glass",
   maxConcurrent: 3,
+  maxProcessing: 2,
+  speedLimitKib: 0,
+  notifyWhenDone: true,
   embedMetadata: true,
   quickOpenShortcut: "ctrl+alt+d",
   keepRunning: true,
@@ -112,10 +122,14 @@ class Store {
   /** The download list, kept in creation order from revisioned events. */
   readonly jobs = new JobTable<Job>();
   history: HistoryItem[] = [];
-  tools: ToolsStatus = { ytdlp: null, ffmpeg: null, latestYtdlp: null, jsRuntime: null };
-  toolProgress: Partial<Record<"ytdlp" | "ffmpeg", ToolProgress>> = {};
-  toolBusy: Partial<Record<"ytdlp" | "ffmpeg", boolean>> = {};
-  toolError: Partial<Record<"ytdlp" | "ffmpeg", string>> = {};
+  tools: ToolsStatus = { ytdlp: null, ffmpeg: null, deno: null, latestYtdlp: null, jsRuntime: null };
+  /** "Not Now" on the setup panel: optional tools are not offered again until the next launch. */
+  setupDismissed = false;
+  libraryKind: LibraryKind = "all";
+  libraryOrder: LibraryOrder = "date";
+  toolProgress: Partial<Record<ToolName, ToolProgress>> = {};
+  toolBusy: Partial<Record<ToolName, boolean>> = {};
+  toolError: Partial<Record<ToolName, string>> = {};
 
   /** False until the first tool check returns; until then "not installed" is unknown. */
   toolsKnown = false;
@@ -227,8 +241,10 @@ class Store {
     if (change.kind === "added") {
       this.emit("jobs");
       this.emit("jobStatus");
-    } else if (change.statusChanged) {
-      this.emit("jobStatus");
+    } else {
+      // Move to Top changes the order of the list, not just one row.
+      if (change.moved) this.emit("jobs");
+      if (change.statusChanged) this.emit("jobStatus");
     }
     this.emit("job", event.job);
   }
@@ -236,7 +252,7 @@ class Store {
   /** Jobs added together: the `jobs-added` event, and the enqueue reply (the same batch). */
   addJobs(batch: JobsAdded<Job>) {
     const result = this.jobs.applyBatch(batch);
-    if (result.added.length > 0) this.emit("jobs");
+    if (result.added.length > 0 || result.moved) this.emit("jobs");
     if (result.added.length > 0 || result.statusChanged) this.emit("jobStatus");
     for (const id of result.updated) this.emit("job", this.jobs.get(id));
   }
@@ -333,6 +349,11 @@ class Store {
     return url;
   }
 
+  dismissSetup() {
+    this.setupDismissed = true;
+    this.emit("tools");
+  }
+
   setTools(tools: ToolsStatus) {
     this.tools = tools;
     this.emit("tools");
@@ -344,7 +365,7 @@ class Store {
   }
 
   /** Installs queue (the backend refuses a second one), so none is dropped. */
-  runTool(tool: "ytdlp" | "ffmpeg", action: () => Promise<ToolsStatus>, options: { quiet?: boolean } = {}): Promise<void> {
+  runTool(tool: ToolName, action: () => Promise<ToolsStatus>, options: { quiet?: boolean } = {}): Promise<void> {
     if (this.toolPending.has(tool)) return this.toolChain;
     this.toolPending.add(tool);
     this.toolChain = this.toolChain.then(() => this.runToolNow(tool, action, options));
@@ -352,9 +373,9 @@ class Store {
   }
 
   private toolChain: Promise<void> = Promise.resolve();
-  private toolPending = new Set<"ytdlp" | "ffmpeg">();
+  private toolPending = new Set<ToolName>();
 
-  private async runToolNow(tool: "ytdlp" | "ffmpeg", action: () => Promise<ToolsStatus>, options: { quiet?: boolean }) {
+  private async runToolNow(tool: ToolName, action: () => Promise<ToolsStatus>, options: { quiet?: boolean }) {
     this.toolBusy[tool] = true;
     delete this.toolError[tool];
     delete this.toolProgress[tool];

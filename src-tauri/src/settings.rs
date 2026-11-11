@@ -12,6 +12,9 @@ pub const SETTINGS_SCHEMA: u16 = 2;
 /// Chosen to avoid combinations Windows, browsers and AltGr layouts already use.
 pub const SHORTCUTS: &[&str] = &["ctrl+alt+d", "ctrl+alt+space", "ctrl+shift+space", "off"];
 
+/// 1 GiB/s; anything above is no practical limit.
+pub const MAX_SPEED_LIMIT_KIB: u32 = 1024 * 1024;
+
 pub const BROWSERS: &[&str] = &[
     "chrome", "edge", "firefox", "brave", "opera", "vivaldi", "chromium", "whale",
 ];
@@ -41,6 +44,12 @@ pub struct Settings {
     /// "glass", "acrylic", "mica", "tabbed" or "none".
     pub backdrop: String,
     pub max_concurrent: u8,
+    /// Jobs in final processing (merge, conversion, embedding) that do not hold a transfer slot;
+    /// beyond this they count against `max_concurrent`.
+    pub max_processing: u8,
+    /// Per download, KiB/s; 0 is no limit. Read at start, so a change applies from the next start.
+    pub speed_limit_kib: u32,
+    pub notify_when_done: bool,
     /// Costs one extra full rewrite of each file after it is merged.
     pub embed_metadata: bool,
     /// System-wide shortcut that brings Claws forward (one of `SHORTCUTS`).
@@ -68,6 +77,9 @@ impl Default for Settings {
             glass_intensity: 70,
             backdrop: "glass".into(),
             max_concurrent: 3,
+            max_processing: 2,
+            speed_limit_kib: 0,
+            notify_when_done: true,
             embed_metadata: true,
             quick_open_shortcut: "ctrl+alt+d".into(),
             keep_running: true,
@@ -84,6 +96,8 @@ impl Settings {
     pub fn validate(&mut self) -> Result<()> {
         self.glass_intensity = self.glass_intensity.min(100);
         self.max_concurrent = self.max_concurrent.clamp(1, 8);
+        self.max_processing = self.max_processing.clamp(1, 8);
+        self.speed_limit_kib = self.speed_limit_kib.min(MAX_SPEED_LIMIT_KIB);
 
         if !["system", "light", "dark"].contains(&self.theme.as_str()) {
             self.theme = "system".into();
@@ -236,6 +250,24 @@ mod tests {
         assert_eq!(Settings::default().audio_selection, AudioSelection::PreferMatching);
         let round: Settings = serde_json::from_str(&serde_json::to_string(&Settings { audio_selection: AudioSelection::PreferMatching, ..s }).unwrap()).unwrap();
         assert_eq!(round.audio_selection, AudioSelection::PreferMatching);
+    }
+
+    #[test]
+    fn settings_saved_before_processing_slots_load_with_the_default() {
+        let old = r#"{"schemaVersion":2,"outputDir":"D:/Downloads","filenameTemplate":"%(title)s.%(ext)s","maxConcurrent":5}"#;
+        let mut s: Settings = serde_json::from_str(old).unwrap();
+        assert!(s.repair().is_none());
+        assert_eq!((s.schema_version, s.max_concurrent, s.max_processing), (SETTINGS_SCHEMA, 5, 2));
+        assert_eq!(s.speed_limit_kib, 0, "no limit unless one was chosen");
+        s.speed_limit_kib = u32::MAX;
+        s.validate().unwrap();
+        assert_eq!(s.speed_limit_kib, MAX_SPEED_LIMIT_KIB);
+        s.max_processing = 0;
+        s.validate().unwrap();
+        assert_eq!(s.max_processing, 1);
+        s.max_processing = 200;
+        s.validate().unwrap();
+        assert_eq!(s.max_processing, 8);
     }
 
     #[test]

@@ -1,0 +1,278 @@
+[
+  {
+    "reducedMotion": false,
+    "sizes": [
+      {
+        "queueRows": 6,
+        "navigation": {
+          "toLibrary": {
+            "scriptMs": 15.6,
+            "layoutMs": 3,
+            "styleMs": 17.4,
+            "longTasks": 0,
+            "longestTaskMs": 0,
+            "frames": 51,
+            "maxFrameMs": 35,
+            "slowFrames": 2,
+            "transitionPartsMoving": {
+              "::view-transition-group(page)": 1,
+              "::view-transition-new(page)": 1,
+              "::view-transition-old(page)": 1
+            }
+          },
+          "toQueue": {
+            "scriptMs": 3.1,
+            "layoutMs": 1.3,
+            "styleMs": 23.3,
+            "longTasks": 0,
+            "longestTaskMs": 0,
+            "frames": 68,
+            "maxFrameMs": 15,
+            "slowFrames": 0,
+            "transitionPartsMoving": {
+              "::view-transition-group(page)": 1,
+              "::view-transition-new(page)": 1,
+              "::view-transition-old(page)": 1
+            }
+          }
+        },
+        "sidebar": {
+          "close": {
+            "scriptMs": 1.3,
+            "layoutMs": 13.1,
+            "styleMs": 17.6,
+            "longTasks": 0,
+            "longestTaskMs": 0,
+            "frames": 61,
+            "maxFrameMs": 14,
+            "slowFrames": 0
+          },
+          "open": {
+            "scriptMs": 0.9,
+            "layoutMs": 13,
+            "styleMs": 16,
+            "longTasks": 0,
+            "longestTaskMs": 0,
+            "frames": 61,
+            "maxFrameMs": 14,
+            "slowFrames": 0
+          }
+        }
+      },
+      {
+        "queueRows": 506,
+        "navigation": {
+          "toLibrary": {
+            "scriptMs": 25.6,
+            "layoutMs": 2.4,
+            "styleMs": 48.4,
+            "longTasks": 1,
+            "longestTaskMs": 92,
+            "frames": 44,
+            "maxFrameMs": 97,
+            "slowFrames": 2,
+            "transitionPartsMoving": {
+              "::view-transition-group(page)": 1,
+              "::view-transition-new(page)": 1,
+              "::view-transition-old(page)": 1
+            }
+          },
+          "toQueue": {
+            "scriptMs": 55.6,
+            "layoutMs": 29,
+            "styleMs": 89.5,
+            "longTasks": 1,
+            "longestTaskMs": 59,
+            "frames": 51,
+            "maxFrameMs": 49,
+            "slowFrames": 9,
+            "transitionPartsMoving": {
+              "::view-transition-group(page)": 1,
+              "::view-transition-new(page)": 1,
+              "::view-transition-old(page)": 1
+            }
+          }
+        },
+        "sidebar": {
+          "close": {
+            "scriptMs": 0.9,
+            "layoutMs": 16,
+            "styleMs": 16.7,
+            "longTasks": 1,
+            "longestTaskMs": 64,
+            "frames": 52,
+            "maxFrameMs": 58,
+            "slowFrames": 1
+          },
+          "open": {
+            "scriptMs": 6.8,
+            "layoutMs": 20.8,
+            "styleMs": 17.2,
+            "longTasks": 0,
+            "longestTaskMs": 0,
+            "frames": 56,
+            "maxFrameMs": 43,
+            "slowFrames": 1
+          }
+        }
+      }
+    ],
+    "libraryFilter": {
+      "tiles": 3,
+      "mostTilesMoving": 3,
+      "scriptMs": 1.3,
+      "layoutMs": 0.5,
+      "styleMs": 16.6,
+      "longTasks": 0,
+      "frames": 54,
+      "maxFrameMs": 14,
+      "slowFrames": 0
+    },
+    "lookup": {
+      "whileReading": ".preview-skeleton",
+      "readingBox": {
+        "top": 177,
+        "height": 185,
+        "width": 828
+      },
+      "detailsBox": {
+        "top": 177,
+        "height": 185,
+        "width": 828
+      },
+      "topShiftPx": 0,
+      "heightChangePx": 0
+    },
+    "pageErrors": []
+  },
+  {
+    "reducedMotion": true,
+    "sizes": [
+      {
+        "queueRows": 6,
+        "navigation": {
+          "toLibrary": {
+            "scriptMs": 3.1,
+            "layoutMs": 1,
+            "styleMs": 3.3,
+            "longTasks": 0,
+            "longestTaskMs": 0,
+            "frames": 55,
+            "maxFrameMs": 14,
+            "slowFrames": 0,
+            "transitionPartsMoving": {}
+          },
+          "toQueue": {
+            "scriptMs": 2,
+            "layoutMs": 1.3,
+            "styleMs": 1.1,
+            "longTasks": 0,
+            "longestTaskMs": 0,
+            "frames": 68,
+            "maxFrameMs": 15,
+            "slowFrames": 0,
+            "transitionPartsMoving": {}
+          }
+        },
+        "sidebar": {
+          "close": {
+            "scriptMs": 0.6,
+            "layoutMs": 0.4,
+            "styleMs": 1.2,
+            "longTasks": 0,
+            "longestTaskMs": 0,
+            "frames": 62,
+            "maxFrameMs": 26,
+            "slowFrames": 1
+          },
+          "open": {
+            "scriptMs": 0.4,
+            "layoutMs": 0.5,
+            "styleMs": 1.1,
+            "longTasks": 0,
+            "longestTaskMs": 0,
+            "frames": 61,
+            "maxFrameMs": 14,
+            "slowFrames": 0
+          }
+        }
+      },
+      {
+        "queueRows": 506,
+        "navigation": {
+          "toLibrary": {
+            "scriptMs": 8.9,
+            "layoutMs": 1.2,
+            "styleMs": 1.5,
+            "longTasks": 0,
+            "longestTaskMs": 0,
+            "frames": 55,
+            "maxFrameMs": 14,
+            "slowFrames": 0,
+            "transitionPartsMoving": {}
+          },
+          "toQueue": {
+            "scriptMs": 46.5,
+            "layoutMs": 24.4,
+            "styleMs": 39.8,
+            "longTasks": 0,
+            "longestTaskMs": 0,
+            "frames": 66,
+            "maxFrameMs": 30,
+            "slowFrames": 1,
+            "transitionPartsMoving": {}
+          }
+        },
+        "sidebar": {
+          "close": {
+            "scriptMs": 0.6,
+            "layoutMs": 6.7,
+            "styleMs": 1.6,
+            "longTasks": 0,
+            "longestTaskMs": 0,
+            "frames": 62,
+            "maxFrameMs": 26,
+            "slowFrames": 2
+          },
+          "open": {
+            "scriptMs": 0.5,
+            "layoutMs": 7.1,
+            "styleMs": 2.7,
+            "longTasks": 0,
+            "longestTaskMs": 0,
+            "frames": 61,
+            "maxFrameMs": 26,
+            "slowFrames": 1
+          }
+        }
+      }
+    ],
+    "libraryFilter": {
+      "tiles": 3,
+      "mostTilesMoving": 0,
+      "scriptMs": 0.9,
+      "layoutMs": 0.5,
+      "styleMs": 0.4,
+      "longTasks": 0,
+      "frames": 53,
+      "maxFrameMs": 26,
+      "slowFrames": 1
+    },
+    "lookup": {
+      "whileReading": ".preview-skeleton",
+      "readingBox": {
+        "top": 177,
+        "height": 185,
+        "width": 828
+      },
+      "detailsBox": {
+        "top": 177,
+        "height": 185,
+        "width": 828
+      },
+      "topShiftPx": 0,
+      "heightChangePx": 0
+    },
+    "pageErrors": []
+  }
+]

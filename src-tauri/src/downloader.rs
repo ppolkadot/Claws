@@ -13,7 +13,7 @@ use tokio::io::BufReader;
 use crate::bounded_io;
 use crate::disk_budget;
 use crate::download_files::{self, Publication, WorkspaceRef};
-use crate::download_policy::{self, FailureKind, JobExecution, Source, VideoPreset};
+use crate::download_policy::{self, FailureKind, JobExecution, Source, SponsorBlock, VideoPreset, SPONSORBLOCK_CATEGORIES};
 use crate::error::{notify, AppError, Result};
 use crate::history;
 use crate::queue_writer::{QueueSnapshot, QUEUE_SCHEMA};
@@ -74,6 +74,11 @@ pub struct DownloadOptions {
     pub fast_save: bool,
     /// What a transcript is saved as. Ignored (and kept at the default) for video and audio.
     pub transcript_format: TranscriptFormat,
+    /// YouTube only.
+    pub sponsorblock: SponsorBlock,
+    /// Sorted `SPONSORBLOCK_CATEGORIES`; empty when off.
+    pub sponsorblock_categories: Vec<String>,
+    pub playlist_folder: bool,
 }
 
 impl Default for DownloadOptions {
@@ -88,6 +93,9 @@ impl Default for DownloadOptions {
             embed_subs: false,
             fast_save: false,
             transcript_format: TranscriptFormat::Txt,
+            sponsorblock: SponsorBlock::Off,
+            sponsorblock_categories: Vec::new(),
+            playlist_folder: false,
         }
     }
 }
@@ -139,9 +147,27 @@ impl DownloadOptions {
             self.audio_format = "mp3".into();
             self.embed_subs = false;
             self.fast_save = false;
+            self.sponsorblock = SponsorBlock::Off;
+            self.sponsorblock_categories.clear();
+            self.playlist_folder = false;
             return Ok(());
         }
         self.transcript_format = TranscriptFormat::Txt;
+        // Fast Save skips SponsorBlock (a whole-file pass), so the two never queue as
+        // different downloads: off has one shape.
+        if self.fast_save || self.sponsorblock == SponsorBlock::Off {
+            self.sponsorblock = SponsorBlock::Off;
+            self.sponsorblock_categories.clear();
+        } else {
+            if self.sponsorblock_categories.iter().any(|c| !SPONSORBLOCK_CATEGORIES.contains(&c.as_str())) {
+                return Err(AppError::msg("Unknown SponsorBlock category."));
+            }
+            self.sponsorblock_categories.sort();
+            self.sponsorblock_categories.dedup();
+            if self.sponsorblock_categories.is_empty() {
+                return Err(AppError::msg("Choose at least one kind of segment for SponsorBlock."));
+            }
+        }
         // Every entry is judged before the count, and nothing is dropped: a request that
         // asks for more than the limit is refused, never quietly shortened.
         if !self.subtitle_langs.iter().all(valid_lang) {
@@ -216,6 +242,15 @@ pub struct Job {
     /// new work folder, so the cancelled attempt's cleanup can never reach its files.
     #[serde(default)]
     pub attempt: u32,
+    /// Highest value starts first; zero if never moved to top.
+    #[serde(default)]
+    pub priority: i64,
+    /// Shown only while processing; never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// Set at first start; see `download_policy::playlist_prefix`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_prefix: Option<String>,
 }
 
 pub const EVENT_SCHEMA: u16 = 1;
@@ -275,6 +310,16 @@ pub struct EnqueueItem {
     pub thumbnail: Option<String>,
     pub uploader: Option<String>,
     pub duration: Option<f64>,
+    #[serde(default)]
+    pub playlist: Option<PlaylistPlace>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistPlace {
+    pub title: String,
+    pub position: u32,
+    pub count: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -320,6 +365,8 @@ pub fn queue_snapshot(state: &AppState) -> QueueSnapshot {
         .iter()
         .filter(|j| j.status != JobStatus::Completed && j.status != JobStatus::Cancelled)
         .cloned()
+        // The processing stage describes a running process, which a restart does not have.
+        .map(|j| Job { stage: None, ..j })
         .collect();
     QueueSnapshot { schema_version: QUEUE_SCHEMA, revision, jobs }
 }
@@ -580,6 +627,13 @@ pub fn enqueue(app: &AppHandle, items: Vec<EnqueueItem>, mut options: DownloadOp
             cancel_requested: false,
             revision: 0,
             attempt: 0,
+            priority: 0,
+            stage: None,
+            name_prefix: item
+                .playlist
+                .as_ref()
+                .filter(|_| options.playlist_folder)
+                .map(|place| download_policy::playlist_prefix(&place.title, place.position.max(1), place.count)),
         });
     }
     if created.is_empty() {
@@ -619,9 +673,20 @@ impl Drop for WorkerSlot {
     }
 }
 
+/// Transfer slots in use. Jobs processing beyond `processing_limit` also hold one, since a
+/// started merge cannot be made to wait; this bounds running processes to the two limits combined.
+fn occupied_slots(jobs: &[Job], processing_limit: usize) -> usize {
+    let transferring = jobs.iter().filter(|j| j.status == JobStatus::Downloading).count();
+    let processing = jobs.iter().filter(|j| j.status == JobStatus::Processing).count();
+    transferring + processing.saturating_sub(processing_limit)
+}
+
 pub fn pump(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let limit = state.settings.lock().unwrap().max_concurrent.max(1) as usize;
+    let (limit, processing_limit) = {
+        let settings = state.settings.lock().unwrap();
+        (settings.max_concurrent.max(1) as usize, settings.max_processing.max(1) as usize)
+    };
     loop {
         // Exiting workers call pump too; none of them may start another download.
         if state.shutting_down.load(Ordering::SeqCst) {
@@ -629,18 +694,21 @@ pub fn pump(app: &AppHandle) {
         }
         let claimed = {
             let mut jobs = state.jobs.lock().unwrap();
-            let active = jobs.iter().filter(|j| j.status.is_active()).count();
-            if active >= limit {
+            if occupied_slots(&jobs, processing_limit) >= limit {
                 None
             } else {
                 let mut live = state.live_jobs.lock().unwrap();
                 // A job whose earlier worker is still alive waits for it to exit; that
                 // worker pumps again on its way out.
+                // The job moved to the top most recently goes first; otherwise list order.
+                // (`min_by_key` keeps the first of equals, which `max_by_key` would not.)
                 jobs.iter_mut()
-                    .find(|j| j.status == JobStatus::Queued && !live.contains(&j.id))
+                    .filter(|j| j.status == JobStatus::Queued && !live.contains(&j.id))
+                    .min_by_key(|j| std::cmp::Reverse(j.priority))
                     .map(|job| {
                         job.status = JobStatus::Downloading;
                         job.error = None;
+                        job.stage = None;
                         job.revision = next_revision(&state);
                         live.insert(job.id.clone());
                         job.clone()
@@ -709,27 +777,85 @@ pub fn pause(app: &AppHandle, id: &str) {
 }
 
 pub fn resume(app: &AppHandle, id: &str) {
-    let state = app.state::<AppState>();
-    {
-        let running = state.running.lock().unwrap();
-        // A job whose process is still winding down is settled by `finish` first.
-        if !running.contains_key(id) {
-            update_job(app, id, |j| match j.status {
-                JobStatus::Paused | JobStatus::Failed => {
-                    j.status = JobStatus::Queued;
-                    j.error = None;
-                }
-                JobStatus::Cancelled => {
-                    start_new_attempt(j);
-                    j.status = JobStatus::Queued;
-                }
-                _ => {}
-            });
-        }
-    }
+    requeue(app, id);
     // The reset is saved by the start's own barrier before anything is written.
     persist_queue(app);
     pump(app);
+}
+
+/// The caller saves and pumps.
+fn requeue(app: &AppHandle, id: &str) {
+    let state = app.state::<AppState>();
+    let running = state.running.lock().unwrap();
+    // A job whose process is still winding down is settled by `finish` first.
+    if !running.contains_key(id) {
+        update_job(app, id, |j| match j.status {
+            JobStatus::Paused | JobStatus::Failed => {
+                j.status = JobStatus::Queued;
+                j.error = None;
+            }
+            JobStatus::Cancelled => {
+                start_new_attempt(j);
+                j.status = JobStatus::Queued;
+            }
+            _ => {}
+        });
+    }
+}
+
+fn ids_with(app: &AppHandle, statuses: &[JobStatus]) -> Vec<String> {
+    let state = app.state::<AppState>();
+    let jobs = state.jobs.lock().unwrap();
+    jobs.iter().filter(|j| statuses.contains(&j.status)).map(|j| j.id.clone()).collect()
+}
+
+/// Goes through `pause`, so a job that finishes meanwhile still completes.
+pub fn pause_all(app: &AppHandle) -> usize {
+    let ids = ids_with(app, &[JobStatus::Queued, JobStatus::Downloading, JobStatus::Processing]);
+    for id in &ids {
+        pause(app, id);
+    }
+    ids.len()
+}
+
+pub fn resume_all(app: &AppHandle) -> usize {
+    requeue_all(app, &[JobStatus::Paused])
+}
+
+pub fn retry_failed(app: &AppHandle) -> usize {
+    requeue_all(app, &[JobStatus::Failed])
+}
+
+fn requeue_all(app: &AppHandle, statuses: &[JobStatus]) -> usize {
+    let ids = ids_with(app, statuses);
+    for id in &ids {
+        requeue(app, id);
+    }
+    if !ids.is_empty() {
+        persist_queue(app);
+        pump(app);
+    }
+    ids.len()
+}
+
+/// Only a waiting (queued or paused) job is moved; the order is saved.
+pub fn prioritize(app: &AppHandle, id: &str) {
+    let state = app.state::<AppState>();
+    let moved = {
+        let mut jobs = state.jobs.lock().unwrap();
+        let top = jobs.iter().map(|j| j.priority).max().unwrap_or(0);
+        jobs.iter_mut()
+            .find(|j| j.id == id && matches!(j.status, JobStatus::Queued | JobStatus::Paused) && (j.priority < top || top == 0))
+            .map(|job| {
+                job.priority = top + 1;
+                job.revision = next_revision(&state);
+                job.clone()
+            })
+    };
+    if let Some(job) = moved {
+        emit_job(app, &job);
+        persist_queue(app);
+    }
 }
 
 /// Trying a cancelled job again: its files went (or are going) with the cancel, so it
@@ -1082,7 +1208,24 @@ fn build_args(
         (None, Some(index)) => Source::PlaylistItem { url: &job.url, index },
         (None, None) => Source::Url(&job.url),
     };
-    download_policy::download_args(tools::common_args(app, settings), &job.options, execution, workspace, source)
+    let mut common = tools::common_args(app, settings);
+    let limit = speed_limit_args(settings);
+    if limit.is_empty() {
+        return download_policy::download_args(common, &job.options, execution, workspace, source);
+    }
+    // yt-dlp applies the limit per fragment connection, so eight fragments would run at up to
+    // eight times the chosen speed; a limited start fetches one fragment at a time.
+    common.extend(limit);
+    let limited = JobExecution { fragment_concurrency: 1, ..execution.clone() };
+    download_policy::download_args(common, &job.options, &limited, workspace, source)
+}
+
+/// Only downloads get it: link lookups and size previews move no media.
+fn speed_limit_args(settings: &Settings) -> Vec<String> {
+    match settings.speed_limit_kib {
+        0 => Vec::new(),
+        kib => vec!["--limit-rate".into(), format!("{kib}K")],
+    }
 }
 
 struct Outcome {
@@ -1250,7 +1393,7 @@ async fn run_prepared(
     if job.options.mode == "transcript" {
         // Only captions are fetched: there are no media bytes to count, so the job shows
         // as processing (an indeterminate bar), never as a made-up download percentage.
-        mark_processing(app, id);
+        mark_processing(app, id, None);
     }
 
     // yt-dlp prints download progress on stdout but post-processing progress and its
@@ -1565,20 +1708,45 @@ fn starts_final_processing(rest: &str) -> bool {
     !PRE_DOWNLOAD_PROCESSORS.contains(&name)
 }
 
+/// Queue-row wording for a postprocessor; unknown ones give nothing.
+fn stage_label(postprocessor: &str) -> Option<&'static str> {
+    Some(match postprocessor {
+        "Merger" => "Merging video and audio",
+        "FFmpegExtractAudio" => "Converting audio",
+        "FFmpegVideoConvertor" => "Converting video",
+        "FFmpegVideoRemuxer" => "Changing the container",
+        "FFmpegMetadata" => "Writing metadata",
+        "EmbedThumbnail" => "Embedding cover art",
+        "FFmpegEmbedSubtitle" => "Embedding subtitles",
+        "ModifyChapters" => "Applying SponsorBlock",
+        "MoveFiles" => "Moving the file",
+        name if name.starts_with("FFmpegFixup") => "Fixing the file",
+        _ => return None,
+    })
+}
+
 fn postprocessor_started(app: &AppHandle, id: &str, rest: &str) {
     if starts_final_processing(rest) {
-        mark_processing(app, id);
+        let name = rest.split('|').nth(1).unwrap_or_default().trim();
+        mark_processing(app, id, stage_label(name));
     }
 }
 
-fn mark_processing(app: &AppHandle, id: &str) {
+fn mark_processing(app: &AppHandle, id: &str, stage: Option<&'static str>) {
+    let mut left_transfer = false;
     update_job(app, id, |j| {
         if j.status.is_active() {
+            left_transfer = j.status == JobStatus::Downloading;
             j.status = JobStatus::Processing;
+            j.stage = stage.map(str::to_string);
         }
         j.speed = None;
         j.eta = None;
     });
+    // The transfer slot is free while the file is processed: a queued job may start.
+    if left_transfer {
+        pump(app);
+    }
 }
 
 fn handle_line(
@@ -1641,10 +1809,14 @@ async fn prepare(
     settings: &Settings,
 ) -> std::result::Result<(JobExecution, WorkspaceRef, download_files::Manifest), String> {
     let first_start = job.execution.is_none();
-    let execution = job
-        .execution
-        .clone()
-        .unwrap_or_else(|| JobExecution::freeze(settings, job.options.fast_save));
+    let execution = job.execution.clone().unwrap_or_else(|| {
+        let mut frozen = JobExecution::freeze(settings, job.options.fast_save);
+        // Applied at first start only; retries reuse the frozen template so the folder never moves.
+        if let Some(prefix) = &job.name_prefix {
+            frozen.filename_template = format!("{prefix}{}", frozen.filename_template);
+        }
+        frozen
+    });
     let output = execution.output_dir.clone();
     let id = job.id.clone();
     let attempt = job.attempt;
@@ -1868,6 +2040,14 @@ async fn run_job(app: AppHandle, id: String) {
 /// Final status for a job whose process exited. Success always wins, so a pause or
 /// cancel that arrived as it completed cannot hide a finished file.
 fn settle(app: &AppHandle, id: &str, intent: Intent, outcome: &Outcome) -> Option<Job> {
+    let settled = settle_status(app, id, intent, outcome);
+    if let Some(job) = find_job(app, id) {
+        crate::desktop::notify_finished(app, &job);
+    }
+    settled
+}
+
+fn settle_status(app: &AppHandle, id: &str, intent: Intent, outcome: &Outcome) -> Option<Job> {
     if outcome.success {
         return update_job(app, id, |j| {
             j.status = JobStatus::Completed;
@@ -2281,6 +2461,83 @@ mod tests {
         assert_eq!(again.options.mode, "transcript");
         assert_eq!(again.options.transcript_format, TranscriptFormat::TxtTimestamps);
         assert_eq!(options_key(&again.options), options_key(&job.options));
+    }
+
+    #[test]
+    fn a_speed_limit_is_passed_only_when_one_is_set() {
+        let mut settings = Settings::default();
+        assert!(speed_limit_args(&settings).is_empty(), "no limit is the default");
+        settings.speed_limit_kib = 2048;
+        assert_eq!(speed_limit_args(&settings), ["--limit-rate", "2048K"]);
+    }
+
+    #[test]
+    fn a_limited_start_fetches_one_fragment_at_a_time_and_leaves_the_frozen_choice() {
+        let Some(t) = crate::lifecycle_tests::TestApp::new("limit-args") else { return };
+        let id = t.enqueue("https://fixture.invalid/hang/limited");
+        let job = t.wait_job(&id, |j| j.status == JobStatus::Downloading && j.execution.is_some(), "the download to start");
+        let execution = job.execution.clone().unwrap();
+        let workspace = job.workspace.clone().unwrap().path;
+        let value_after = |args: &[String], flag: &str| args.iter().position(|a| a == flag).map(|i| args[i + 1].clone());
+
+        let mut settings = t.state().settings.lock().unwrap().clone();
+        let open = build_args(t.handle(), &job, &settings, &execution, &workspace, None);
+        assert_eq!(value_after(&open, "--limit-rate"), None);
+        assert_eq!(value_after(&open, "--concurrent-fragments").as_deref(), Some("8"));
+
+        settings.speed_limit_kib = 1024;
+        let limited = build_args(t.handle(), &job, &settings, &execution, &workspace, None);
+        assert_eq!(value_after(&limited, "--limit-rate").as_deref(), Some("1024K"));
+        assert_eq!(value_after(&limited, "--concurrent-fragments").as_deref(), Some("1"));
+        assert_eq!(limited.last(), open.last(), "the link stays the last argument");
+        assert_eq!(execution.fragment_concurrency, 8, "the frozen choice is not rewritten");
+    }
+
+    #[test]
+    fn sponsorblock_choices_are_checked_sorted_and_cleared_when_they_cannot_apply() {
+        let with = |mode: SponsorBlock, categories: &[&str]| DownloadOptions {
+            sponsorblock: mode,
+            sponsorblock_categories: categories.iter().map(|c| c.to_string()).collect(),
+            ..DownloadOptions::default()
+        };
+        let mut chosen = with(SponsorBlock::Remove, &["sponsor", "intro", "sponsor"]);
+        chosen.validate().unwrap();
+        assert_eq!(chosen.sponsorblock_categories, ["intro", "sponsor"], "sorted and without repeats: one duplicate key");
+
+        assert!(with(SponsorBlock::Mark, &[]).validate().is_err(), "on with nothing chosen is refused, not guessed");
+        assert!(with(SponsorBlock::Mark, &["sponsor", "--exec"]).validate().is_err(), "only the listed categories reach the command line");
+
+        let mut off = with(SponsorBlock::Off, &["sponsor"]);
+        off.validate().unwrap();
+        assert!(off.sponsorblock_categories.is_empty());
+        let mut fast = DownloadOptions { fast_save: true, ..with(SponsorBlock::Remove, &["sponsor"]) };
+        fast.validate().unwrap();
+        assert_eq!((fast.sponsorblock, fast.sponsorblock_categories.len()), (SponsorBlock::Off, 0), "Fast Save skips it");
+        let mut text = DownloadOptions { mode: "transcript".into(), subtitle_langs: vec!["en".into()], playlist_folder: true, ..with(SponsorBlock::Remove, &["sponsor"]) };
+        text.validate().unwrap();
+        assert_eq!((text.sponsorblock, text.playlist_folder), (SponsorBlock::Off, false));
+
+        // Options saved before these fields existed read as off.
+        let old: DownloadOptions = serde_json::from_str(r#"{"mode":"video","audioFormat":"mp3"}"#).unwrap();
+        assert_eq!((old.sponsorblock, old.sponsorblock_categories.len(), old.playlist_folder), (SponsorBlock::Off, 0, false));
+    }
+
+    #[test]
+    fn known_postprocessors_have_a_stage_label_and_unknown_ones_do_not() {
+        assert_eq!(stage_label("Merger"), Some("Merging video and audio"));
+        assert_eq!(stage_label("FFmpegExtractAudio"), Some("Converting audio"));
+        assert_eq!(stage_label("FFmpegFixupM3u8"), Some("Fixing the file"));
+        assert_eq!(stage_label("SomethingNew"), None);
+    }
+
+    #[test]
+    fn a_queue_saved_before_priorities_loads_and_the_stage_is_never_saved() {
+        let old = r#"{"id":"a","url":"https://example.com/v","title":"t","thumbnail":null,"uploader":null,"duration":null,"options":{},"status":"queued","progress":0,"speed":null,"eta":null,"filePath":null,"error":null,"createdAt":1}"#;
+        let mut job: Job = serde_json::from_str(old).unwrap();
+        assert_eq!((job.priority, job.stage.clone()), (0, None));
+        assert!(!serde_json::to_string(&job).unwrap().contains("stage"), "an empty stage is not written");
+        job.stage = Some("Merging video and audio".into());
+        assert!(serde_json::to_string(&job).unwrap().contains("\"stage\""), "the interface is sent the stage");
     }
 
     #[test]

@@ -8,12 +8,18 @@ src-tauri/gen/
 .test-build/
 __pycache__/
 
+# ---- Installers -------------------------------------------------------------------
+# New installers, checksums and build records are attached to the GitHub Release, not
+# committed. The files already tracked here are historical records and stay as they are.
+installers/*
+
 # ---- Fonts ------------------------------------------------------------------------
 # Keep optional local font checkouts out of version control. Polaris sources and
 # the bundled web fonts in src/assets/fonts/ (plus public/fonts/LICENSE.txt) are project assets.
 assets/fonts/*
 !assets/fonts/polaris/
 Salted-Flutters-Polaris/
+SaltedFluttersPolaris/
 
 # ---- Design tooling ---------------------------------------------------------------
 # Impeccable's machine-generated sidecar, hook cache and review captures.

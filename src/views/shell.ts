@@ -1,3 +1,4 @@
+import type { ToolName } from "../setup";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { api } from "../api";
@@ -5,7 +6,7 @@ import { store, type Route } from "../store";
 import { h, clear } from "../ui/dom";
 import { icon, type IconName } from "../ui/icons";
 import { progressBar, setProgress } from "../ui/layout";
-import { canAnimate, pop } from "../ui/motion";
+import { canAnimate, glideFrom, pop } from "../ui/motion";
 
 export interface ViewContext {
   setActions(nodes: Node[]): void;
@@ -111,7 +112,12 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
   root.append(chrome, app);
 
   function setSidebar(open: boolean, persist = true) {
+    // First and last positions: the column changes at once (one layout, however long the
+    // list), and what moved glides from where it was, by transform only.
+    const gliding = persist && canAnimate() ? [scroller, toolbarTitle] : [];
+    const before = gliding.map((el) => (el === scroller ? page : el).getBoundingClientRect().left);
     app.dataset.sidebar = open ? "open" : "closed";
+    gliding.forEach((el, i) => glideFrom(el, before[i] - (el === scroller ? page : el).getBoundingClientRect().left, 0));
     // Hidden content must not be reachable by keyboard while it is off screen.
     sidebar.toggleAttribute("inert", !open);
     const label = `${open ? "Hide" : "Show"} Sidebar (Ctrl+Alt+S)`;
@@ -195,16 +201,16 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
   store.on("jobStatus", paintBadge);
   paintBadge();
 
-  let lastTool: "ytdlp" | "ffmpeg" | null = null;
+  let lastTool: ToolName | null = null;
   const paintTools = () => {
-    const busy = store.toolBusy.ytdlp || store.toolBusy.ffmpeg;
-    const tool = store.toolBusy.ytdlp ? "ytdlp" : "ffmpeg";
+    const busy = store.toolBusy.ytdlp || store.toolBusy.ffmpeg || store.toolBusy.deno;
+    const tool: ToolName = store.toolBusy.ytdlp ? "ytdlp" : store.toolBusy.ffmpeg ? "ffmpeg" : "deno";
     const progress = store.toolProgress[tool];
     toolChip.classList.toggle("busy", Boolean(busy));
     toolDot.dataset.state = !store.toolsKnown ? "" : store.toolError.ytdlp ? "error" : store.tools.ytdlp ? "ok" : "missing";
     if (busy) {
       const pct = progress && progress.total > 0 ? progress.received / progress.total : null;
-      const name = tool === "ytdlp" ? "yt-dlp" : "ffmpeg";
+      const name = tool === "ytdlp" ? "yt-dlp" : tool === "ffmpeg" ? "ffmpeg" : "Deno";
       toolText.textContent =
         progress?.stage === "extract"
           ? `Unpacking ${name}…`

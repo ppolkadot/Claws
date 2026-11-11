@@ -38,7 +38,7 @@ test("the hint names the cover-art tradeoff and what stays", () => {
 
 test("the hint lists every skipped pass, and nothing when there is none", () => {
   const all = fastSaveHint(choices({ mode: "video", audioFormat: "mp3", metadata: true, embeddedSubs: true, fastSave: true }));
-  assert.match(all, /writing title, uploader and date into the file and embedding subtitles/);
+  assert.match(all, /writing title, uploader, date and chapters into the file and embedding subtitles/);
   assert.equal(all.includes("cover art"), false, "video downloads have no cover art pass");
   const three = skippedByFastSave(choices({ metadata: true, embeddedSubs: true }));
   assert.equal(three.length, 3);
@@ -47,4 +47,12 @@ test("the hint lists every skipped pass, and nothing when there is none", () => 
     assert.match(fastSaveHint(choices({ audioFormat: format })), /^Nothing optional to skip/, format);
   }
   assert.match(fastSaveHint(choices({ mode: "video" })), /^Nothing optional to skip/);
+});
+
+test("Fast Save names SponsorBlock among what it skips, only when it was chosen", () => {
+  const base = { mode: "video", audioFormat: "mp3", metadata: false, embeddedSubs: false, fastSave: true };
+  assert.deepEqual(skippedByFastSave({ ...base, sponsorBlock: true }), ["SponsorBlock (nothing is marked or removed)"]);
+  assert.deepEqual(skippedByFastSave({ ...base, sponsorBlock: false }), []);
+  assert.deepEqual(skippedByFastSave(base), []);
+  assert.match(fastSaveHint({ ...base, sponsorBlock: true }), /^Skips SponsorBlock/);
 });

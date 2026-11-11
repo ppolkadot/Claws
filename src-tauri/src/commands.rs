@@ -120,6 +120,26 @@ pub fn cancel_job(app: AppHandle, id: String) {
 }
 
 #[tauri::command]
+pub fn pause_all(app: AppHandle) -> usize {
+    downloader::pause_all(&app)
+}
+
+#[tauri::command]
+pub fn resume_all(app: AppHandle) -> usize {
+    downloader::resume_all(&app)
+}
+
+#[tauri::command]
+pub fn retry_failed(app: AppHandle) -> usize {
+    downloader::retry_failed(&app)
+}
+
+#[tauri::command]
+pub fn prioritize_job(app: AppHandle, id: String) {
+    downloader::prioritize(&app, &id);
+}
+
+#[tauri::command]
 pub fn remove_job(app: AppHandle, id: String) -> Result<()> {
     downloader::remove(&app, &id)
 }
@@ -300,6 +320,12 @@ pub async fn update_ytdlp(app: AppHandle) -> Result<ToolsStatus> {
 #[tauri::command]
 pub async fn install_ffmpeg(app: AppHandle) -> Result<ToolsStatus> {
     tools::install_ffmpeg(&app).await?;
+    Ok(tools::status(&app).await)
+}
+
+#[tauri::command]
+pub async fn install_deno(app: AppHandle) -> Result<ToolsStatus> {
+    tools::install_deno(&app).await?;
     Ok(tools::status(&app).await)
 }
 

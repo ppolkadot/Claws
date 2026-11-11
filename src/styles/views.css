@@ -232,6 +232,61 @@
   margin-top: 8px;
 }
 
+.setup-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 16px;
+}
+.setup-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.setup-step {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: 10px;
+}
+.setup-step .tool-dot {
+  margin-top: 6px;
+}
+.setup-step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.setup-step-text strong {
+  font-weight: 600;
+}
+.setup-step-text span,
+.setup-step-state {
+  color: var(--text-2);
+  font-size: 12px;
+}
+.setup-step[data-state="error"] .setup-step-text span {
+  color: var(--red-text);
+}
+.setup-step-text .bar {
+  max-width: 320px;
+  margin-top: 6px;
+}
+.setup-step-state {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.setup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .notice {
   display: flex;
   align-items: center;
@@ -315,6 +370,53 @@
 }
 .preview-note[data-tone="warn"] {
   color: var(--orange-text);
+}
+
+/* While a link is read: the preview card's own box, so nothing moves when the details
+   arrive. The sheen is transform and opacity only. */
+.preview-skeleton .preview-thumb,
+.skeleton-line {
+  position: relative;
+  overflow: hidden;
+  background: var(--fill);
+  box-shadow: none;
+}
+.preview-skeleton .preview-info {
+  flex: 1;
+  gap: 12px;
+}
+.skeleton-line {
+  height: 14px;
+  border-radius: 7px;
+}
+.skeleton-line:first-child {
+  width: 72%;
+  height: 22px;
+  border-radius: 9px;
+}
+.skeleton-line:last-child {
+  width: 38%;
+}
+.preview-skeleton .preview-thumb::after,
+.skeleton-line::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--fill-2), transparent);
+  transform: translateX(-100%);
+  animation: skeleton-sheen 1.4s ease-in-out infinite;
+}
+@keyframes skeleton-sheen {
+  to {
+    transform: translateX(100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .preview-skeleton .preview-thumb::after,
+  .skeleton-line::after {
+    animation: none;
+    opacity: 0;
+  }
 }
 
 .actions {
@@ -583,11 +685,54 @@
   color: var(--accent-text);
 }
 
+.row-note {
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+.queue-summary {
+  margin: 0 2px 10px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
 .jobs {
   margin: 0;
   padding: 0;
   overflow: hidden;
   list-style: none;
+}
+.job-error {
+  margin-top: 4px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.job-error summary {
+  width: fit-content;
+  cursor: pointer;
+  border-radius: 5px;
+}
+.job-error-text {
+  max-height: 180px;
+  margin: 6px 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--fill);
+  color: var(--text);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.library-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.tile-art {
+  cursor: pointer;
 }
 .job {
   position: relative;

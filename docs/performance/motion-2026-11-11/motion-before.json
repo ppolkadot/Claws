@@ -1,0 +1,2535 @@
+[
+  {
+    "reducedMotion": false,
+    "settleIn": {
+      "scriptMs": 1,
+      "layoutMs": 3.9,
+      "styleMs": 10.9,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 53,
+      "maxFrameMs": 18,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 9,
+      "runningAfterTrigger": 2,
+      "focusAfter": "url-input",
+      "rapid": {
+        "results": 2,
+        "stageAnimationsLeft": 0,
+        "field": "https://example.com/watch?v=rapid14"
+      }
+    },
+    "segmented": {
+      "scriptMs": 1.2,
+      "layoutMs": 1,
+      "styleMs": 10.5,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 46,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 1,
+      "runningAfterTrigger": 4,
+      "focus": {
+        "onSegment": true,
+        "checked": "Audio Only"
+      },
+      "rapid": {
+        "indexMatchesThumb": true,
+        "focusOnChecked": true
+      }
+    },
+    "queueIdle": {
+      "scriptMs": 0.5,
+      "layoutMs": 0,
+      "styleMs": 9.2,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 76,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 1,
+      "runningAfterTrigger": 1
+    },
+    "rowEntry": {
+      "scriptMs": 3.2,
+      "layoutMs": 19.5,
+      "styleMs": 22.2,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 47,
+      "maxFrameMs": 41,
+      "slowFrames": 3,
+      "samples": [],
+      "runningBefore": 1,
+      "runningAfterTrigger": 14,
+      "animatingAfterTwoFrames": 12,
+      "rows": 18
+    },
+    "rowEntryLarge": {
+      "scriptMs": 6.3,
+      "layoutMs": 3.7,
+      "styleMs": 18.9,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 53,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 1,
+      "runningAfterTrigger": 2,
+      "rows": 68,
+      "animatingAfterThreeFrames": 0
+    },
+    "removal": {
+      "scriptMs": 2.1,
+      "layoutMs": 10.3,
+      "styleMs": 10.1,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 30,
+      "maxFrameMs": 46,
+      "slowFrames": 1,
+      "samples": [
+        [
+          10,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": 0
+          }
+        ],
+        [
+          21,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -7
+          }
+        ],
+        [
+          34,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -16
+          }
+        ],
+        [
+          48,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -26
+          }
+        ],
+        [
+          62,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -38
+          }
+        ],
+        [
+          82,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -50
+          }
+        ],
+        [
+          101,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -61
+          }
+        ],
+        [
+          115,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -64
+          }
+        ],
+        [
+          128,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -66
+          }
+        ],
+        [
+          141,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -67
+          }
+        ],
+        [
+          155,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -68
+          }
+        ],
+        [
+          168,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -69
+          }
+        ],
+        [
+          182,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -70
+          }
+        ],
+        [
+          197,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -71
+          }
+        ],
+        [
+          243,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          261,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          276,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          288,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          305,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          324,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          343,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          355,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          368,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          381,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          394,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          408,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          421,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          434,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          448,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          461,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ]
+      ],
+      "runningBefore": 1,
+      "runningAfterTrigger": 1,
+      "order": [
+        "Motion job 0",
+        "Motion job 2",
+        "Motion job 3",
+        "Motion job 4"
+      ],
+      "rapid": {
+        "leavingIndexesAfterTwoFrames": [
+          7,
+          8,
+          9
+        ],
+        "gone": true,
+        "next": "Motion job 0"
+      }
+    },
+    "bulkRemoval": {
+      "scriptMs": 1.1,
+      "layoutMs": 0.6,
+      "styleMs": 8.4,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 38,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 1,
+      "runningAfterTrigger": 1,
+      "animatingAfterTwoFrames": 0,
+      "rows": 44
+    },
+    "progressStep": {
+      "scriptMs": 1.1,
+      "layoutMs": 0.2,
+      "styleMs": 11.4,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 61,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [
+        [
+          11,
+          0.4
+        ],
+        [
+          23,
+          0.402
+        ],
+        [
+          37,
+          0.406
+        ],
+        [
+          50,
+          0.411
+        ],
+        [
+          63,
+          0.417
+        ],
+        [
+          78,
+          0.424
+        ],
+        [
+          90,
+          0.431
+        ],
+        [
+          103,
+          0.437
+        ],
+        [
+          117,
+          0.444
+        ],
+        [
+          131,
+          0.45
+        ],
+        [
+          143,
+          0.456
+        ],
+        [
+          157,
+          0.461
+        ],
+        [
+          170,
+          0.465
+        ],
+        [
+          183,
+          0.47
+        ],
+        [
+          197,
+          0.473
+        ],
+        [
+          210,
+          0.477
+        ],
+        [
+          223,
+          0.48
+        ],
+        [
+          237,
+          0.482
+        ],
+        [
+          250,
+          0.485
+        ],
+        [
+          263,
+          0.487
+        ],
+        [
+          277,
+          0.489
+        ],
+        [
+          290,
+          0.49
+        ],
+        [
+          303,
+          0.492
+        ],
+        [
+          317,
+          0.493
+        ],
+        [
+          330,
+          0.494
+        ],
+        [
+          343,
+          0.495
+        ],
+        [
+          357,
+          0.495
+        ],
+        [
+          371,
+          0.496
+        ],
+        [
+          384,
+          0.497
+        ],
+        [
+          397,
+          0.497
+        ],
+        [
+          410,
+          0.498
+        ],
+        [
+          423,
+          0.498
+        ],
+        [
+          437,
+          0.498
+        ],
+        [
+          450,
+          0.498
+        ],
+        [
+          463,
+          0.499
+        ],
+        [
+          477,
+          0.499
+        ],
+        [
+          490,
+          0.499
+        ],
+        [
+          504,
+          0.499
+        ],
+        [
+          517,
+          0.499
+        ],
+        [
+          531,
+          0.499
+        ],
+        [
+          544,
+          0.5
+        ],
+        [
+          557,
+          0.5
+        ],
+        [
+          572,
+          0.5
+        ],
+        [
+          585,
+          0.5
+        ],
+        [
+          597,
+          0.5
+        ],
+        [
+          610,
+          0.5
+        ],
+        [
+          623,
+          0.5
+        ],
+        [
+          637,
+          0.5
+        ],
+        [
+          652,
+          0.5
+        ],
+        [
+          665,
+          0.5
+        ],
+        [
+          677,
+          0.5
+        ],
+        [
+          690,
+          0.5
+        ],
+        [
+          703,
+          0.5
+        ],
+        [
+          717,
+          0.5
+        ],
+        [
+          730,
+          0.5
+        ],
+        [
+          743,
+          0.5
+        ],
+        [
+          757,
+          0.5
+        ],
+        [
+          770,
+          0.5
+        ],
+        [
+          783,
+          0.5
+        ],
+        [
+          797,
+          0.5
+        ],
+        [
+          811,
+          0.5
+        ]
+      ],
+      "runningBefore": 1,
+      "runningAfterTrigger": 2
+    },
+    "progressStream": {
+      "scriptMs": 2,
+      "layoutMs": 34.1,
+      "styleMs": 61.3,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 23,
+      "maxFrameMs": 17,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 1,
+      "runningAfterTrigger": 9
+    },
+    "progressRetry": {
+      "scriptMs": 0.6,
+      "layoutMs": 0.2,
+      "styleMs": 10.9,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 53,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [
+        [
+          10,
+          0.02
+        ],
+        [
+          22,
+          0.02
+        ],
+        [
+          35,
+          0.02
+        ],
+        [
+          49,
+          0.02
+        ],
+        [
+          62,
+          0.02
+        ],
+        [
+          76,
+          0.02
+        ],
+        [
+          89,
+          0.02
+        ],
+        [
+          103,
+          0.02
+        ],
+        [
+          116,
+          0.02
+        ],
+        [
+          129,
+          0.02
+        ],
+        [
+          142,
+          0.02
+        ],
+        [
+          156,
+          0.02
+        ],
+        [
+          169,
+          0.02
+        ],
+        [
+          182,
+          0.02
+        ],
+        [
+          196,
+          0.02
+        ],
+        [
+          209,
+          0.02
+        ],
+        [
+          222,
+          0.02
+        ],
+        [
+          236,
+          0.02
+        ],
+        [
+          249,
+          0.02
+        ],
+        [
+          263,
+          0.02
+        ],
+        [
+          276,
+          0.02
+        ],
+        [
+          289,
+          0.02
+        ],
+        [
+          302,
+          0.02
+        ],
+        [
+          316,
+          0.02
+        ],
+        [
+          329,
+          0.02
+        ],
+        [
+          342,
+          0.02
+        ],
+        [
+          356,
+          0.02
+        ],
+        [
+          369,
+          0.02
+        ],
+        [
+          382,
+          0.02
+        ],
+        [
+          395,
+          0.02
+        ],
+        [
+          409,
+          0.02
+        ],
+        [
+          422,
+          0.02
+        ],
+        [
+          436,
+          0.02
+        ],
+        [
+          449,
+          0.02
+        ],
+        [
+          462,
+          0.02
+        ],
+        [
+          475,
+          0.02
+        ],
+        [
+          489,
+          0.02
+        ],
+        [
+          502,
+          0.02
+        ],
+        [
+          515,
+          0.02
+        ],
+        [
+          529,
+          0.02
+        ],
+        [
+          542,
+          0.02
+        ],
+        [
+          557,
+          0.02
+        ],
+        [
+          570,
+          0.02
+        ],
+        [
+          583,
+          0.02
+        ],
+        [
+          596,
+          0.02
+        ],
+        [
+          609,
+          0.02
+        ],
+        [
+          622,
+          0.02
+        ],
+        [
+          636,
+          0.02
+        ],
+        [
+          649,
+          0.02
+        ],
+        [
+          662,
+          0.02
+        ],
+        [
+          676,
+          0.02
+        ],
+        [
+          689,
+          0.02
+        ],
+        [
+          702,
+          0.02
+        ]
+      ],
+      "runningBefore": 1,
+      "runningAfterTrigger": 3
+    },
+    "progressIndeterminate": {
+      "indeterminate": true,
+      "visibleMin": 0,
+      "visibleMax": 0.34,
+      "leftMin": -0.34,
+      "leftMax": 1
+    },
+    "completion": {
+      "scriptMs": 0.4,
+      "layoutMs": 0.6,
+      "styleMs": 7.9,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 38,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [
+        [
+          10,
+          1
+        ],
+        [
+          22,
+          1
+        ],
+        [
+          35,
+          1
+        ],
+        [
+          49,
+          1
+        ],
+        [
+          63,
+          1
+        ],
+        [
+          76,
+          1
+        ],
+        [
+          89,
+          1
+        ],
+        [
+          102,
+          1
+        ],
+        [
+          115,
+          1
+        ],
+        [
+          129,
+          1
+        ],
+        [
+          142,
+          1
+        ],
+        [
+          156,
+          1
+        ],
+        [
+          169,
+          1
+        ],
+        [
+          182,
+          1
+        ],
+        [
+          195,
+          1
+        ],
+        [
+          209,
+          1
+        ],
+        [
+          222,
+          1
+        ],
+        [
+          236,
+          1
+        ],
+        [
+          250,
+          1
+        ],
+        [
+          263,
+          1
+        ],
+        [
+          275,
+          1
+        ],
+        [
+          289,
+          1
+        ],
+        [
+          302,
+          1
+        ],
+        [
+          315,
+          1
+        ],
+        [
+          330,
+          1
+        ],
+        [
+          343,
+          1
+        ],
+        [
+          355,
+          1
+        ],
+        [
+          369,
+          1
+        ],
+        [
+          382,
+          1
+        ],
+        [
+          395,
+          1
+        ],
+        [
+          409,
+          1
+        ],
+        [
+          423,
+          1
+        ],
+        [
+          437,
+          1
+        ],
+        [
+          449,
+          1
+        ],
+        [
+          462,
+          1
+        ],
+        [
+          475,
+          1
+        ],
+        [
+          489,
+          1
+        ],
+        [
+          503,
+          1
+        ]
+      ],
+      "runningBefore": 2,
+      "runningAfterTrigger": 4,
+      "sameTask": {
+        "status": "completed",
+        "check": true
+      },
+      "statusAnimations": 1,
+      "checksAfterRepaints": 1
+    },
+    "dragPickup": {
+      "scriptMs": 1.5,
+      "layoutMs": 0.5,
+      "styleMs": 10.2,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 46,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 4,
+      "runningAfterTrigger": 4,
+      "activeDuringCall": true,
+      "activeAfterCall": false
+    },
+    "focus": {
+      "keptThroughChanges": true,
+      "afterStatusChange": "Resume",
+      "insideRow": true
+    },
+    "rapidPress": {
+      "pauseTwice": {
+        "calls": [
+          "pause_job"
+        ],
+        "status": "paused",
+        "focus": "Resume"
+      },
+      "cancelTwice": {
+        "calls": [
+          "cancel_job"
+        ],
+        "status": "cancelled",
+        "focus": "Try again"
+      },
+      "pauseHeld": {
+        "calls": [
+          "pause_job"
+        ],
+        "status": "paused",
+        "focus": "Resume"
+      },
+      "resumeLater": {
+        "calls": [
+          "resume_job"
+        ],
+        "status": "downloading"
+      },
+      "latePause": {
+        "focusBeforePause": "Pause",
+        "focusAfterPaused": "Resume",
+        "calls": [
+          "resume_job",
+          "pause_job"
+        ],
+        "status": "paused"
+      }
+    },
+    "removalFocus": {
+      "leavingInert": true,
+      "leavingFocusable": false,
+      "focus": "Try again",
+      "focusInNeighbour": true,
+      "calls": [
+        "remove_job"
+      ],
+      "neighbourStatus": "failed"
+    },
+    "hidden": {
+      "runningBefore": 2,
+      "rowAnimations": 0,
+      "progressSnapped": true,
+      "statusAnimations": 0,
+      "check": true
+    },
+    "disposal": {
+      "runningBefore": 6,
+      "collapsingBefore": 1,
+      "runningOnDetachedRows": 0,
+      "runningAfter": 0
+    },
+    "firstRow": {
+      "emptyShown": true,
+      "heights": [
+        [
+          2,
+          22
+        ],
+        [
+          13,
+          22
+        ],
+        [
+          26,
+          22
+        ],
+        [
+          39,
+          22
+        ],
+        [
+          53,
+          22
+        ],
+        [
+          66,
+          22
+        ],
+        [
+          79,
+          22
+        ],
+        [
+          93,
+          27
+        ],
+        [
+          106,
+          31
+        ],
+        [
+          119,
+          36
+        ],
+        [
+          133,
+          40
+        ],
+        [
+          146,
+          44
+        ],
+        [
+          159,
+          47
+        ],
+        [
+          173,
+          50
+        ],
+        [
+          186,
+          53
+        ],
+        [
+          199,
+          55
+        ],
+        [
+          213,
+          58
+        ],
+        [
+          226,
+          60
+        ],
+        [
+          239,
+          61
+        ],
+        [
+          253,
+          63
+        ],
+        [
+          266,
+          64
+        ],
+        [
+          279,
+          65
+        ],
+        [
+          293,
+          66
+        ],
+        [
+          306,
+          67
+        ],
+        [
+          319,
+          68
+        ],
+        [
+          333,
+          69
+        ],
+        [
+          346,
+          69
+        ],
+        [
+          359,
+          70
+        ],
+        [
+          373,
+          70
+        ],
+        [
+          386,
+          70
+        ],
+        [
+          400,
+          71
+        ],
+        [
+          413,
+          71
+        ],
+        [
+          426,
+          71
+        ],
+        [
+          439,
+          71
+        ],
+        [
+          453,
+          72
+        ]
+      ]
+    },
+    "pageErrors": []
+  },
+  {
+    "reducedMotion": true,
+    "settleIn": {
+      "scriptMs": 0.9,
+      "layoutMs": 2.1,
+      "styleMs": 1.9,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 53,
+      "maxFrameMs": 16,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 0,
+      "runningAfterTrigger": 1,
+      "focusAfter": "url-input",
+      "rapid": {
+        "results": 2,
+        "stageAnimationsLeft": 0,
+        "field": "https://example.com/watch?v=rapid14"
+      }
+    },
+    "segmented": {
+      "scriptMs": 0.9,
+      "layoutMs": 0.5,
+      "styleMs": 2.7,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 46,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 1,
+      "runningAfterTrigger": 15,
+      "focus": {
+        "onSegment": true,
+        "checked": "Audio Only"
+      },
+      "rapid": {
+        "indexMatchesThumb": true,
+        "focusOnChecked": true
+      }
+    },
+    "queueIdle": {
+      "scriptMs": 0.5,
+      "layoutMs": 0,
+      "styleMs": 0,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 77,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 0,
+      "runningAfterTrigger": 0
+    },
+    "rowEntry": {
+      "scriptMs": 2,
+      "layoutMs": 0.9,
+      "styleMs": 1.2,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 53,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 0,
+      "runningAfterTrigger": 0,
+      "animatingAfterTwoFrames": 0,
+      "rows": 18
+    },
+    "rowEntryLarge": {
+      "scriptMs": 7.4,
+      "layoutMs": 3,
+      "styleMs": 4.6,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 53,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 0,
+      "runningAfterTrigger": 0,
+      "rows": 68,
+      "animatingAfterThreeFrames": 0
+    },
+    "removal": {
+      "scriptMs": 0.6,
+      "layoutMs": 0.3,
+      "styleMs": 1.5,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 35,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [
+        [
+          10,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          22,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          35,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          48,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          62,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          75,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          88,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          102,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          115,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          128,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          142,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          155,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          168,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          182,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          195,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          208,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          222,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          235,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          248,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          262,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          275,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          289,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          302,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          315,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          329,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          342,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          355,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          368,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          382,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          395,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          409,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          422,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          435,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          448,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          462,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ]
+      ],
+      "runningBefore": 0,
+      "runningAfterTrigger": 0,
+      "order": [
+        "Motion job 0",
+        "Motion job 2",
+        "Motion job 3",
+        "Motion job 4"
+      ],
+      "rapid": {
+        "leavingIndexesAfterTwoFrames": [
+          null,
+          null,
+          null
+        ],
+        "gone": true,
+        "next": "Motion job 0"
+      }
+    },
+    "bulkRemoval": {
+      "scriptMs": 0.7,
+      "layoutMs": 0.3,
+      "styleMs": 1,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 38,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 0,
+      "runningAfterTrigger": 0,
+      "animatingAfterTwoFrames": 0,
+      "rows": 44
+    },
+    "progressStep": {
+      "scriptMs": 0.4,
+      "layoutMs": 0.2,
+      "styleMs": 0.5,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 61,
+      "maxFrameMs": 26,
+      "slowFrames": 1,
+      "samples": [
+        [
+          1,
+          0.4
+        ],
+        [
+          10,
+          0.5
+        ],
+        [
+          23,
+          0.5
+        ],
+        [
+          36,
+          0.5
+        ],
+        [
+          49,
+          0.5
+        ],
+        [
+          63,
+          0.5
+        ],
+        [
+          76,
+          0.5
+        ],
+        [
+          89,
+          0.5
+        ],
+        [
+          103,
+          0.5
+        ],
+        [
+          116,
+          0.5
+        ],
+        [
+          129,
+          0.5
+        ],
+        [
+          143,
+          0.5
+        ],
+        [
+          157,
+          0.5
+        ],
+        [
+          170,
+          0.5
+        ],
+        [
+          196,
+          0.5
+        ],
+        [
+          209,
+          0.5
+        ],
+        [
+          222,
+          0.5
+        ],
+        [
+          236,
+          0.5
+        ],
+        [
+          249,
+          0.5
+        ],
+        [
+          262,
+          0.5
+        ],
+        [
+          276,
+          0.5
+        ],
+        [
+          289,
+          0.5
+        ],
+        [
+          302,
+          0.5
+        ],
+        [
+          316,
+          0.5
+        ],
+        [
+          329,
+          0.5
+        ],
+        [
+          342,
+          0.5
+        ],
+        [
+          356,
+          0.5
+        ],
+        [
+          369,
+          0.5
+        ],
+        [
+          383,
+          0.5
+        ],
+        [
+          396,
+          0.5
+        ],
+        [
+          409,
+          0.5
+        ],
+        [
+          422,
+          0.5
+        ],
+        [
+          436,
+          0.5
+        ],
+        [
+          449,
+          0.5
+        ],
+        [
+          462,
+          0.5
+        ],
+        [
+          476,
+          0.5
+        ],
+        [
+          489,
+          0.5
+        ],
+        [
+          502,
+          0.5
+        ],
+        [
+          516,
+          0.5
+        ],
+        [
+          529,
+          0.5
+        ],
+        [
+          543,
+          0.5
+        ],
+        [
+          558,
+          0.5
+        ],
+        [
+          570,
+          0.5
+        ],
+        [
+          583,
+          0.5
+        ],
+        [
+          596,
+          0.5
+        ],
+        [
+          610,
+          0.5
+        ],
+        [
+          623,
+          0.5
+        ],
+        [
+          636,
+          0.5
+        ],
+        [
+          649,
+          0.5
+        ],
+        [
+          663,
+          0.5
+        ],
+        [
+          676,
+          0.5
+        ],
+        [
+          689,
+          0.5
+        ],
+        [
+          703,
+          0.5
+        ],
+        [
+          716,
+          0.5
+        ],
+        [
+          729,
+          0.5
+        ],
+        [
+          743,
+          0.5
+        ],
+        [
+          756,
+          0.5
+        ],
+        [
+          769,
+          0.5
+        ],
+        [
+          783,
+          0.5
+        ],
+        [
+          796,
+          0.5
+        ],
+        [
+          809,
+          0.5
+        ]
+      ],
+      "runningBefore": 0,
+      "runningAfterTrigger": 1
+    },
+    "progressStream": {
+      "scriptMs": 1.5,
+      "layoutMs": 6.6,
+      "styleMs": 18,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 25,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 0,
+      "runningAfterTrigger": 0
+    },
+    "progressRetry": {
+      "scriptMs": 0.5,
+      "layoutMs": 0.2,
+      "styleMs": 0.9,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 54,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [
+        [
+          1,
+          0.02
+        ],
+        [
+          11,
+          0.02
+        ],
+        [
+          24,
+          0.02
+        ],
+        [
+          38,
+          0.02
+        ],
+        [
+          51,
+          0.02
+        ],
+        [
+          65,
+          0.02
+        ],
+        [
+          78,
+          0.02
+        ],
+        [
+          91,
+          0.02
+        ],
+        [
+          104,
+          0.02
+        ],
+        [
+          118,
+          0.02
+        ],
+        [
+          131,
+          0.02
+        ],
+        [
+          145,
+          0.02
+        ],
+        [
+          158,
+          0.02
+        ],
+        [
+          171,
+          0.02
+        ],
+        [
+          185,
+          0.02
+        ],
+        [
+          199,
+          0.02
+        ],
+        [
+          212,
+          0.02
+        ],
+        [
+          224,
+          0.02
+        ],
+        [
+          238,
+          0.02
+        ],
+        [
+          251,
+          0.02
+        ],
+        [
+          265,
+          0.02
+        ],
+        [
+          278,
+          0.02
+        ],
+        [
+          292,
+          0.02
+        ],
+        [
+          304,
+          0.02
+        ],
+        [
+          318,
+          0.02
+        ],
+        [
+          331,
+          0.02
+        ],
+        [
+          344,
+          0.02
+        ],
+        [
+          358,
+          0.02
+        ],
+        [
+          371,
+          0.02
+        ],
+        [
+          385,
+          0.02
+        ],
+        [
+          398,
+          0.02
+        ],
+        [
+          411,
+          0.02
+        ],
+        [
+          424,
+          0.02
+        ],
+        [
+          438,
+          0.02
+        ],
+        [
+          452,
+          0.02
+        ],
+        [
+          464,
+          0.02
+        ],
+        [
+          478,
+          0.02
+        ],
+        [
+          491,
+          0.02
+        ],
+        [
+          505,
+          0.02
+        ],
+        [
+          518,
+          0.02
+        ],
+        [
+          531,
+          0.02
+        ],
+        [
+          545,
+          0.02
+        ],
+        [
+          558,
+          0.02
+        ],
+        [
+          571,
+          0.02
+        ],
+        [
+          584,
+          0.02
+        ],
+        [
+          598,
+          0.02
+        ],
+        [
+          611,
+          0.02
+        ],
+        [
+          624,
+          0.02
+        ],
+        [
+          638,
+          0.02
+        ],
+        [
+          651,
+          0.02
+        ],
+        [
+          665,
+          0.02
+        ],
+        [
+          678,
+          0.02
+        ],
+        [
+          691,
+          0.02
+        ],
+        [
+          704,
+          0.02
+        ]
+      ],
+      "runningBefore": 0,
+      "runningAfterTrigger": 2
+    },
+    "progressIndeterminate": {
+      "indeterminate": true,
+      "visibleMin": 0.34,
+      "visibleMax": 0.34,
+      "leftMin": 0,
+      "leftMax": 0
+    },
+    "completion": {
+      "scriptMs": 0.3,
+      "layoutMs": 0.3,
+      "styleMs": 0.7,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 39,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [
+        [
+          1,
+          1
+        ],
+        [
+          8,
+          1
+        ],
+        [
+          22,
+          1
+        ],
+        [
+          35,
+          1
+        ],
+        [
+          48,
+          1
+        ],
+        [
+          61,
+          1
+        ],
+        [
+          75,
+          1
+        ],
+        [
+          88,
+          1
+        ],
+        [
+          102,
+          1
+        ],
+        [
+          115,
+          1
+        ],
+        [
+          129,
+          1
+        ],
+        [
+          141,
+          1
+        ],
+        [
+          156,
+          1
+        ],
+        [
+          168,
+          1
+        ],
+        [
+          182,
+          1
+        ],
+        [
+          195,
+          1
+        ],
+        [
+          208,
+          1
+        ],
+        [
+          222,
+          1
+        ],
+        [
+          235,
+          1
+        ],
+        [
+          248,
+          1
+        ],
+        [
+          262,
+          1
+        ],
+        [
+          275,
+          1
+        ],
+        [
+          288,
+          1
+        ],
+        [
+          302,
+          1
+        ],
+        [
+          315,
+          1
+        ],
+        [
+          328,
+          1
+        ],
+        [
+          342,
+          1
+        ],
+        [
+          355,
+          1
+        ],
+        [
+          368,
+          1
+        ],
+        [
+          382,
+          1
+        ],
+        [
+          395,
+          1
+        ],
+        [
+          409,
+          1
+        ],
+        [
+          422,
+          1
+        ],
+        [
+          435,
+          1
+        ],
+        [
+          448,
+          1
+        ],
+        [
+          462,
+          1
+        ],
+        [
+          475,
+          1
+        ],
+        [
+          488,
+          1
+        ],
+        [
+          502,
+          1
+        ]
+      ],
+      "runningBefore": 0,
+      "runningAfterTrigger": 2,
+      "sameTask": {
+        "status": "completed",
+        "check": true
+      },
+      "statusAnimations": 0,
+      "checksAfterRepaints": 1
+    },
+    "dragPickup": {
+      "scriptMs": 0.5,
+      "layoutMs": 0.1,
+      "styleMs": 0.8,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 46,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 2,
+      "runningAfterTrigger": 2,
+      "activeDuringCall": true,
+      "activeAfterCall": false
+    },
+    "focus": {
+      "keptThroughChanges": true,
+      "afterStatusChange": "Resume",
+      "insideRow": true
+    },
+    "rapidPress": {
+      "pauseTwice": {
+        "calls": [
+          "pause_job"
+        ],
+        "status": "paused",
+        "focus": "Resume"
+      },
+      "cancelTwice": {
+        "calls": [
+          "cancel_job"
+        ],
+        "status": "cancelled",
+        "focus": "Try again"
+      },
+      "pauseHeld": {
+        "calls": [
+          "pause_job"
+        ],
+        "status": "paused",
+        "focus": "Resume"
+      },
+      "resumeLater": {
+        "calls": [
+          "resume_job"
+        ],
+        "status": "downloading"
+      },
+      "latePause": {
+        "focusBeforePause": "Pause",
+        "focusAfterPaused": "Resume",
+        "calls": [
+          "resume_job",
+          "pause_job"
+        ],
+        "status": "paused"
+      }
+    },
+    "removalFocus": {
+      "leavingInert": "gone",
+      "leavingFocusable": false,
+      "focus": "Try again",
+      "focusInNeighbour": true,
+      "calls": [
+        "remove_job"
+      ],
+      "neighbourStatus": "failed"
+    },
+    "hidden": {
+      "runningBefore": 0,
+      "rowAnimations": 0,
+      "progressSnapped": true,
+      "statusAnimations": 0,
+      "check": true
+    },
+    "disposal": {
+      "runningBefore": 0,
+      "collapsingBefore": 0,
+      "runningOnDetachedRows": 0,
+      "runningAfter": 0
+    },
+    "firstRow": {
+      "emptyShown": true,
+      "heights": [
+        [
+          1,
+          72
+        ],
+        [
+          2,
+          72
+        ],
+        [
+          16,
+          72
+        ],
+        [
+          29,
+          72
+        ],
+        [
+          42,
+          72
+        ],
+        [
+          56,
+          72
+        ],
+        [
+          69,
+          72
+        ],
+        [
+          82,
+          72
+        ],
+        [
+          96,
+          72
+        ],
+        [
+          109,
+          72
+        ],
+        [
+          123,
+          72
+        ],
+        [
+          136,
+          72
+        ],
+        [
+          150,
+          72
+        ],
+        [
+          163,
+          72
+        ],
+        [
+          176,
+          72
+        ],
+        [
+          189,
+          72
+        ],
+        [
+          202,
+          72
+        ],
+        [
+          216,
+          72
+        ],
+        [
+          229,
+          72
+        ],
+        [
+          242,
+          72
+        ],
+        [
+          256,
+          72
+        ],
+        [
+          269,
+          72
+        ],
+        [
+          282,
+          72
+        ],
+        [
+          296,
+          72
+        ],
+        [
+          309,
+          72
+        ],
+        [
+          323,
+          72
+        ],
+        [
+          336,
+          72
+        ],
+        [
+          349,
+          72
+        ],
+        [
+          363,
+          72
+        ],
+        [
+          376,
+          72
+        ],
+        [
+          389,
+          72
+        ],
+        [
+          403,
+          72
+        ],
+        [
+          416,
+          72
+        ],
+        [
+          429,
+          72
+        ],
+        [
+          443,
+          72
+        ],
+        [
+          456,
+          72
+        ]
+      ]
+    },
+    "pageErrors": []
+  }
+]

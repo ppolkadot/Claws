@@ -1,0 +1,2920 @@
+[
+  {
+    "reducedMotion": false,
+    "settleIn": {
+      "scriptMs": 1.3,
+      "layoutMs": 3.3,
+      "styleMs": 9.3,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 53,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 6,
+      "runningAfterTrigger": 2,
+      "focusAfter": "url-input",
+      "rapid": {
+        "results": 2,
+        "stageAnimationsLeft": 0,
+        "field": "https://example.com/watch?v=rapid14"
+      }
+    },
+    "segmented": {
+      "scriptMs": 1.5,
+      "layoutMs": 0.8,
+      "styleMs": 12.1,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 46,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 1,
+      "runningAfterTrigger": 4,
+      "focus": {
+        "onSegment": true,
+        "checked": "Audio Only"
+      },
+      "rapid": {
+        "indexMatchesThumb": true,
+        "focusOnChecked": true
+      }
+    },
+    "queueIdle": {
+      "scriptMs": 0.7,
+      "layoutMs": 0.1,
+      "styleMs": 13.9,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 76,
+      "maxFrameMs": 16,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 2,
+      "runningAfterTrigger": 2
+    },
+    "rowEntry": {
+      "scriptMs": 3.3,
+      "layoutMs": 18.7,
+      "styleMs": 20.9,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 53,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 1,
+      "runningAfterTrigger": 14,
+      "animatingAfterTwoFrames": 12,
+      "rows": 18
+    },
+    "rowEntryLarge": {
+      "scriptMs": 6.6,
+      "layoutMs": 3.6,
+      "styleMs": 12.9,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 53,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 1,
+      "runningAfterTrigger": 2,
+      "rows": 68,
+      "animatingAfterThreeFrames": 0
+    },
+    "removal": {
+      "scriptMs": 2,
+      "layoutMs": 18.8,
+      "styleMs": 15.8,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 59,
+      "maxFrameMs": 34,
+      "slowFrames": 1,
+      "samples": [
+        [
+          10,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": 0
+          }
+        ],
+        [
+          22,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -1
+          }
+        ],
+        [
+          35,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -4
+          }
+        ],
+        [
+          48,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -8
+          }
+        ],
+        [
+          64,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -12
+          }
+        ],
+        [
+          75,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -17
+          }
+        ],
+        [
+          89,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -22
+          }
+        ],
+        [
+          104,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -27
+          }
+        ],
+        [
+          115,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -32
+          }
+        ],
+        [
+          128,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -36
+          }
+        ],
+        [
+          142,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -40
+          }
+        ],
+        [
+          155,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -44
+          }
+        ],
+        [
+          168,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -47
+          }
+        ],
+        [
+          184,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -50
+          }
+        ],
+        [
+          195,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -53
+          }
+        ],
+        [
+          208,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -56
+          }
+        ],
+        [
+          222,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -58
+          }
+        ],
+        [
+          235,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -60
+          }
+        ],
+        [
+          249,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -61
+          }
+        ],
+        [
+          263,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -63
+          }
+        ],
+        [
+          275,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -64
+          }
+        ],
+        [
+          290,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -65
+          }
+        ],
+        [
+          302,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -66
+          }
+        ],
+        [
+          315,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -67
+          }
+        ],
+        [
+          328,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -68
+          }
+        ],
+        [
+          343,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -69
+          }
+        ],
+        [
+          361,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -69
+          }
+        ],
+        [
+          376,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -70
+          }
+        ],
+        [
+          382,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -70
+          }
+        ],
+        [
+          395,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -70
+          }
+        ],
+        [
+          408,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -71
+          }
+        ],
+        [
+          422,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -71
+          }
+        ],
+        [
+          435,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -71
+          }
+        ],
+        [
+          448,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -71
+          }
+        ],
+        [
+          462,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          475,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          509,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          515,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          535,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          555,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          575,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          584,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          595,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          608,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          622,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          635,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          648,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          662,
+          {
+            "leavingIndex": 7,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          676,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          690,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          702,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          715,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          728,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          742,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          755,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          768,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          781,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          795,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          808,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ]
+      ],
+      "runningBefore": 1,
+      "runningAfterTrigger": 1,
+      "order": [
+        "Motion job 0",
+        "Motion job 2",
+        "Motion job 3",
+        "Motion job 4"
+      ],
+      "rapid": {
+        "leavingIndexesAfterTwoFrames": [
+          7,
+          8,
+          9
+        ],
+        "gone": true,
+        "next": "Motion job 0"
+      }
+    },
+    "bulkRemoval": {
+      "scriptMs": 1.4,
+      "layoutMs": 0.6,
+      "styleMs": 8.4,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 38,
+      "maxFrameMs": 16,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 1,
+      "runningAfterTrigger": 1,
+      "animatingAfterTwoFrames": 0,
+      "rows": 44
+    },
+    "progressStep": {
+      "scriptMs": 1.1,
+      "layoutMs": 0.2,
+      "styleMs": 10.4,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 61,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [
+        [
+          11,
+          0.4
+        ],
+        [
+          24,
+          0.402
+        ],
+        [
+          37,
+          0.405
+        ],
+        [
+          50,
+          0.411
+        ],
+        [
+          64,
+          0.417
+        ],
+        [
+          78,
+          0.424
+        ],
+        [
+          91,
+          0.431
+        ],
+        [
+          105,
+          0.437
+        ],
+        [
+          117,
+          0.444
+        ],
+        [
+          130,
+          0.45
+        ],
+        [
+          144,
+          0.456
+        ],
+        [
+          157,
+          0.461
+        ],
+        [
+          170,
+          0.465
+        ],
+        [
+          184,
+          0.47
+        ],
+        [
+          197,
+          0.473
+        ],
+        [
+          211,
+          0.477
+        ],
+        [
+          224,
+          0.48
+        ],
+        [
+          237,
+          0.482
+        ],
+        [
+          251,
+          0.485
+        ],
+        [
+          264,
+          0.487
+        ],
+        [
+          277,
+          0.489
+        ],
+        [
+          290,
+          0.49
+        ],
+        [
+          305,
+          0.492
+        ],
+        [
+          317,
+          0.493
+        ],
+        [
+          330,
+          0.494
+        ],
+        [
+          344,
+          0.495
+        ],
+        [
+          357,
+          0.495
+        ],
+        [
+          370,
+          0.496
+        ],
+        [
+          384,
+          0.497
+        ],
+        [
+          397,
+          0.497
+        ],
+        [
+          410,
+          0.498
+        ],
+        [
+          424,
+          0.498
+        ],
+        [
+          437,
+          0.498
+        ],
+        [
+          450,
+          0.498
+        ],
+        [
+          464,
+          0.499
+        ],
+        [
+          478,
+          0.499
+        ],
+        [
+          490,
+          0.499
+        ],
+        [
+          504,
+          0.499
+        ],
+        [
+          517,
+          0.499
+        ],
+        [
+          530,
+          0.499
+        ],
+        [
+          544,
+          0.5
+        ],
+        [
+          558,
+          0.5
+        ],
+        [
+          570,
+          0.5
+        ],
+        [
+          584,
+          0.5
+        ],
+        [
+          597,
+          0.5
+        ],
+        [
+          610,
+          0.5
+        ],
+        [
+          624,
+          0.5
+        ],
+        [
+          637,
+          0.5
+        ],
+        [
+          650,
+          0.5
+        ],
+        [
+          664,
+          0.5
+        ],
+        [
+          677,
+          0.5
+        ],
+        [
+          691,
+          0.5
+        ],
+        [
+          704,
+          0.5
+        ],
+        [
+          717,
+          0.5
+        ],
+        [
+          730,
+          0.5
+        ],
+        [
+          744,
+          0.5
+        ],
+        [
+          757,
+          0.5
+        ],
+        [
+          770,
+          0.5
+        ],
+        [
+          784,
+          0.5
+        ],
+        [
+          797,
+          0.5
+        ],
+        [
+          811,
+          0.5
+        ]
+      ],
+      "runningBefore": 1,
+      "runningAfterTrigger": 2
+    },
+    "progressStream": {
+      "scriptMs": 1.7,
+      "layoutMs": 30.9,
+      "styleMs": 51.7,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 23,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 1,
+      "runningAfterTrigger": 9
+    },
+    "progressRetry": {
+      "scriptMs": 0.4,
+      "layoutMs": 0.2,
+      "styleMs": 7.8,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 53,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [
+        [
+          11,
+          0.02
+        ],
+        [
+          23,
+          0.02
+        ],
+        [
+          36,
+          0.02
+        ],
+        [
+          50,
+          0.02
+        ],
+        [
+          63,
+          0.02
+        ],
+        [
+          77,
+          0.02
+        ],
+        [
+          90,
+          0.02
+        ],
+        [
+          103,
+          0.02
+        ],
+        [
+          117,
+          0.02
+        ],
+        [
+          130,
+          0.02
+        ],
+        [
+          143,
+          0.02
+        ],
+        [
+          156,
+          0.02
+        ],
+        [
+          170,
+          0.02
+        ],
+        [
+          183,
+          0.02
+        ],
+        [
+          196,
+          0.02
+        ],
+        [
+          210,
+          0.02
+        ],
+        [
+          223,
+          0.02
+        ],
+        [
+          237,
+          0.02
+        ],
+        [
+          250,
+          0.02
+        ],
+        [
+          263,
+          0.02
+        ],
+        [
+          276,
+          0.02
+        ],
+        [
+          290,
+          0.02
+        ],
+        [
+          303,
+          0.02
+        ],
+        [
+          317,
+          0.02
+        ],
+        [
+          330,
+          0.02
+        ],
+        [
+          343,
+          0.02
+        ],
+        [
+          356,
+          0.02
+        ],
+        [
+          370,
+          0.02
+        ],
+        [
+          383,
+          0.02
+        ],
+        [
+          396,
+          0.02
+        ],
+        [
+          410,
+          0.02
+        ],
+        [
+          423,
+          0.02
+        ],
+        [
+          436,
+          0.02
+        ],
+        [
+          450,
+          0.02
+        ],
+        [
+          463,
+          0.02
+        ],
+        [
+          477,
+          0.02
+        ],
+        [
+          490,
+          0.02
+        ],
+        [
+          503,
+          0.02
+        ],
+        [
+          516,
+          0.02
+        ],
+        [
+          530,
+          0.02
+        ],
+        [
+          544,
+          0.02
+        ],
+        [
+          557,
+          0.02
+        ],
+        [
+          570,
+          0.02
+        ],
+        [
+          583,
+          0.02
+        ],
+        [
+          596,
+          0.02
+        ],
+        [
+          610,
+          0.02
+        ],
+        [
+          623,
+          0.02
+        ],
+        [
+          636,
+          0.02
+        ],
+        [
+          650,
+          0.02
+        ],
+        [
+          664,
+          0.02
+        ],
+        [
+          676,
+          0.02
+        ],
+        [
+          690,
+          0.02
+        ],
+        [
+          703,
+          0.02
+        ]
+      ],
+      "runningBefore": 1,
+      "runningAfterTrigger": 3
+    },
+    "progressIndeterminate": {
+      "indeterminate": true,
+      "visibleMin": 0,
+      "visibleMax": 0.34,
+      "leftMin": -0.34,
+      "leftMax": 1
+    },
+    "completion": {
+      "scriptMs": 0.5,
+      "layoutMs": 0.6,
+      "styleMs": 10.7,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 38,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [
+        [
+          11,
+          1
+        ],
+        [
+          23,
+          1
+        ],
+        [
+          36,
+          1
+        ],
+        [
+          50,
+          1
+        ],
+        [
+          63,
+          1
+        ],
+        [
+          76,
+          1
+        ],
+        [
+          90,
+          1
+        ],
+        [
+          103,
+          1
+        ],
+        [
+          117,
+          1
+        ],
+        [
+          130,
+          1
+        ],
+        [
+          143,
+          1
+        ],
+        [
+          156,
+          1
+        ],
+        [
+          170,
+          1
+        ],
+        [
+          183,
+          1
+        ],
+        [
+          196,
+          1
+        ],
+        [
+          210,
+          1
+        ],
+        [
+          223,
+          1
+        ],
+        [
+          236,
+          1
+        ],
+        [
+          249,
+          1
+        ],
+        [
+          263,
+          1
+        ],
+        [
+          276,
+          1
+        ],
+        [
+          290,
+          1
+        ],
+        [
+          303,
+          1
+        ],
+        [
+          316,
+          1
+        ],
+        [
+          330,
+          1
+        ],
+        [
+          343,
+          1
+        ],
+        [
+          356,
+          1
+        ],
+        [
+          369,
+          1
+        ],
+        [
+          383,
+          1
+        ],
+        [
+          396,
+          1
+        ],
+        [
+          410,
+          1
+        ],
+        [
+          423,
+          1
+        ],
+        [
+          436,
+          1
+        ],
+        [
+          450,
+          1
+        ],
+        [
+          463,
+          1
+        ],
+        [
+          476,
+          1
+        ],
+        [
+          489,
+          1
+        ],
+        [
+          503,
+          1
+        ]
+      ],
+      "runningBefore": 2,
+      "runningAfterTrigger": 4,
+      "sameTask": {
+        "status": "completed",
+        "check": true
+      },
+      "statusAnimations": 1,
+      "checksAfterRepaints": 1
+    },
+    "dragPickup": {
+      "scriptMs": 3.4,
+      "layoutMs": 0.6,
+      "styleMs": 12.7,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 47,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 4,
+      "runningAfterTrigger": 4,
+      "activeDuringCall": true,
+      "activeAfterCall": false
+    },
+    "focus": {
+      "keptThroughChanges": true,
+      "afterStatusChange": "Resume",
+      "insideRow": true
+    },
+    "rapidPress": {
+      "pauseTwice": {
+        "calls": [
+          "pause_job"
+        ],
+        "status": "paused",
+        "focus": "Resume"
+      },
+      "cancelTwice": {
+        "calls": [
+          "cancel_job"
+        ],
+        "status": "cancelled",
+        "focus": "Try again"
+      },
+      "pauseHeld": {
+        "calls": [
+          "pause_job"
+        ],
+        "status": "paused",
+        "focus": "Resume"
+      },
+      "resumeLater": {
+        "calls": [
+          "resume_job"
+        ],
+        "status": "downloading"
+      },
+      "latePause": {
+        "focusBeforePause": "Pause",
+        "focusAfterPaused": "Resume",
+        "calls": [
+          "resume_job",
+          "pause_job"
+        ],
+        "status": "paused"
+      }
+    },
+    "removalFocus": {
+      "leavingInert": true,
+      "leavingFocusable": false,
+      "focus": "Try again",
+      "focusInNeighbour": true,
+      "calls": [
+        "remove_job"
+      ],
+      "neighbourStatus": "failed"
+    },
+    "hidden": {
+      "runningBefore": 2,
+      "rowAnimations": 0,
+      "progressSnapped": true,
+      "statusAnimations": 0,
+      "check": true
+    },
+    "disposal": {
+      "runningBefore": 6,
+      "collapsingBefore": 1,
+      "runningOnDetachedRows": 0,
+      "runningAfter": 0
+    },
+    "firstRow": {
+      "emptyShown": true,
+      "heights": [
+        [
+          15,
+          22
+        ],
+        [
+          26,
+          22
+        ],
+        [
+          40,
+          22
+        ],
+        [
+          54,
+          22
+        ],
+        [
+          67,
+          22
+        ],
+        [
+          81,
+          22
+        ],
+        [
+          93,
+          22
+        ],
+        [
+          106,
+          27
+        ],
+        [
+          120,
+          31
+        ],
+        [
+          133,
+          36
+        ],
+        [
+          146,
+          40
+        ],
+        [
+          160,
+          44
+        ],
+        [
+          173,
+          47
+        ],
+        [
+          186,
+          50
+        ],
+        [
+          200,
+          53
+        ],
+        [
+          213,
+          55
+        ],
+        [
+          226,
+          58
+        ],
+        [
+          240,
+          60
+        ],
+        [
+          253,
+          61
+        ],
+        [
+          266,
+          63
+        ],
+        [
+          280,
+          64
+        ],
+        [
+          293,
+          65
+        ],
+        [
+          307,
+          66
+        ],
+        [
+          320,
+          67
+        ],
+        [
+          333,
+          68
+        ],
+        [
+          346,
+          69
+        ],
+        [
+          360,
+          69
+        ],
+        [
+          373,
+          70
+        ],
+        [
+          386,
+          70
+        ],
+        [
+          400,
+          70
+        ],
+        [
+          413,
+          71
+        ],
+        [
+          426,
+          71
+        ],
+        [
+          440,
+          71
+        ],
+        [
+          453,
+          71
+        ]
+      ]
+    },
+    "pageErrors": []
+  },
+  {
+    "reducedMotion": true,
+    "settleIn": {
+      "scriptMs": 0.6,
+      "layoutMs": 1.5,
+      "styleMs": 1.5,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 53,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 0,
+      "runningAfterTrigger": 1,
+      "focusAfter": "url-input",
+      "rapid": {
+        "results": 2,
+        "stageAnimationsLeft": 0,
+        "field": "https://example.com/watch?v=rapid14"
+      }
+    },
+    "segmented": {
+      "scriptMs": 1.5,
+      "layoutMs": 0.4,
+      "styleMs": 2.8,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 47,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 1,
+      "runningAfterTrigger": 15,
+      "focus": {
+        "onSegment": true,
+        "checked": "Audio Only"
+      },
+      "rapid": {
+        "indexMatchesThumb": true,
+        "focusOnChecked": true
+      }
+    },
+    "queueIdle": {
+      "scriptMs": 0.5,
+      "layoutMs": 0,
+      "styleMs": 0,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 77,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 0,
+      "runningAfterTrigger": 0
+    },
+    "rowEntry": {
+      "scriptMs": 1.8,
+      "layoutMs": 0.9,
+      "styleMs": 1.2,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 53,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 0,
+      "runningAfterTrigger": 0,
+      "animatingAfterTwoFrames": 0,
+      "rows": 18
+    },
+    "rowEntryLarge": {
+      "scriptMs": 7.7,
+      "layoutMs": 4,
+      "styleMs": 3.4,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 53,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 0,
+      "runningAfterTrigger": 0,
+      "rows": 68,
+      "animatingAfterThreeFrames": 0
+    },
+    "removal": {
+      "scriptMs": 0.6,
+      "layoutMs": 0.3,
+      "styleMs": 2.6,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 61,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [
+        [
+          8,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          20,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          33,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          46,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          59,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          72,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          86,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          99,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          112,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          126,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          140,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          153,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          167,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          180,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          193,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          206,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          220,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          233,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          246,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          260,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          273,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          286,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          299,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          313,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          326,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          339,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          352,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          366,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          379,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          393,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          406,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          419,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          432,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          446,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          460,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          473,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          487,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          500,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          513,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          526,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          540,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          553,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          566,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          580,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          593,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          606,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          619,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          633,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          646,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          660,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          673,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          686,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          701,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          712,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          726,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          740,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          752,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          766,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          779,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          792,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ],
+        [
+          806,
+          {
+            "leavingIndex": null,
+            "belowShiftPx": -72
+          }
+        ]
+      ],
+      "runningBefore": 0,
+      "runningAfterTrigger": 0,
+      "order": [
+        "Motion job 0",
+        "Motion job 2",
+        "Motion job 3",
+        "Motion job 4"
+      ],
+      "rapid": {
+        "leavingIndexesAfterTwoFrames": [
+          null,
+          null,
+          null
+        ],
+        "gone": true,
+        "next": "Motion job 0"
+      }
+    },
+    "bulkRemoval": {
+      "scriptMs": 0.6,
+      "layoutMs": 0.4,
+      "styleMs": 1,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 38,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 0,
+      "runningAfterTrigger": 0,
+      "animatingAfterTwoFrames": 0,
+      "rows": 44
+    },
+    "progressStep": {
+      "scriptMs": 0.2,
+      "layoutMs": 0.2,
+      "styleMs": 0.4,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 62,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [
+        [
+          1,
+          0.4
+        ],
+        [
+          10,
+          0.5
+        ],
+        [
+          23,
+          0.5
+        ],
+        [
+          36,
+          0.5
+        ],
+        [
+          50,
+          0.5
+        ],
+        [
+          64,
+          0.5
+        ],
+        [
+          76,
+          0.5
+        ],
+        [
+          90,
+          0.5
+        ],
+        [
+          103,
+          0.5
+        ],
+        [
+          116,
+          0.5
+        ],
+        [
+          131,
+          0.5
+        ],
+        [
+          144,
+          0.5
+        ],
+        [
+          158,
+          0.5
+        ],
+        [
+          171,
+          0.5
+        ],
+        [
+          184,
+          0.5
+        ],
+        [
+          197,
+          0.5
+        ],
+        [
+          211,
+          0.5
+        ],
+        [
+          224,
+          0.5
+        ],
+        [
+          238,
+          0.5
+        ],
+        [
+          251,
+          0.5
+        ],
+        [
+          264,
+          0.5
+        ],
+        [
+          278,
+          0.5
+        ],
+        [
+          291,
+          0.5
+        ],
+        [
+          304,
+          0.5
+        ],
+        [
+          317,
+          0.5
+        ],
+        [
+          330,
+          0.5
+        ],
+        [
+          343,
+          0.5
+        ],
+        [
+          357,
+          0.5
+        ],
+        [
+          370,
+          0.5
+        ],
+        [
+          383,
+          0.5
+        ],
+        [
+          397,
+          0.5
+        ],
+        [
+          410,
+          0.5
+        ],
+        [
+          423,
+          0.5
+        ],
+        [
+          438,
+          0.5
+        ],
+        [
+          451,
+          0.5
+        ],
+        [
+          464,
+          0.5
+        ],
+        [
+          478,
+          0.5
+        ],
+        [
+          491,
+          0.5
+        ],
+        [
+          505,
+          0.5
+        ],
+        [
+          517,
+          0.5
+        ],
+        [
+          531,
+          0.5
+        ],
+        [
+          545,
+          0.5
+        ],
+        [
+          558,
+          0.5
+        ],
+        [
+          571,
+          0.5
+        ],
+        [
+          584,
+          0.5
+        ],
+        [
+          597,
+          0.5
+        ],
+        [
+          611,
+          0.5
+        ],
+        [
+          624,
+          0.5
+        ],
+        [
+          638,
+          0.5
+        ],
+        [
+          651,
+          0.5
+        ],
+        [
+          664,
+          0.5
+        ],
+        [
+          678,
+          0.5
+        ],
+        [
+          690,
+          0.5
+        ],
+        [
+          703,
+          0.5
+        ],
+        [
+          716,
+          0.5
+        ],
+        [
+          730,
+          0.5
+        ],
+        [
+          744,
+          0.5
+        ],
+        [
+          757,
+          0.5
+        ],
+        [
+          771,
+          0.5
+        ],
+        [
+          784,
+          0.5
+        ],
+        [
+          798,
+          0.5
+        ],
+        [
+          811,
+          0.5
+        ]
+      ],
+      "runningBefore": 0,
+      "runningAfterTrigger": 1
+    },
+    "progressStream": {
+      "scriptMs": 1.4,
+      "layoutMs": 6.3,
+      "styleMs": 16.9,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 24,
+      "maxFrameMs": 17,
+      "slowFrames": 0,
+      "samples": [],
+      "runningBefore": 0,
+      "runningAfterTrigger": 0
+    },
+    "progressRetry": {
+      "scriptMs": 0.4,
+      "layoutMs": 0.2,
+      "styleMs": 0.6,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 54,
+      "maxFrameMs": 14,
+      "slowFrames": 0,
+      "samples": [
+        [
+          1,
+          0.02
+        ],
+        [
+          10,
+          0.02
+        ],
+        [
+          23,
+          0.02
+        ],
+        [
+          36,
+          0.02
+        ],
+        [
+          49,
+          0.02
+        ],
+        [
+          62,
+          0.02
+        ],
+        [
+          76,
+          0.02
+        ],
+        [
+          90,
+          0.02
+        ],
+        [
+          103,
+          0.02
+        ],
+        [
+          117,
+          0.02
+        ],
+        [
+          130,
+          0.02
+        ],
+        [
+          143,
+          0.02
+        ],
+        [
+          156,
+          0.02
+        ],
+        [
+          169,
+          0.02
+        ],
+        [
+          183,
+          0.02
+        ],
+        [
+          196,
+          0.02
+        ],
+        [
+          209,
+          0.02
+        ],
+        [
+          223,
+          0.02
+        ],
+        [
+          237,
+          0.02
+        ],
+        [
+          250,
+          0.02
+        ],
+        [
+          263,
+          0.02
+        ],
+        [
+          277,
+          0.02
+        ],
+        [
+          290,
+          0.02
+        ],
+        [
+          303,
+          0.02
+        ],
+        [
+          316,
+          0.02
+        ],
+        [
+          330,
+          0.02
+        ],
+        [
+          343,
+          0.02
+        ],
+        [
+          356,
+          0.02
+        ],
+        [
+          370,
+          0.02
+        ],
+        [
+          382,
+          0.02
+        ],
+        [
+          396,
+          0.02
+        ],
+        [
+          409,
+          0.02
+        ],
+        [
+          422,
+          0.02
+        ],
+        [
+          436,
+          0.02
+        ],
+        [
+          450,
+          0.02
+        ],
+        [
+          463,
+          0.02
+        ],
+        [
+          476,
+          0.02
+        ],
+        [
+          490,
+          0.02
+        ],
+        [
+          503,
+          0.02
+        ],
+        [
+          517,
+          0.02
+        ],
+        [
+          530,
+          0.02
+        ],
+        [
+          543,
+          0.02
+        ],
+        [
+          557,
+          0.02
+        ],
+        [
+          570,
+          0.02
+        ],
+        [
+          583,
+          0.02
+        ],
+        [
+          596,
+          0.02
+        ],
+        [
+          610,
+          0.02
+        ],
+        [
+          623,
+          0.02
+        ],
+        [
+          636,
+          0.02
+        ],
+        [
+          650,
+          0.02
+        ],
+        [
+          664,
+          0.02
+        ],
+        [
+          676,
+          0.02
+        ],
+        [
+          689,
+          0.02
+        ],
+        [
+          703,
+          0.02
+        ]
+      ],
+      "runningBefore": 0,
+      "runningAfterTrigger": 2
+    },
+    "progressIndeterminate": {
+      "indeterminate": true,
+      "visibleMin": 0.34,
+      "visibleMax": 0.34,
+      "leftMin": 0,
+      "leftMax": 0
+    },
+    "completion": {
+      "scriptMs": 0.4,
+      "layoutMs": 0.3,
+      "styleMs": 0.9,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 39,
+      "maxFrameMs": 15,
+      "slowFrames": 0,
+      "samples": [
+        [
+          1,
+          1
+        ],
+        [
+          10,
+          1
+        ],
+        [
+          23,
+          1
+        ],
+        [
+          38,
+          1
+        ],
+        [
+          50,
+          1
+        ],
+        [
+          63,
+          1
+        ],
+        [
+          76,
+          1
+        ],
+        [
+          90,
+          1
+        ],
+        [
+          103,
+          1
+        ],
+        [
+          117,
+          1
+        ],
+        [
+          130,
+          1
+        ],
+        [
+          143,
+          1
+        ],
+        [
+          156,
+          1
+        ],
+        [
+          170,
+          1
+        ],
+        [
+          183,
+          1
+        ],
+        [
+          196,
+          1
+        ],
+        [
+          210,
+          1
+        ],
+        [
+          223,
+          1
+        ],
+        [
+          236,
+          1
+        ],
+        [
+          250,
+          1
+        ],
+        [
+          263,
+          1
+        ],
+        [
+          276,
+          1
+        ],
+        [
+          290,
+          1
+        ],
+        [
+          303,
+          1
+        ],
+        [
+          316,
+          1
+        ],
+        [
+          330,
+          1
+        ],
+        [
+          343,
+          1
+        ],
+        [
+          356,
+          1
+        ],
+        [
+          370,
+          1
+        ],
+        [
+          385,
+          1
+        ],
+        [
+          396,
+          1
+        ],
+        [
+          410,
+          1
+        ],
+        [
+          423,
+          1
+        ],
+        [
+          436,
+          1
+        ],
+        [
+          450,
+          1
+        ],
+        [
+          463,
+          1
+        ],
+        [
+          477,
+          1
+        ],
+        [
+          490,
+          1
+        ],
+        [
+          503,
+          1
+        ]
+      ],
+      "runningBefore": 0,
+      "runningAfterTrigger": 2,
+      "sameTask": {
+        "status": "completed",
+        "check": true
+      },
+      "statusAnimations": 0,
+      "checksAfterRepaints": 1
+    },
+    "dragPickup": {
+      "scriptMs": 0.5,
+      "layoutMs": 0.1,
+      "styleMs": 0.9,
+      "longTasks": 0,
+      "longestTaskMs": 0,
+      "frames": 45,
+      "maxFrameMs": 26,
+      "slowFrames": 1,
+      "samples": [],
+      "runningBefore": 2,
+      "runningAfterTrigger": 2,
+      "activeDuringCall": true,
+      "activeAfterCall": false
+    },
+    "focus": {
+      "keptThroughChanges": true,
+      "afterStatusChange": "Resume",
+      "insideRow": true
+    },
+    "rapidPress": {
+      "pauseTwice": {
+        "calls": [
+          "pause_job"
+        ],
+        "status": "paused",
+        "focus": "Resume"
+      },
+      "cancelTwice": {
+        "calls": [
+          "cancel_job"
+        ],
+        "status": "cancelled",
+        "focus": "Try again"
+      },
+      "pauseHeld": {
+        "calls": [
+          "pause_job"
+        ],
+        "status": "paused",
+        "focus": "Resume"
+      },
+      "resumeLater": {
+        "calls": [
+          "resume_job"
+        ],
+        "status": "downloading"
+      },
+      "latePause": {
+        "focusBeforePause": "Pause",
+        "focusAfterPaused": "Resume",
+        "calls": [
+          "resume_job",
+          "pause_job"
+        ],
+        "status": "paused"
+      }
+    },
+    "removalFocus": {
+      "leavingInert": "gone",
+      "leavingFocusable": false,
+      "focus": "Try again",
+      "focusInNeighbour": true,
+      "calls": [
+        "remove_job"
+      ],
+      "neighbourStatus": "failed"
+    },
+    "hidden": {
+      "runningBefore": 0,
+      "rowAnimations": 0,
+      "progressSnapped": true,
+      "statusAnimations": 0,
+      "check": true
+    },
+    "disposal": {
+      "runningBefore": 0,
+      "collapsingBefore": 0,
+      "runningOnDetachedRows": 0,
+      "runningAfter": 0
+    },
+    "firstRow": {
+      "emptyShown": true,
+      "heights": [
+        [
+          1,
+          72
+        ],
+        [
+          6,
+          72
+        ],
+        [
+          19,
+          72
+        ],
+        [
+          33,
+          72
+        ],
+        [
+          45,
+          72
+        ],
+        [
+          59,
+          72
+        ],
+        [
+          72,
+          72
+        ],
+        [
+          86,
+          72
+        ],
+        [
+          100,
+          72
+        ],
+        [
+          112,
+          72
+        ],
+        [
+          125,
+          72
+        ],
+        [
+          139,
+          72
+        ],
+        [
+          152,
+          72
+        ],
+        [
+          166,
+          72
+        ],
+        [
+          179,
+          72
+        ],
+        [
+          192,
+          72
+        ],
+        [
+          205,
+          72
+        ],
+        [
+          218,
+          72
+        ],
+        [
+          232,
+          72
+        ],
+        [
+          246,
+          72
+        ],
+        [
+          260,
+          72
+        ],
+        [
+          273,
+          72
+        ],
+        [
+          286,
+          72
+        ],
+        [
+          299,
+          72
+        ],
+        [
+          312,
+          72
+        ],
+        [
+          325,
+          72
+        ],
+        [
+          340,
+          72
+        ],
+        [
+          353,
+          72
+        ],
+        [
+          366,
+          72
+        ],
+        [
+          379,
+          72
+        ],
+        [
+          392,
+          72
+        ],
+        [
+          405,
+          72
+        ],
+        [
+          419,
+          72
+        ],
+        [
+          432,
+          72
+        ],
+        [
+          445,
+          72
+        ],
+        [
+          459,
+          72
+        ]
+      ]
+    },
+    "pageErrors": []
+  }
+]

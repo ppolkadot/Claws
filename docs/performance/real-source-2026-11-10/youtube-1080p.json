@@ -1,0 +1,457 @@
+{
+  "label": "youtube-1080p",
+  "url": "https://www.youtube.com/watch?v=aqz-KE-bpKQ",
+  "date": "2026-11-10T13:14:50.460Z",
+  "resolutionCap": "1080",
+  "runsPerVariant": 3,
+  "environment": {
+    "os": "Windows 10.0.26200",
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12400F",
+    "ytdlp": "2026.10.26",
+    "aria2c": "aria2 version 1.37.0",
+    "ffmpeg": "ffmpeg version 9.0.2-full_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers"
+  },
+  "note": "Internet measurement through yt-dlp directly, not the Claws app. Each run extracts again and deletes its output.",
+  "summary": [
+    {
+      "variant": "baseline",
+      "completed": "3/3",
+      "medianTotalSeconds": 12.06,
+      "spreadTotalSeconds": 5.27,
+      "medianTransferSeconds": 6.14,
+      "medianTransferMiBps": 44.85,
+      "formats": [
+        "299+258 (https+https)"
+      ],
+      "outputMatchesBaseline": true,
+      "speedupVsBaseline": 1,
+      "transferSpeedupVsBaseline": 1
+    },
+    {
+      "variant": "dashy",
+      "completed": "3/3",
+      "medianTotalSeconds": 8.82,
+      "spreadTotalSeconds": 0.38,
+      "medianTransferSeconds": 4.2,
+      "medianTransferMiBps": 65.62,
+      "formats": [
+        "312+258 (m3u8_native+http_dash_segments)"
+      ],
+      "outputMatchesBaseline": true,
+      "speedupVsBaseline": 1.37,
+      "transferSpeedupVsBaseline": 1.46
+    },
+    {
+      "variant": "aria2c",
+      "completed": "3/3",
+      "medianTotalSeconds": 17,
+      "spreadTotalSeconds": 10.09,
+      "medianTransferSeconds": 4.2,
+      "medianTransferMiBps": 65.56,
+      "formats": [
+        "299+258 (https+https)"
+      ],
+      "outputMatchesBaseline": true,
+      "speedupVsBaseline": 0.71,
+      "transferSpeedupVsBaseline": 1.46
+    }
+  ],
+  "runs": [
+    {
+      "round": 1,
+      "variant": "baseline",
+      "exitCode": 0,
+      "error": null,
+      "totalSeconds": 13.09,
+      "extractSeconds": 2.89,
+      "transferSeconds": 7.59,
+      "finishSeconds": 2.61,
+      "transferMiBps": 36.28,
+      "formats": {
+        "ids": "299+258",
+        "protocols": "https+https"
+      },
+      "output": {
+        "container": "mov,mp4,m4a,3gp,3g2,mj2",
+        "durationSeconds": 634.62,
+        "bytes": 288738743,
+        "streams": [
+          {
+            "type": "video",
+            "codec": "h264",
+            "profile": "High",
+            "width": 1920,
+            "height": 1080,
+            "frameRate": "60/1",
+            "sampleRate": null,
+            "channels": null,
+            "durationSeconds": 634.57
+          },
+          {
+            "type": "audio",
+            "codec": "aac",
+            "profile": "LC",
+            "width": null,
+            "height": null,
+            "frameRate": "0/0",
+            "sampleRate": "48000",
+            "channels": 6,
+            "durationSeconds": 634.62
+          }
+        ]
+      }
+    },
+    {
+      "round": 1,
+      "variant": "dashy",
+      "exitCode": 0,
+      "error": null,
+      "totalSeconds": 8.82,
+      "extractSeconds": 3.11,
+      "transferSeconds": 4.2,
+      "finishSeconds": 1.51,
+      "transferMiBps": 65.62,
+      "formats": {
+        "ids": "312+258",
+        "protocols": "m3u8_native+http_dash_segments"
+      },
+      "output": {
+        "container": "mov,mp4,m4a,3gp,3g2,mj2",
+        "durationSeconds": 634.62,
+        "bytes": 288972331,
+        "streams": [
+          {
+            "type": "video",
+            "codec": "h264",
+            "profile": "High",
+            "width": 1920,
+            "height": 1080,
+            "frameRate": "60/1",
+            "sampleRate": null,
+            "channels": null,
+            "durationSeconds": 634.57
+          },
+          {
+            "type": "audio",
+            "codec": "aac",
+            "profile": "LC",
+            "width": null,
+            "height": null,
+            "frameRate": "0/0",
+            "sampleRate": "48000",
+            "channels": 6,
+            "durationSeconds": 634.62
+          }
+        ]
+      }
+    },
+    {
+      "round": 1,
+      "variant": "aria2c",
+      "exitCode": 0,
+      "error": null,
+      "totalSeconds": 17,
+      "extractSeconds": 3.18,
+      "transferSeconds": 5.38,
+      "finishSeconds": 8.44,
+      "transferMiBps": 51.18,
+      "formats": {
+        "ids": "299+258",
+        "protocols": "https+https"
+      },
+      "output": {
+        "container": "mov,mp4,m4a,3gp,3g2,mj2",
+        "durationSeconds": 634.62,
+        "bytes": 288738743,
+        "streams": [
+          {
+            "type": "video",
+            "codec": "h264",
+            "profile": "High",
+            "width": 1920,
+            "height": 1080,
+            "frameRate": "60/1",
+            "sampleRate": null,
+            "channels": null,
+            "durationSeconds": 634.57
+          },
+          {
+            "type": "audio",
+            "codec": "aac",
+            "profile": "LC",
+            "width": null,
+            "height": null,
+            "frameRate": "0/0",
+            "sampleRate": "48000",
+            "channels": 6,
+            "durationSeconds": 634.62
+          }
+        ]
+      }
+    },
+    {
+      "round": 2,
+      "variant": "dashy",
+      "exitCode": 0,
+      "error": null,
+      "totalSeconds": 8.84,
+      "extractSeconds": 3.46,
+      "transferSeconds": 4.51,
+      "finishSeconds": 0.87,
+      "transferMiBps": 61.11,
+      "formats": {
+        "ids": "312+258",
+        "protocols": "m3u8_native+http_dash_segments"
+      },
+      "output": {
+        "container": "mov,mp4,m4a,3gp,3g2,mj2",
+        "durationSeconds": 634.62,
+        "bytes": 288972331,
+        "streams": [
+          {
+            "type": "video",
+            "codec": "h264",
+            "profile": "High",
+            "width": 1920,
+            "height": 1080,
+            "frameRate": "60/1",
+            "sampleRate": null,
+            "channels": null,
+            "durationSeconds": 634.57
+          },
+          {
+            "type": "audio",
+            "codec": "aac",
+            "profile": "LC",
+            "width": null,
+            "height": null,
+            "frameRate": "0/0",
+            "sampleRate": "48000",
+            "channels": 6,
+            "durationSeconds": 634.62
+          }
+        ]
+      }
+    },
+    {
+      "round": 2,
+      "variant": "aria2c",
+      "exitCode": 0,
+      "error": null,
+      "totalSeconds": 8.29,
+      "extractSeconds": 3.22,
+      "transferSeconds": 4.2,
+      "finishSeconds": 0.87,
+      "transferMiBps": 65.56,
+      "formats": {
+        "ids": "299+258",
+        "protocols": "https+https"
+      },
+      "output": {
+        "container": "mov,mp4,m4a,3gp,3g2,mj2",
+        "durationSeconds": 634.62,
+        "bytes": 288738743,
+        "streams": [
+          {
+            "type": "video",
+            "codec": "h264",
+            "profile": "High",
+            "width": 1920,
+            "height": 1080,
+            "frameRate": "60/1",
+            "sampleRate": null,
+            "channels": null,
+            "durationSeconds": 634.57
+          },
+          {
+            "type": "audio",
+            "codec": "aac",
+            "profile": "LC",
+            "width": null,
+            "height": null,
+            "frameRate": "0/0",
+            "sampleRate": "48000",
+            "channels": 6,
+            "durationSeconds": 634.62
+          }
+        ]
+      }
+    },
+    {
+      "round": 2,
+      "variant": "baseline",
+      "exitCode": 0,
+      "error": null,
+      "totalSeconds": 7.82,
+      "extractSeconds": 2.59,
+      "transferSeconds": 3.66,
+      "finishSeconds": 1.57,
+      "transferMiBps": 75.24,
+      "formats": {
+        "ids": "299+258",
+        "protocols": "https+https"
+      },
+      "output": {
+        "container": "mov,mp4,m4a,3gp,3g2,mj2",
+        "durationSeconds": 634.62,
+        "bytes": 288738743,
+        "streams": [
+          {
+            "type": "video",
+            "codec": "h264",
+            "profile": "High",
+            "width": 1920,
+            "height": 1080,
+            "frameRate": "60/1",
+            "sampleRate": null,
+            "channels": null,
+            "durationSeconds": 634.57
+          },
+          {
+            "type": "audio",
+            "codec": "aac",
+            "profile": "LC",
+            "width": null,
+            "height": null,
+            "frameRate": "0/0",
+            "sampleRate": "48000",
+            "channels": 6,
+            "durationSeconds": 634.62
+          }
+        ]
+      }
+    },
+    {
+      "round": 3,
+      "variant": "aria2c",
+      "exitCode": 0,
+      "error": null,
+      "totalSeconds": 18.38,
+      "extractSeconds": 2.78,
+      "transferSeconds": 4.2,
+      "finishSeconds": 11.4,
+      "transferMiBps": 65.56,
+      "formats": {
+        "ids": "299+258",
+        "protocols": "https+https"
+      },
+      "output": {
+        "container": "mov,mp4,m4a,3gp,3g2,mj2",
+        "durationSeconds": 634.62,
+        "bytes": 288738743,
+        "streams": [
+          {
+            "type": "video",
+            "codec": "h264",
+            "profile": "High",
+            "width": 1920,
+            "height": 1080,
+            "frameRate": "60/1",
+            "sampleRate": null,
+            "channels": null,
+            "durationSeconds": 634.57
+          },
+          {
+            "type": "audio",
+            "codec": "aac",
+            "profile": "LC",
+            "width": null,
+            "height": null,
+            "frameRate": "0/0",
+            "sampleRate": "48000",
+            "channels": 6,
+            "durationSeconds": 634.62
+          }
+        ]
+      }
+    },
+    {
+      "round": 3,
+      "variant": "baseline",
+      "exitCode": 0,
+      "error": null,
+      "totalSeconds": 12.06,
+      "extractSeconds": 2.97,
+      "transferSeconds": 6.14,
+      "finishSeconds": 2.95,
+      "transferMiBps": 44.85,
+      "formats": {
+        "ids": "299+258",
+        "protocols": "https+https"
+      },
+      "output": {
+        "container": "mov,mp4,m4a,3gp,3g2,mj2",
+        "durationSeconds": 634.62,
+        "bytes": 288738743,
+        "streams": [
+          {
+            "type": "video",
+            "codec": "h264",
+            "profile": "High",
+            "width": 1920,
+            "height": 1080,
+            "frameRate": "60/1",
+            "sampleRate": null,
+            "channels": null,
+            "durationSeconds": 634.57
+          },
+          {
+            "type": "audio",
+            "codec": "aac",
+            "profile": "LC",
+            "width": null,
+            "height": null,
+            "frameRate": "0/0",
+            "sampleRate": "48000",
+            "channels": 6,
+            "durationSeconds": 634.62
+          }
+        ]
+      }
+    },
+    {
+      "round": 3,
+      "variant": "dashy",
+      "exitCode": 0,
+      "error": null,
+      "totalSeconds": 8.46,
+      "extractSeconds": 2.95,
+      "transferSeconds": 3.54,
+      "finishSeconds": 1.97,
+      "transferMiBps": 77.85,
+      "formats": {
+        "ids": "312+258",
+        "protocols": "m3u8_native+http_dash_segments"
+      },
+      "output": {
+        "container": "mov,mp4,m4a,3gp,3g2,mj2",
+        "durationSeconds": 634.62,
+        "bytes": 288972331,
+        "streams": [
+          {
+            "type": "video",
+            "codec": "h264",
+            "profile": "High",
+            "width": 1920,
+            "height": 1080,
+            "frameRate": "60/1",
+            "sampleRate": null,
+            "channels": null,
+            "durationSeconds": 634.57
+          },
+          {
+            "type": "audio",
+            "codec": "aac",
+            "profile": "LC",
+            "width": null,
+            "height": null,
+            "frameRate": "0/0",
+            "sampleRate": "48000",
+            "channels": 6,
+            "durationSeconds": 634.62
+          }
+        ]
+      }
+    }
+  ]
+}

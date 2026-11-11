@@ -287,6 +287,7 @@ export function stepper(
 }
 
 let toastHost: HTMLElement | null = null;
+const TOAST_LINGER_MS = 1500;
 
 export function toast(message: string, options: { tone?: "info" | "error"; action?: { label: string; run: () => void } } = {}) {
   if (!toastHost) {
@@ -294,9 +295,11 @@ export function toast(message: string, options: { tone?: "info" | "error"; actio
     document.body.appendChild(toastHost);
   }
   const { tone = "info", action } = options;
+  // An error is announced at once (role="alert"); other toasts wait their turn in the
+  // polite live region around them.
   const item = h(
     "div",
-    { class: `toast toast-${tone}` },
+    { class: `toast toast-${tone}`, attrs: { role: tone === "error" ? "alert" : undefined } },
     icon(tone === "error" ? "alert" : "check", 16),
     h("span", { class: "toast-text", text: message }),
     action
@@ -313,12 +316,36 @@ export function toast(message: string, options: { tone?: "info" | "error"; actio
         })
       : null,
   );
+  let timer = 0;
+  let remaining = tone === "error" ? 7000 : 4200;
+  let since = 0;
+  let gone = false;
   const dismiss = () => {
+    if (gone) return;
+    gone = true;
+    window.clearTimeout(timer);
     item.classList.add("leaving");
     window.setTimeout(() => item.remove(), 260);
   };
+  const run = () => {
+    if (gone) return;
+    window.clearTimeout(timer);
+    since = performance.now();
+    timer = window.setTimeout(dismiss, remaining);
+  };
+  // The countdown waits while the pointer is over the toast or the keyboard is in it, so a
+  // long message can be read; afterwards it gets at least a moment more.
+  const hold = () => {
+    if (gone) return;
+    window.clearTimeout(timer);
+    remaining = Math.max(TOAST_LINGER_MS, remaining - (performance.now() - since));
+  };
+  item.addEventListener("mouseenter", hold);
+  item.addEventListener("mouseleave", run);
+  item.addEventListener("focusin", hold);
+  item.addEventListener("focusout", run);
   toastHost.appendChild(item);
-  window.setTimeout(dismiss, tone === "error" ? 7000 : 4200);
+  run();
 }
 
 export interface SheetAction {

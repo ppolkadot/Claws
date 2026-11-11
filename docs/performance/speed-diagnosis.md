@@ -116,3 +116,9 @@ Claws, shows whether Claws adds anything.
 ## 2026-11-09 status: evidence-blocked
 
 No affected URL or site was supplied, so W0 of the consolidated plan was not run and **no download-speed improvement is claimed**. The 2026-11-09 source changes (late-progress state fix, disk sampling off the async workers, a single processing policy that now also skips cover-art embedding under Fast Save) reduce UI work and optional postprocessing passes; they are not evidence of higher network throughput. Needed to continue: the link or site, the quality chosen and the speed seen (see above).
+
+## 2026-11-10 status: public links measured, gate not passed
+
+Two public links (YouTube and a plain-HTTP archive.org file) were timed with the current arguments, with `formats=dashy` and with aria2c. No variant reached 1.5× and neither link was slow on this connection, so no speed change is built on it. See the [real-source benchmark](real-source-benchmark.md). An affected slow source is still needed to test the per-connection case.
+
+Fragment counts 1, 4, 8 and 16 were also compared with one, three and eight jobs on the fixtures. The default of 8 is unchanged; see [fragment count](fragment-count.md).

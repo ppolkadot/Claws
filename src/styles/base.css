@@ -266,11 +266,13 @@ html.inactive .light {
   box-shadow: none;
 }
 
+/* The sidebar's column opens and closes at once: animating the column's width would lay
+   out the whole content pane (every row of a long queue) on every frame. The content then
+   glides from where it was by transform (shell.ts setSidebar). */
 .app {
   display: grid;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   height: 100%;
-  transition: grid-template-columns var(--spring-smooth-d) var(--spring-smooth);
 }
 .app[data-sidebar="closed"] {
   grid-template-columns: 0px minmax(0, 1fr);
@@ -278,6 +280,8 @@ html.inactive .light {
 
 .sidebar {
   position: relative;
+  /* Above the content, which slides out from under the panel as the sidebar opens. */
+  z-index: 1;
   min-width: 0;
   overflow: hidden;
 }
@@ -507,10 +511,47 @@ html[data-backdrop="none"] .sidebar-panel {
   color: var(--label);
 }
 
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation-duration: 0.2s;
-  animation-timing-function: ease;
+/* Changing section moves the page only. The scroller that holds it is its own
+   view-transition part (bounded by the window, however long the list in it); the rest of
+   the window is shown in its new state at once, so the sidebar and its indicator never
+   crossfade with themselves. */
+.scroll {
+  view-transition-name: page;
+}
+::view-transition-old(root) {
+  display: none;
+}
+::view-transition-new(root),
+::view-transition-group(root) {
+  animation: none;
+}
+::view-transition-old(page),
+::view-transition-new(page) {
+  mix-blend-mode: normal;
+}
+::view-transition-old(page) {
+  animation: page-out 0.12s ease both;
+}
+::view-transition-new(page) {
+  animation: page-in var(--spring-smooth-d, 0.3s) var(--spring-smooth, ease) both;
+}
+@keyframes page-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
 }
 
 .fatal {
