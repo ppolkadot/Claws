@@ -1,7 +1,7 @@
 // Pieces the Download page's parts share: the choices made for one link, the small
 // controls, and the size-estimate line. Nothing here keeps state of its own except the
 // limit on estimate calls, which is shared on purpose.
-import type { DownloadMode, DownloadOptions, ProbeResult, TranscriptFormat, VideoPreset } from "../api";
+import type { DownloadMode, DownloadOptions, ProbeResult, SponsorBlockMode, TranscriptFormat, VideoPreset } from "../api";
 import { CallLimit, EstimateRun, aggregate, describeRun } from "../download-estimates";
 import { parseLinks, type BatchRow, type ParsedInput } from "../download-input";
 import { formatDuration } from "../format";
@@ -26,6 +26,28 @@ export interface LinkChoices {
   transcriptFormat: TranscriptFormat;
   /** Ticked entries of a playlist, by position. */
   selected: Set<number>;
+  sponsorblock: SponsorBlockMode;
+  /** The kinds of segment SponsorBlock applies to; never empty. */
+  sponsorCategories: Set<string>;
+  /** A playlist's videos go into a folder named after it, numbered by position. */
+  playlistFolder: boolean;
+}
+
+/** SponsorBlock's kinds of segment, by yt-dlp's names (download_policy.rs has the same list). */
+export const SPONSOR_CATEGORIES = [
+  { value: "sponsor", label: "Sponsor" },
+  { value: "selfpromo", label: "Self-promotion" },
+  { value: "interaction", label: "Interaction reminder" },
+  { value: "intro", label: "Intro" },
+  { value: "outro", label: "Outro" },
+  { value: "preview", label: "Preview" },
+  { value: "music_offtopic", label: "Non-music section" },
+  { value: "filler", label: "Filler" },
+];
+
+/** SponsorBlock only knows YouTube videos (yt-dlp applies it to no other site). */
+export function offersSponsorBlock(result: { site: string | null }): boolean {
+  return (result.site ?? "").toLowerCase().startsWith("youtube");
 }
 
 /** Batch rows built per frame, as in the Queue view: about a frame's worth of work. */

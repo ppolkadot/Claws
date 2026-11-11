@@ -126,7 +126,7 @@ function buildSettings(container: HTMLElement): () => void {
     row(
       "Embed metadata",
       toggle("Embed metadata", s().embedMetadata, (v) => update({ embedMetadata: v })),
-      "Adds title, uploader and date. Large files may take substantially longer because the whole file can be rewritten.",
+      "Adds title, uploader, date and chapters. Large files may take substantially longer because the whole file can be rewritten.",
     ),
     row(
       "Prefer matching source audio",

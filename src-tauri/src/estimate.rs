@@ -235,9 +235,12 @@ fn build(selection: Selection, options: &DownloadOptions, rewrite: bool) -> Down
     let parts = selection.parts;
     let sizes: Vec<Option<u64>> = parts.iter().map(|p| p.bytes).collect();
     let download_bytes = disk_budget::known_total(&sizes);
+    // SponsorBlock removal cuts the kept file by an amount nobody knows in advance: the
+    // bytes downloaded are as stated, but the figures are no longer exact for the result.
+    let cut = options.sponsorblock == download_policy::SponsorBlock::Remove && !options.fast_save && !options.sponsorblock_categories.is_empty();
     let confidence = match download_bytes {
         None => Confidence::Unknown,
-        Some(_) if parts.iter().all(|p| p.exact) => Confidence::Exact,
+        Some(_) if !cut && parts.iter().all(|p| p.exact) => Confidence::Exact,
         Some(_) => Confidence::Approximate,
     };
     let plan = RunPlan { mode: &options.mode, audio_format: &options.audio_format, rewrite, duration: selection.duration };
@@ -382,6 +385,18 @@ mod tests {
         assert_eq!(estimate.output_bytes, Some(309_600_000));
         assert!(!estimate.converted);
         assert_eq!(estimate.unknown_reason, None);
+    }
+
+    #[test]
+    fn a_download_sponsorblock_cuts_is_never_an_exact_size() {
+        let exact = || top(json!({"format_id": "18", "ext": "mp4", "filesize": 5_000_000, "vcodec": "avc1", "acodec": "mp4a", "duration": 60}));
+        let cutting = |mode, fast_save| DownloadOptions { sponsorblock: mode, sponsorblock_categories: vec!["sponsor".into()], fast_save, ..options("video") };
+        use download_policy::SponsorBlock::{Mark, Remove};
+        let removed = build(parse_selection(&exact()).unwrap(), &cutting(Remove, false), true);
+        assert_eq!(removed.confidence, Confidence::Approximate);
+        assert_eq!(removed.download_bytes, Some(5_000_000), "the bytes transferred are still what the site states");
+        assert_eq!(build(parse_selection(&exact()).unwrap(), &cutting(Mark, false), true).confidence, Confidence::Exact, "markers do not change the size");
+        assert_eq!(build(parse_selection(&exact()).unwrap(), &cutting(Remove, true), false).confidence, Confidence::Exact, "Fast Save skips the cut");
     }
 
     #[test]

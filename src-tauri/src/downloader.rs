@@ -13,7 +13,7 @@ use tokio::io::BufReader;
 use crate::bounded_io;
 use crate::disk_budget;
 use crate::download_files::{self, Publication, WorkspaceRef};
-use crate::download_policy::{self, FailureKind, JobExecution, Source, VideoPreset};
+use crate::download_policy::{self, FailureKind, JobExecution, Source, SponsorBlock, VideoPreset, SPONSORBLOCK_CATEGORIES};
 use crate::error::{notify, AppError, Result};
 use crate::history;
 use crate::queue_writer::{QueueSnapshot, QUEUE_SCHEMA};
@@ -74,6 +74,12 @@ pub struct DownloadOptions {
     pub fast_save: bool,
     /// What a transcript is saved as. Ignored (and kept at the default) for video and audio.
     pub transcript_format: TranscriptFormat,
+    /// SponsorBlock for this download (YouTube only): off, mark as chapters, or cut out.
+    pub sponsorblock: SponsorBlock,
+    /// The kinds of segment it applies to (`SPONSORBLOCK_CATEGORIES`), sorted. Empty when off.
+    pub sponsorblock_categories: Vec<String>,
+    /// A playlist's videos go into a folder named after it, each numbered by its position.
+    pub playlist_folder: bool,
 }
 
 impl Default for DownloadOptions {
@@ -88,6 +94,9 @@ impl Default for DownloadOptions {
             embed_subs: false,
             fast_save: false,
             transcript_format: TranscriptFormat::Txt,
+            sponsorblock: SponsorBlock::Off,
+            sponsorblock_categories: Vec::new(),
+            playlist_folder: false,
         }
     }
 }
@@ -139,9 +148,27 @@ impl DownloadOptions {
             self.audio_format = "mp3".into();
             self.embed_subs = false;
             self.fast_save = false;
+            self.sponsorblock = SponsorBlock::Off;
+            self.sponsorblock_categories.clear();
+            self.playlist_folder = false;
             return Ok(());
         }
         self.transcript_format = TranscriptFormat::Txt;
+        // Fast Save skips SponsorBlock (a whole-file pass), so the two never queue as
+        // different downloads: off has one shape.
+        if self.fast_save || self.sponsorblock == SponsorBlock::Off {
+            self.sponsorblock = SponsorBlock::Off;
+            self.sponsorblock_categories.clear();
+        } else {
+            if self.sponsorblock_categories.iter().any(|c| !SPONSORBLOCK_CATEGORIES.contains(&c.as_str())) {
+                return Err(AppError::msg("Unknown SponsorBlock category."));
+            }
+            self.sponsorblock_categories.sort();
+            self.sponsorblock_categories.dedup();
+            if self.sponsorblock_categories.is_empty() {
+                return Err(AppError::msg("Choose at least one kind of segment for SponsorBlock."));
+            }
+        }
         // Every entry is judged before the count, and nothing is dropped: a request that
         // asks for more than the limit is refused, never quietly shortened.
         if !self.subtitle_langs.iter().all(valid_lang) {
@@ -224,6 +251,10 @@ pub struct Job {
     /// only while the job is processing, and never written to the queue file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
+    /// A folder and number put in front of the filename template when the job first starts
+    /// (`download_policy::playlist_prefix`), for a playlist saved into its own folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_prefix: Option<String>,
 }
 
 pub const EVENT_SCHEMA: u16 = 1;
@@ -283,6 +314,19 @@ pub struct EnqueueItem {
     pub thumbnail: Option<String>,
     pub uploader: Option<String>,
     pub duration: Option<f64>,
+    /// Where the video sits in the playlist it was chosen from, for a numbered folder.
+    #[serde(default)]
+    pub playlist: Option<PlaylistPlace>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistPlace {
+    pub title: String,
+    /// The video's place in the whole playlist, from 1.
+    pub position: u32,
+    /// How many videos the playlist has, which sets the number's width.
+    pub count: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -592,6 +636,11 @@ pub fn enqueue(app: &AppHandle, items: Vec<EnqueueItem>, mut options: DownloadOp
             attempt: 0,
             priority: 0,
             stage: None,
+            name_prefix: item
+                .playlist
+                .as_ref()
+                .filter(|_| options.playlist_folder)
+                .map(|place| download_policy::playlist_prefix(&place.title, place.position.max(1), place.count)),
         });
     }
     if created.is_empty() {
@@ -1686,7 +1735,7 @@ fn stage_label(postprocessor: &str) -> Option<&'static str> {
         "FFmpegMetadata" => "Writing metadata",
         "EmbedThumbnail" => "Embedding cover art",
         "FFmpegEmbedSubtitle" => "Embedding subtitles",
-        "ModifyChapters" => "Editing chapters",
+        "ModifyChapters" => "Applying SponsorBlock",
         "MoveFiles" => "Moving the file",
         name if name.starts_with("FFmpegFixup") => "Fixing the file",
         _ => return None,
@@ -1777,10 +1826,15 @@ async fn prepare(
     settings: &Settings,
 ) -> std::result::Result<(JobExecution, WorkspaceRef, download_files::Manifest), String> {
     let first_start = job.execution.is_none();
-    let execution = job
-        .execution
-        .clone()
-        .unwrap_or_else(|| JobExecution::freeze(settings, job.options.fast_save));
+    let execution = job.execution.clone().unwrap_or_else(|| {
+        let mut frozen = JobExecution::freeze(settings, job.options.fast_save);
+        // A playlist's folder and number go in front of the template once, at the first
+        // start; resumes and retries reuse the frozen template, so the folder never moves.
+        if let Some(prefix) = &job.name_prefix {
+            frozen.filename_template = format!("{prefix}{}", frozen.filename_template);
+        }
+        frozen
+    });
     let output = execution.output_dir.clone();
     let id = job.id.clone();
     let attempt = job.attempt;
@@ -2455,6 +2509,35 @@ mod tests {
         assert_eq!(value_after(&limited, "--concurrent-fragments").as_deref(), Some("1"));
         assert_eq!(limited.last(), open.last(), "the link stays the last argument");
         assert_eq!(execution.fragment_concurrency, 8, "the frozen choice is not rewritten");
+    }
+
+    #[test]
+    fn sponsorblock_choices_are_checked_sorted_and_cleared_when_they_cannot_apply() {
+        let with = |mode: SponsorBlock, categories: &[&str]| DownloadOptions {
+            sponsorblock: mode,
+            sponsorblock_categories: categories.iter().map(|c| c.to_string()).collect(),
+            ..DownloadOptions::default()
+        };
+        let mut chosen = with(SponsorBlock::Remove, &["sponsor", "intro", "sponsor"]);
+        chosen.validate().unwrap();
+        assert_eq!(chosen.sponsorblock_categories, ["intro", "sponsor"], "sorted and without repeats: one duplicate key");
+
+        assert!(with(SponsorBlock::Mark, &[]).validate().is_err(), "on with nothing chosen is refused, not guessed");
+        assert!(with(SponsorBlock::Mark, &["sponsor", "--exec"]).validate().is_err(), "only the listed categories reach the command line");
+
+        let mut off = with(SponsorBlock::Off, &["sponsor"]);
+        off.validate().unwrap();
+        assert!(off.sponsorblock_categories.is_empty());
+        let mut fast = DownloadOptions { fast_save: true, ..with(SponsorBlock::Remove, &["sponsor"]) };
+        fast.validate().unwrap();
+        assert_eq!((fast.sponsorblock, fast.sponsorblock_categories.len()), (SponsorBlock::Off, 0), "Fast Save skips it");
+        let mut text = DownloadOptions { mode: "transcript".into(), subtitle_langs: vec!["en".into()], playlist_folder: true, ..with(SponsorBlock::Remove, &["sponsor"]) };
+        text.validate().unwrap();
+        assert_eq!((text.sponsorblock, text.playlist_folder), (SponsorBlock::Off, false));
+
+        // Options saved before these fields existed read as off.
+        let old: DownloadOptions = serde_json::from_str(r#"{"mode":"video","audioFormat":"mp3"}"#).unwrap();
+        assert_eq!((old.sponsorblock, old.sponsorblock_categories.len(), old.playlist_folder), (SponsorBlock::Off, 0, false));
     }
 
     #[test]

@@ -152,7 +152,7 @@ const probe = (url: string): ProbeResult =>
         uploader: "Sample Channel",
         thumbnail: null,
         duration: null,
-        site: "Sample Site",
+        site: url.includes("youtube.") ? "Youtube" : "Sample Site",
         heights: [],
         subtitles: [],
         entries: Array.from({ length: 8 }, (_, i) => ({
@@ -172,7 +172,7 @@ const probe = (url: string): ProbeResult =>
         uploader: "Sample Channel",
         thumbnail: art(hash(url) % 360, (hash(url) + 60) % 360),
         duration: 120 + (hash(url) % 1800),
-        site: "Sample Site",
+        site: url.includes("youtube.") ? "Youtube" : "Sample Site",
         heights: sampleResolutions(url).map((r) => r.shortSide),
         resolutions: sampleResolutions(url),
         ...sampleCaptions(url),

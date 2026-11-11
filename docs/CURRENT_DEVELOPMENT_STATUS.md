@@ -6,6 +6,19 @@ Source version: **1.0.8** on `main`, merged from the approved `codex/release-1.0
 
 The [1.0.8 release notes](releases/1.0.8.md) and installer build record identify the packaged source (`6794ea9`), checksums and verification. The installer is unsigned; installation/upgrade remains unverified. Build records describe packaging-time state, while the GitHub release records publication. Older release records and binaries remain historical evidence.
 
+## Unreleased work
+
+Branch `improve/phase-0-safety-net` ([pull request 1](https://github.com/ppolkadot/Claws/pull/1)) carries the improvement plan on top of 1.0.8. It is not packaged, and none of it has been exercised in the native app. The version files still read 1.0.8.
+
+- **Safety net:** Windows CI for every push and pull request; new installers are no longer committed.
+- **Download speed:** the benchmark gate did not justify `formats=dashy` or an aria2c transport ([real-source benchmark](performance/real-source-benchmark.md)); processing no longer holds a transfer slot (`max_processing`); a per-download speed limit; the fragment default stays at 8 ([fragment count](performance/fragment-count.md)).
+- **Setup:** Claws installs Deno itself and a first-run panel installs yt-dlp, ffmpeg and Deno from one button. yt-dlp is no longer fetched without asking.
+- **Queue and Library:** bulk actions, Move to Top, a summary line, the processing step, error details with Copy, taskbar progress, finish notifications, Library sorting and filtering, remembered choices. Dropping a link onto the window is deferred (see the [handoff](HANDOFF.md)).
+- **Motion:** page-only navigation, a transform-based sidebar, gliding Library cards, a lookup skeleton, one easing for leaving rows ([motion polish](performance/motion-polish.md)).
+- **Features:** chapters named with the metadata pass, optional SponsorBlock for YouTube, playlist folders ([specification](superpowers/specs/2026-11-11-chapters-sponsorblock-playlist-folders.md)). Clip sections and a `claws://` link handler stay deferred.
+
+Settings schema stays 2 and queue schema stays 3; every new field is defaulted.
+
 ## Implemented behavior
 
 - Windows Tauri app using yt-dlp/FFmpeg, bundled Polaris fonts, desktop glass and the existing system/solid material options.

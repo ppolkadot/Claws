@@ -28,6 +28,9 @@ Claws is a Windows Tauri 2 desktop app with plain TypeScript/CSS. Rust invokes y
 - **Move to Top** raises a job's saved `priority`; `pump` starts the waiting job with the highest one, then list order, and the interface lists by priority, then creation time. The processing `stage` is transient: sent to the interface, never written to the queue file. Both are defaulted fields, so queue schema stays 3.
 - The bulk commands (`pause_all`, `resume_all`, `retry_failed`) go through the per-job `pause` and `requeue`, so they keep every per-job rule.
 - Notifications are sent from Rust (`desktop::notify_finished`) only when the setting is on and the window is hidden, minimized or unfocused. The capability file grants only `core:window:allow-set-progress-bar` beyond what was there; add nothing that is not used.
+- SponsorBlock is part of a job's frozen options, off by default, and the only feature that contacts `sponsor.ajay.app`; keep it opt-in per download and say so in the interface. It counts as a rewrite pass (`ProcessingPolicy::rewrites_output`), Fast Save turns it off, and a removal lowers an exact size preview to approximate. Only the categories in `SPONSORBLOCK_CATEGORIES` reach the command line.
+- A playlist folder is a prefix (`download_policy::playlist_prefix`) stored on the job and put in front of the filename template when the job first starts. It is sanitized to one plain folder name and escaped for the template. Publication is unchanged: the same ownership and no-overwrite rules as any template with a folder.
+- Chapters are embedded by the metadata pass (`--embed-metadata --embed-chapters`), never by a pass of their own.
 - Progress reaches 100% only after publication. Late telemetry cannot undo Processing. Queue event revisions prevent older replies from reverting state.
 - Keep size preview, admission and processing policy consistent. Processing monitoring is best effort; a preview is not a reservation or a strict gate before every FFmpeg launch.
 - yt-dlp calls include `--encoding utf-8`; environment variables alone did not preserve printed Unicode paths on Windows.
@@ -83,6 +86,8 @@ Use disposable output and profiles. For native drag, keep the original Library f
 4. Check Unicode, spaces, long paths, UNC/network locations and unavailable shares; the UI must remain responsive.
 5. Check swapped primary buttons, receiver dialogs, keyboard reveal, touch/pen and thumbnail non-drag behavior.
 6. Exercise a stalled receiver on supported Windows versions without starting unlimited workers or forcibly terminating COM calls.
+
+Not yet exercised against a real download: SponsorBlock marking and removal, chapters in the saved file, and a playlist folder end to end (yt-dlp accepts the arguments and the prefixed template in a simulated run).
 
 Other outstanding acceptance: clean install/upgrade, native reduced-motion behavior, real WebView2/OS-IME editing, real Spotify share links, live selected-source failures and constrained-disk processing. See [current status](CURRENT_DEVELOPMENT_STATUS.md) for scope and [Spotify verification](spotify-track-matching-verification.md) for the existing evidence.
 
