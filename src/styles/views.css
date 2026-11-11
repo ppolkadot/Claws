@@ -372,6 +372,53 @@
   color: var(--orange-text);
 }
 
+/* While a link is read: the preview card's own box, so nothing moves when the details
+   arrive. The sheen is transform and opacity only. */
+.preview-skeleton .preview-thumb,
+.skeleton-line {
+  position: relative;
+  overflow: hidden;
+  background: var(--fill);
+  box-shadow: none;
+}
+.preview-skeleton .preview-info {
+  flex: 1;
+  gap: 12px;
+}
+.skeleton-line {
+  height: 14px;
+  border-radius: 7px;
+}
+.skeleton-line:first-child {
+  width: 72%;
+  height: 22px;
+  border-radius: 9px;
+}
+.skeleton-line:last-child {
+  width: 38%;
+}
+.preview-skeleton .preview-thumb::after,
+.skeleton-line::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--fill-2), transparent);
+  transform: translateX(-100%);
+  animation: skeleton-sheen 1.4s ease-in-out infinite;
+}
+@keyframes skeleton-sheen {
+  to {
+    transform: translateX(100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .preview-skeleton .preview-thumb::after,
+  .skeleton-line::after {
+    animation: none;
+    opacity: 0;
+  }
+}
+
 .actions {
   display: flex;
   align-items: center;

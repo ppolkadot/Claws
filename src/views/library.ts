@@ -7,12 +7,16 @@ import { TileCache, reconcileChildren } from "../library-cache";
 import { store } from "../store";
 import { button, confirmSheet, segmented, toast } from "../ui/components";
 import { h, replace } from "../ui/dom";
+import { canAnimate, cancelMotion, glideFrom } from "../ui/motion";
 import { icon } from "../ui/icons";
 import { fileDragButton } from "../ui/file-drag";
 import { LIBRARY_KINDS, LIBRARY_ORDERS, matchesLibraryKind, matchesLibrarySearch, sortLibrary, type LibraryKind, type LibraryOrder } from "../library-search";
 import type { MountView } from "./shell";
 
 const fail = (error: unknown) => toast(errorMessage(error), { tone: "error" });
+
+/** At most this many cards glide to a new place at once (as the Queue builds 40 rows a frame); more simply appear there. */
+const MOVING_TILES = 40;
 
 export async function showKept(id: string) {
   try {
@@ -212,8 +216,21 @@ export const mountLibrary: MountView = (container, ctx) => {
     tiles.prune(new Set(store.history.map((i) => i.id)));
     clearAll.disabled = store.history.length === 0;
     searchBox.hidden = store.history.length === 0;
+    // Where each card is now, read together before anything moves (a card already gliding
+    // is read where it is seen), for the cards that stay.
+    const staying = canAnimate() && grid.children.length <= MOVING_TILES ? ([...grid.children] as HTMLElement[]) : [];
+    const before = new Map(staying.map((el) => [el, el.getBoundingClientRect()]));
     reconcileChildren(grid, items.map(tileFor)); // tiles that stay are left in place, with their focus
     grid.hidden = items.length === 0;
+    if (before.size > 0 && !grid.hidden) {
+      const kept = staying.filter((el) => el.parentElement === grid);
+      cancelMotion(...kept);
+      const after = kept.map((el) => el.getBoundingClientRect()); // one read for all, at rest
+      kept.forEach((el, i) => {
+        const was = before.get(el)!;
+        glideFrom(el, was.left - after[i].left, was.top - after[i].top);
+      });
+    }
     note.hidden = items.length > 0;
     if (items.length === 0) {
       const none = store.history.length === 0;
@@ -244,5 +261,6 @@ export const mountLibrary: MountView = (container, ctx) => {
   return () => {
     offHistory();
     offReport();
+    cancelMotion(...([...grid.children] as HTMLElement[]));
   };
 };

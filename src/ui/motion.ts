@@ -134,13 +134,14 @@ export function collapseOut(el: HTMLElement, height?: number): Animation | null 
   const from = height ?? el.getBoundingClientRect().height;
   cancelMotion(el);
   el.style.overflow = "hidden";
-  const { duration } = spring("smooth");
+  // The same sampled spring as a row arriving (expandIn), so the list closes as it opens.
+  const { easing, duration } = spring("smooth");
   const animation = el.animate(
     [
       { height: `${from}px`, opacity: 1 },
       { height: "0px", opacity: 0, paddingTop: "0px", paddingBottom: "0px" },
     ],
-    { duration: Math.min(duration, 320), easing: "cubic-bezier(0.32, 0.72, 0, 1)", fill: "forwards" },
+    { duration, easing, fill: "forwards" },
   );
   own(el, animation);
   animation.onfinish = () => el.remove();
@@ -162,6 +163,18 @@ export function settleIn(el: Element | null): Animation | null {
     ],
     { duration, easing },
   );
+}
+
+/**
+ * Moves an element from where it was to where it now is (a first-and-last position move):
+ * `dx` and `dy` are the old position minus the new one. Transform only. Returns null (no
+ * movement) with reduced motion, in a hidden window, or when it has not really moved.
+ */
+export function glideFrom(el: HTMLElement, dx: number, dy: number): Animation | null {
+  if (!canAnimate() || (Math.abs(dx) < 1 && Math.abs(dy) < 1)) return null;
+  const { easing, duration } = spring("smooth");
+  cancelMotion(el);
+  return own(el, el.animate([{ transform: `translate(${Math.round(dx)}px, ${Math.round(dy)}px)` }, { transform: "none" }], { duration, easing }));
 }
 
 /** A small spring "pop", used when a count changes; none with reduced motion or in a hidden window. */

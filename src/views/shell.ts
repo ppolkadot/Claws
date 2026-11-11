@@ -6,7 +6,7 @@ import { store, type Route } from "../store";
 import { h, clear } from "../ui/dom";
 import { icon, type IconName } from "../ui/icons";
 import { progressBar, setProgress } from "../ui/layout";
-import { canAnimate, pop } from "../ui/motion";
+import { canAnimate, glideFrom, pop } from "../ui/motion";
 
 export interface ViewContext {
   setActions(nodes: Node[]): void;
@@ -112,7 +112,12 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
   root.append(chrome, app);
 
   function setSidebar(open: boolean, persist = true) {
+    // First and last positions: the column changes at once (one layout, however long the
+    // list), and what moved glides from where it was, by transform only.
+    const gliding = persist && canAnimate() ? [scroller, toolbarTitle] : [];
+    const before = gliding.map((el) => (el === scroller ? page : el).getBoundingClientRect().left);
     app.dataset.sidebar = open ? "open" : "closed";
+    gliding.forEach((el, i) => glideFrom(el, before[i] - (el === scroller ? page : el).getBoundingClientRect().left, 0));
     // Hidden content must not be reachable by keyboard while it is off screen.
     sidebar.toggleAttribute("inert", !open);
     const label = `${open ? "Hide" : "Show"} Sidebar (Ctrl+Alt+S)`;
