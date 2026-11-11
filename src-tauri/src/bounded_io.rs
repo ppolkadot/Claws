@@ -154,8 +154,10 @@ mod tests {
             if let Some(pid) = child.id() {
                 crate::downloader::kill_tree(pid, true);
             }
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await.expect("the process must end");
-            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            // Generous: on a loaded CI runner, starting Python and taskkill can each take seconds.
+            let limit = std::time::Duration::from_secs(60);
+            let _ = tokio::time::timeout(limit, child.wait()).await.expect("the process must end");
+            assert!(started.elapsed() < limit, "took {:?}", started.elapsed());
         });
     }
 

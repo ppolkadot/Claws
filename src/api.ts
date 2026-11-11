@@ -26,6 +26,9 @@ export interface Settings {
   glassIntensity: number;
   backdrop: Backdrop;
   maxConcurrent: number;
+  maxProcessing: number;
+  speedLimitKib: number;
+  notifyWhenDone: boolean;
   embedMetadata: boolean;
   /** System-wide Quick Open shortcut, e.g. "ctrl+alt+d", or "off". */
   quickOpenShortcut: QuickOpenShortcut;
@@ -49,7 +52,13 @@ export type JobStatus =
 
 export type DownloadMode = "video" | "audio" | "transcript";
 
+export type SponsorBlockMode = "off" | "mark" | "remove";
+
 export interface DownloadOptions {
+  /** SponsorBlock for this download (YouTube only). Absent is off. Skipped by Fast Save. */
+  sponsorblock?: SponsorBlockMode;
+  sponsorblockCategories?: string[];
+  playlistFolder?: boolean;
   /** "transcript" saves text made from one of the site's caption tracks; no media. */
   mode: DownloadMode;
   /** Largest video to fetch, as its shorter side (yt-dlp's `res`); null is the best. */
@@ -106,6 +115,9 @@ export interface Job {
   cancelRequested?: boolean;
   /** Increases with every change; older or repeated events are ignored. */
   revision: number;
+  /** Raised by Move to Top: listed and started before jobs with a lower value. */
+  priority?: number;
+  stage?: string | null;
 }
 
 export interface JobExecution {
@@ -158,6 +170,8 @@ export interface PublishedFile {
   state: "moving" | "done" | "withheld";
 }
 
+import type { ToolName } from "./setup.js";
+
 export interface ToolInfo {
   path: string;
   version: string;
@@ -169,6 +183,8 @@ export interface ToolInfo {
 export interface ToolsStatus {
   ytdlp: ToolInfo | null;
   ffmpeg: ToolInfo | null;
+  /** Deno, installed by Claws or found on PATH. Null while only Node.js is present. */
+  deno: ToolInfo | null;
   latestYtdlp: string | null;
   /** "Deno" or "Node.js", the JavaScript runtime yt-dlp uses for sites like YouTube. */
   jsRuntime: string | null;
@@ -222,6 +238,8 @@ export interface CachedLink {
 }
 
 export interface EnqueueItem {
+  /** Where the video sits in the playlist it was chosen from, for a numbered folder. */
+  playlist?: { title: string; position: number; count: number } | null;
   matchOrigin?: MatchOrigin | null;
   url: string;
   playlistIndex?: number | null;
@@ -232,7 +250,7 @@ export interface EnqueueItem {
 }
 
 export interface ToolProgress {
-  tool: "ytdlp" | "ffmpeg";
+  tool: ToolName;
   received: number;
   total: number;
   stage: "download" | "extract";
@@ -311,6 +329,10 @@ export const api = {
   cancel: (id: string) => invoke<void>("cancel_job", { id }),
   remove: (id: string) => invoke<void>("remove_job", { id }),
   clearFinished: () => invoke<void>("clear_finished"),
+  pauseAll: () => invoke<number>("pause_all"),
+  resumeAll: () => invoke<number>("resume_all"),
+  retryFailed: () => invoke<number>("retry_failed"),
+  prioritize: (id: string) => invoke<void>("prioritize_job", { id }),
   saveSettings: (settings: Settings) => invoke<SavedSettings>("save_settings", { settings }),
   listHistory: () => invoke<HistoryItem[]>("list_history"),
   openDownload: (id: string) => invoke<void>("open_download", { id }),
@@ -329,6 +351,7 @@ export const api = {
   installYtdlp: () => invoke<ToolsStatus>("install_ytdlp"),
   updateYtdlp: () => invoke<ToolsStatus>("update_ytdlp"),
   installFfmpeg: () => invoke<ToolsStatus>("install_ffmpeg"),
+  installDeno: () => invoke<ToolsStatus>("install_deno"),
   openFontPage: () => invoke<void>("open_font_page"),
 };
 

@@ -47,18 +47,26 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 - **Fast Save.** An optional per-download switch. It skips writing metadata into the file, skips embedding the cover art (MP3 and M4A audio) and keeps subtitles as separate `.srt` files, so a large file is not rewritten after it downloads. Conversion or merging that the chosen format needs still happens. The video and audio are the same either way.
 - **Audio without needless conversion.** With *Prefer matching source audio* on, an audio stream already in the chosen format is saved by copying it instead of converting it.
 - **Spotify track matching.** Paste a single `https://open.spotify.com/track/...` song link (localized track links also work), or a `https://spotify.link/...` short link that resolves through supported Spotify hosts. Claws reads public song details and searches YouTube. Select a recording, press **Use this match** to check its audio, then choose an audio format and press **Download**. Nothing is selected or downloaded automatically. The Queue and Library label these files **Source: YouTube match**. The file is YouTube audio; the recording/version may differ, and FLAC or WAV conversion cannot improve its original quality. No Spotify account or developer credentials are needed. If public metadata fails, enter the artist/title to search manually. Albums, playlists, Spotify URIs and batch matching are not supported; open each track individually. Short links that redirect outside the supported hosts require the full track URL.
-- **Playlists and channels.** Pick exactly which videos to download.
+- **Playlists and channels.** Pick exactly which videos to download. **Playlist folder** saves them into a folder named after the playlist, each numbered by its place in it (`My Playlist\03 - Title [id].mp4`).
+- **Chapters.** With *Embed metadata* on, a video's chapters are written into the file together with its title, uploader and date.
+- **SponsorBlock (YouTube).** An optional per-download choice, off by default: **Mark** turns sponsor segments (and the other kinds you tick) into chapter markers, **Remove** cuts them out of the file. It uses the community SponsorBlock database, so yt-dlp asks `sponsor.ajay.app` about the video, and only when you turn it on. Removing rewrites the file, can leave a brief glitch at a cut, and makes the saved file smaller than the size preview. Fast Save skips SponsorBlock.
 
 **Managing**
 - **Queue.** Several downloads at once, with live progress, speed and time left.
   - Progress is weighted by bytes across the video and audio streams.
   - When a size is only an estimate it says "about"; when it is unknown, the row shows bytes downloaded instead of a guessed percentage.
-  - Pause, resume, cancel and retry.
+  - Pause, resume, cancel and retry, one download at a time or all at once (**Pause All**, **Resume All**, **Retry Failed**).
+  - **Move to top** puts a waiting download first in line; the order survives a restart.
+  - A summary line counts what is downloading, processing, waiting, paused and failed. It adds the combined speed, and the time left only when every running download reports one and nothing is still waiting. Nothing in it is guessed.
+  - While a file is processed the row names the step (merging, converting audio, writing metadata) when yt-dlp reports it.
+  - A failed download shows its full message with a **Copy** button.
+  - The taskbar button shows the progress of the running downloads, weighted by bytes, and a Windows notification says when a download finishes or fails while Claws is hidden or behind another window.
   - Unfinished downloads survive a restart as paused.
   - A paused download keeps the folder and file name it started with, even if you change them in Settings.
 - **Safe with your files.** Each download works in its own hidden folder until it is finished. Cancelling deletes that folder and nothing else. A finished file never replaces a file that already exists.
 - **Disk space check.** Before a large download starts, Claws estimates the space it will need, including the extra copy while merging, and monitors space when processing starts. Processing checks are best effort; if stopped, owned files are kept for retry.
-- **Library.** Finished downloads with artwork and search. Open them or show them in their folder.
+- **Library.** Finished downloads with artwork and search. Sort them by date, title or size, and show only video, audio or transcripts. Click the artwork to open a file, or show it in its folder.
+- **Remembers your choices.** The type, audio format, quality limit, format preset and Fast Save of your last download are offered again for the next link. A quality the new link does not offer goes back to Best.
 - **Sign-in.** Use cookies from your browser, or a `cookies.txt` file, for sites that need you to be logged in.
 - **Instant repeat lookups.** Links you have downloaded keep their details, so looking one up again shows it at once while Claws checks the site for changes. Pick any item under **Recent** to see it again.
 
@@ -79,7 +87,7 @@ Paste a link, choose a quality, and the file lands on your disk. Claws sits on c
 
 1. Download `Claws_<version>_x64-setup.exe` from the [Releases](https://github.com/ppolkadot/Claws/releases) page.
 2. Run it. Releases are not code-signed yet, so Windows SmartScreen may warn on first run; choose **More info → Run anyway**.
-3. On first launch Claws downloads yt-dlp into its own folder and verifies it against the checksum yt-dlp publishes. This happens once and takes a few seconds.
+3. On first launch the Download page shows **Set up Claws** with the tools that are missing: yt-dlp, ffmpeg and a JavaScript runtime (Deno). Press **Set Up Everything** and Claws downloads each one into its own folder from its project's GitHub releases and verifies it against the published checksum before using it. Nothing is downloaded until you press the button. A tool already on your `PATH` counts as ready; ffmpeg and Deno can be skipped with **Not Now**.
 
 **Claws 1.0.8**: [GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.8), [Windows installer](https://github.com/ppolkadot/Claws/releases/download/v1.0.8/Claws_1.0.8_x64-setup.exe), [SHA-256 checksum](installers/Claws_1.0.8_x64-setup.exe.sha256) and [release notes](docs/releases/1.0.8.md). It adds Spotify track matching through explicitly confirmed YouTube recordings and includes the Unicode-path correction from 1.0.7.
 
@@ -92,7 +100,7 @@ The application identifier and data location remain unchanged. Queue schema rema
 | OS | Windows 11. Windows 10 has not been tested. |
 | Runtime | Microsoft Edge WebView2, included with Windows 11. |
 | ffmpeg | Needed to merge HD video with audio and to convert audio. Claws uses the copy on your `PATH`, or installs one from **Settings → Tools**. |
-| JavaScript runtime | Recent YouTube extraction needs Deno or Node.js. Claws finds either on your `PATH`; **Settings → Tools** shows which one it uses. |
+| JavaScript runtime | Recent YouTube extraction needs Deno or Node.js. Claws installs Deno for you (first-run setup, or **Settings → Tools**), or uses either one found on your `PATH`; **Settings → Tools** shows which one it uses. |
 
 ## Using Claws
 
@@ -117,11 +125,11 @@ The application identifier and data location remain unchanged. Queue schema rema
 
 | Section | Options |
 | --- | --- |
-| **Downloads** | Output folder (default `Downloads\Claws`), filename template (a yt-dlp output template), simultaneous downloads (1–8), embed metadata, prefer matching source audio |
-| **Quick Access** | Quick Open shortcut (Ctrl+Alt+D, Ctrl+Alt+Space, Ctrl+Shift+Space or off), keep running when closed, open at login |
+| **Downloads** | Output folder (default `Downloads\Claws`), filename template (a yt-dlp output template), simultaneous downloads (1–8), processing alongside (1–8, default 2: downloads that may be merging or converting without holding up the next transfer), speed limit (per download, off by default; applies from the next download that starts or resumes), embed metadata, prefer matching source audio |
+| **Quick Access** | Quick Open shortcut (Ctrl+Alt+D, Ctrl+Alt+Space, Ctrl+Shift+Space or off), notify when a download finishes, keep running when closed, open at login |
 | **Appearance** | Theme (System, Light, Dark), window material (Glass, Acrylic, Mica, Solid), transparency, font status |
 | **Sign-in** | Cookies from none, a browser (Firefox, Chrome, Edge, Brave, Opera, Vivaldi), or a `cookies.txt` file |
-| **Tools** | yt-dlp version and one-click update, ffmpeg status and install, and whether a JavaScript runtime (Deno or Node.js) was found |
+| **Tools** | yt-dlp version and one-click update, ffmpeg status and install, and the JavaScript runtime (Deno or Node.js) with a Deno install when none is found |
 
 The window materials:
 - **Glass** is the default. It shows your desktop through the window, blurred.

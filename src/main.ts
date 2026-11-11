@@ -3,11 +3,12 @@ import "./styles/base.css";
 import "./styles/components.css";
 import "./styles/views.css";
 
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { ProgressBarStatus, getCurrentWindow } from "@tauri-apps/api/window";
 
 import { api, onEvent, errorMessage, type Job, type JobEvent, type JobRemoved, type JobsAdded, type ToolProgress } from "./api";
 import { store } from "./store";
 import { StartupEvents, StatusTransitions } from "./queue-events";
+import { sameTaskbarState, taskbarState, type TaskbarState } from "./queue-summary";
 import { h } from "./ui/dom";
 import { toast } from "./ui/components";
 import { installSprings } from "./ui/motion";
@@ -126,6 +127,31 @@ async function start() {
       }
     })();
   });
+
+  // The taskbar button follows the running downloads, at most twice a second, and only
+  // when what it shows would change.
+  if ("__TAURI_INTERNALS__" in window) {
+    let shown: TaskbarState = { status: "none" };
+    let taskbarTimer = 0;
+    const paintTaskbar = () => {
+      taskbarTimer = 0;
+      const next = taskbarState(store.jobs.values());
+      if (sameTaskbarState(shown, next)) return;
+      shown = next;
+      const status = next.status === "none" ? ProgressBarStatus.None : next.status === "indeterminate" ? ProgressBarStatus.Indeterminate : ProgressBarStatus.Normal;
+      void getCurrentWindow()
+        .setProgressBar({ status, progress: next.status === "normal" ? next.progress : undefined })
+        .catch(() => {
+          // Cosmetic: the Queue still shows the progress.
+        });
+    };
+    const scheduleTaskbar = () => {
+      if (!taskbarTimer) taskbarTimer = window.setTimeout(paintTaskbar, 500);
+    };
+    store.on("job", scheduleTaskbar);
+    store.on("jobs", scheduleTaskbar);
+    scheduleTaskbar();
+  }
 
   const transitions = new StatusTransitions();
   transitions.seed(store.jobList());

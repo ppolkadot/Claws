@@ -190,7 +190,7 @@ async function run(reduced) {
   const lookup = (url) => `{ const f = document.querySelector('.url-input'); f.focus(); f.value = '${url}'; f.dispatchEvent(new Event('input', { bubbles: true })); window.__m.key(f, 'Enter'); }`;
   const resultShown = "document.querySelector('.stage .segmented')";
   await evaluate(`(async () => { ${lookup("https://example.com/watch?v=warm")}; for (let i = 0; i < 200 && !${resultShown}; i++) await window.__m.frame(); })()`);
-  await evaluate(`(async () => { ${lookup("https://example.com/watch?v=motion1")}; for (let i = 0; i < 200 && !document.querySelector('.stage .loading'); i++) await window.__m.frame(); })()`);
+  await evaluate(`(async () => { ${lookup("https://example.com/watch?v=motion1")}; for (let i = 0; i < 200 && !document.querySelector('.stage .preview-skeleton, .stage .loading'); i++) await window.__m.frame(); })()`);
   out.settleIn = await effect(`for (let i = 0; i < 300 && !${resultShown}; i++) await window.__m.frame()`, 700);
   out.settleIn.focusAfter = await evaluate("document.activeElement?.className ?? null");
   // Rapid repeats: four lookups one after another; only the last one's details remain.
@@ -226,7 +226,8 @@ async function run(reduced) {
   // 4. Removal: where the leaving row sits, frame by frame, and whether its neighbours jump.
   out.removal = await effect(
     "window.__leaving = window.__m.row(1); window.__below = window.__m.row(2); window.__belowTop = window.__below.getBoundingClientRect().top; await window.__m.remove(1)",
-    450,
+    // A row leaves on the smooth spring, which takes about 0.7 s to come fully to rest.
+    800,
     "({ leavingIndex: window.__leaving.isConnected ? [...window.__leaving.parentNode.children].indexOf(window.__leaving) : null, belowShiftPx: Math.round(window.__below.getBoundingClientRect().top - window.__belowTop) })",
   );
   out.removal.order = await evaluate("[...document.querySelectorAll('.jobs .job .job-title')].map((t) => t.textContent).filter((t) => t.startsWith('Motion job')).slice(0, 4)");
@@ -235,7 +236,7 @@ async function run(reduced) {
     await window.__m.remove(2); await window.__m.remove(3); await window.__m.remove(4);
     await window.__m.frame(); await window.__m.frame();
     const firstIndexes = leaving.map((el) => (el.isConnected ? [...el.parentNode.children].indexOf(el) : null));
-    await window.__m.wait(600);
+    await window.__m.wait(900);
     return { leavingIndexesAfterTwoFrames: firstIndexes, gone: leaving.every((el) => !el.isConnected), next: [...document.querySelectorAll('.jobs .job .job-title')].map((t) => t.textContent).filter((t) => t.startsWith('Motion job'))[0] };
   })()`);
 

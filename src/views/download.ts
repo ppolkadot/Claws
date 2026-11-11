@@ -1,259 +1,45 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 
-import { api, errorMessage, type DownloadMode, type DownloadOptions, type ProbeResult, type TranscriptFormat, type VideoPreset } from "../api";
-import { CallLimit, EstimateRun, PreviewEstimator, aggregate, describeRun, describeSingle } from "../download-estimates";
-import {
-  MAX_LINKS,
-  describeEnqueue,
-  isBatchInput,
-  itemKey,
-  parseLinks,
-  remainingItems,
-  selectable,
-  type BatchRow,
-  type ParsedInput,
-} from "../download-input";
+import { api, errorMessage, type DownloadOptions, type ProbeResult } from "../api";
+import { EstimateRun, PreviewEstimator, describeSingle } from "../download-estimates";
+import { MAX_LINKS, isBatchInput, itemKey, parseLinks, type BatchRow, type ParsedInput } from "../download-input";
 import { formatDate, formatDuration, folderName } from "../format";
-import { fastSaveHint } from "../processing-options";
-import { VIDEO_PRESETS, capChoices, hasExactSizes, keptQuality, qualityChoices } from "../resolution";
-import {
-  TRANSCRIPT_FORMATS,
-  captionChoices,
-  captionKey,
-  defaultCaption,
-  refreshSignature,
-  refreshTrackChoices,
-  subtitleLimitHint,
-  transcriptOptions,
-  type CaptionChoices,
-} from "../transcript-options";
+import { applyLastChoices, loadLastChoices, saveLastChoices } from "../last-choices";
+import { keptQuality, qualityChoices } from "../resolution";
+import { captionChoices, defaultCaption, refreshSignature, refreshTrackChoices, transcriptOptions } from "../transcript-options";
 import { CHECK_INTERRUPTED, estimatesStillApply } from "../preview-session";
-import { store, type BatchChoices, type BatchSession, type EstimateItem } from "../store";
-import { button, chipRadio, segmented, toast, toggle } from "../ui/components";
-import { append, clear, h, replace } from "../ui/dom";
+import { store, type EstimateItem } from "../store";
+import { button, toast } from "../ui/components";
+import { clear, h, replace } from "../ui/dom";
 import { icon } from "../ui/icons";
-import { group, progressBar, row, sectionTitle, setProgress, spinner } from "../ui/layout";
+import { group, sectionTitle } from "../ui/layout";
 import { settleIn } from "../ui/motion";
-import { subtitleChips } from "../ui/subtitle-chips";
+import { mountBatch, type BatchView } from "./download-batch";
+import { mountOptions } from "./download-options";
+import { mountEntries } from "./download-playlist";
+import {
+  AUDIO_FORMATS,
+  TEXT_ONLY,
+  estimateCalls,
+  estimateLine,
+  estimateSettings,
+  looksLikeUrl,
+  offersSponsorBlock,
+  paintLine,
+  renderIssues,
+  thumbnailEl,
+  type EstimateLine,
+  type LinkChoices,
+} from "./download-shared";
+import { mountSetupPanel } from "./setup-panel";
 import type { MountView } from "./shell";
 import { SpotifyMatchController, isSpotifyInput } from "../spotify-match";
 import { mountSpotifyMatch, type SpotifyMatchView } from "./spotify-match";
 
+export { looksLikeLinkList, looksLikeUrl } from "./download-shared";
+
 type Phase = "idle" | "loading" | "result" | "error" | "batch" | "spotify";
 
-/** Batch rows built per frame, as in the Queue view: about a frame's worth of work. */
-const ROWS_PER_FRAME = 40;
-const ISSUES_SHOWN = 6;
-
-const AUDIO_FORMATS = [
-  { value: "mp3", label: "MP3" },
-  { value: "m4a", label: "M4A" },
-  { value: "opus", label: "Opus" },
-  { value: "flac", label: "FLAC" },
-  { value: "wav", label: "WAV" },
-  { value: "best", label: "Original" },
-];
-
-/**
- * The video Format choice (Compatible or Original), with a hint that follows it. Updated in
- * place, so the control in use keeps focus.
- */
-function presetRow(value: VideoPreset, onChange: (next: VideoPreset) => void): HTMLElement {
-  const describe = (preset: VideoPreset) => VIDEO_PRESETS.find((p) => p.value === preset)?.hint ?? "";
-  const hint = h("span", { text: describe(value) });
-  const control = segmented<(typeof VIDEO_PRESETS)[number]["value"]>(
-    "Video format",
-    VIDEO_PRESETS.map((p) => ({ value: p.value, label: p.label })),
-    value === "original" ? "original" : "compatible",
-    (next) => {
-      hint.textContent = describe(next);
-      onChange(next);
-    },
-  );
-  return row("Format", control.el, hint);
-}
-
-const NO_CAPTIONS = "No captions available for this video";
-const TEXT_ONLY = "Text only — the video is not downloaded";
-
-function captionSelect(choices: CaptionChoices, value: string | null, onChange: (key: string) => void): HTMLSelectElement {
-  const optgroup = (label: string, tracks: CaptionChoices["human"]) =>
-    tracks.length === 0
-      ? null
-      : h("optgroup", { attrs: { label } }, ...tracks.map((t) => h("option", { attrs: { value: captionKey(t) }, text: t.name })));
-  const select = h(
-    "select",
-    { class: "select-input", attrs: { "aria-label": "Caption language" } },
-    optgroup("Human captions", choices.human),
-    optgroup("Automatic captions", choices.automatic),
-  );
-  if (value) select.value = value;
-  select.addEventListener("change", () => onChange(select.value));
-  return select;
-}
-
-function qualityChips(choices: { value: number; label: string; hint: string }[], value: number | null, onChange: (next: number | null) => void): HTMLElement {
-  return chipRadio<number>("Quality", [{ value: 0, label: "Best" }, ...choices], value ?? 0, (next) => onChange(next === 0 ? null : next));
-}
-
-export function looksLikeUrl(text: string): boolean {
-  return /^https?:\/\/\S+$/i.test(text.trim());
-}
-
-/** Text with two or more links on separate lines: filled in, never looked up by itself. */
-export function looksLikeLinkList(text: string): boolean {
-  return /[\r\n]/.test(text.trim()) && parseLinks(text).links.length >= 2;
-}
-
-function audioHint(): string {
-  return store.settings.audioSelection === "preferMatching"
-    ? "Original keeps the site's own audio. For other formats, a stream already in that format is saved without conversion when the site has one."
-    : "Original keeps the site's own audio without re-encoding. Other formats are converted from the site's best audio.";
-}
-
-const shorten = (text: string, max = 70) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
-
-function batchOptions(choices: BatchChoices): DownloadOptions {
-  return {
-    mode: choices.mode,
-    maxHeight: choices.mode === "video" ? choices.maxHeight : null,
-    videoPreset: choices.mode === "video" ? choices.videoPreset : "compatible",
-    audioFormat: choices.audioFormat,
-    subtitleLangs: [],
-    autoSubs: false,
-    embedSubs: false,
-    fastSave: false,
-    transcriptFormat: "txt",
-  };
-}
-
-type EstimateLine = {
-  root: HTMLElement;
-  text: HTMLElement;
-  size: HTMLElement;
-  detail: HTMLElement;
-  /** Visually hidden; written only when an estimate starts or settles, never per step. */
-  status: HTMLElement;
-  retry: HTMLButtonElement;
-  busy: boolean;
-};
-
-/**
- * The size and free-space lines of an estimate, separate so neither hides the other, and the
- * button that asks again for an estimate that failed (`onRetry`; the estimate state itself
- * enforces one retry at a time through the shared call limit).
- */
-function estimateLine(onRetry: () => void, retryLabel = "Retry", retryTitle = "Asks again for this size. Download is not affected."): EstimateLine {
-  const size = h("span", { class: "estimate-size" });
-  const detail = h("span", { class: "estimate-detail" });
-  const retry = button({
-    label: retryLabel,
-    variant: "plain",
-    size: "small",
-    title: retryTitle,
-    onClick: () => {
-      onRetry();
-      // The button hides while the retry runs; keep keyboard focus beside it. The paragraph
-      // keeps the global :focus-visible ring, so a keyboard user still sees where focus is.
-      text.focus({ preventScroll: true });
-    },
-  });
-  retry.hidden = true;
-  retry.style.alignSelf = "flex-start";
-  // Not a live region itself: it is rewritten for every step of a run and every frame of
-  // the batch counts, which a screen reader would read out again and again.
-  const text = h(
-    "p",
-    {
-      class: "estimate",
-      attrs: {
-        title: "Estimated from what the site reports. Claws checks the actual free space again when each download starts.",
-        tabindex: "-1",
-      },
-    },
-    size,
-    detail,
-    retry,
-  );
-  text.hidden = true;
-  const status = h("span", { class: "visually-hidden", attrs: { role: "status", "aria-live": "polite" } });
-  return { root: h("div", { class: "estimate-wrap" }, text, status), text, size, detail, status, retry, busy: false };
-}
-
-function setText(el: HTMLElement, text: string) {
-  if (el.textContent !== text) el.textContent = text;
-}
-
-/**
- * Paints an estimate. The free-space line keeps its height while it is empty, so the
- * Download button below does not move each time an estimate starts and settles. A screen
- * reader hears the outcome once it settles (and, with `announceStart`, that it started).
- */
-function paintLine(line: EstimateLine, size: string, detail: string, busy = false, announceStart = false, canRetry = false) {
-  line.retry.hidden = !canRetry;
-  setText(line.size, size);
-  setText(line.detail, detail || "\u00a0");
-  line.detail.dataset.empty = String(!detail);
-  line.text.hidden = !size;
-  line.text.dataset.busy = String(busy);
-  if (busy && !line.busy && announceStart && size) setText(line.status, size);
-  else if (!busy && line.busy && size) setText(line.status, detail ? `${size}. ${detail}` : size);
-  line.busy = busy;
-}
-
-/** Ignores clicks for this long after a run starts (the second click of a double click). */
-const STOP_GUARD_MS = 600;
-
-/**
- * The Estimate Sizes button of a list. It becomes Stop Estimating while a run goes; the
- * second click of a double click, or Enter held down, does not stop the run it started.
- */
-function estimateButton(run: EstimateRun<EstimateItem>, start: () => void): HTMLButtonElement {
-  let startedAt = -Infinity;
-  const btn: HTMLButtonElement = button({
-    label: "Estimate Sizes",
-    variant: "plain",
-    size: "small",
-    onClick: () => {
-      if (run.state.running) {
-        if (performance.now() - startedAt >= STOP_GUARD_MS) run.cancel();
-        return;
-      }
-      if (btn.getAttribute("aria-disabled") === "true") return;
-      startedAt = performance.now();
-      start();
-    },
-  });
-  // Enter held down repeats clicks; only the first press counts.
-  btn.addEventListener("keydown", (event) => {
-    if (event.repeat && (event.key === "Enter" || event.key === " ")) event.preventDefault();
-  });
-  return btn;
-}
-
-/**
- * A run's key: the choices it was asked with. The items it covers are followed apart
- * (EstimateRun.follow), by the queue's identity for each item, not by position or row id.
- */
-function runKey(options: DownloadOptions, settings: unknown[]): string {
-  return JSON.stringify([options, settings]);
-}
-
-/**
- * Estimate calls running at once, across the single preview, a playlist's run and the
- * batch's run, and across views: a reset run's calls keep their slots until they answer.
- */
-const estimateCalls = new CallLimit();
-
-interface BatchRowRefs {
-  pick: HTMLButtonElement;
-  thumb: HTMLElement;
-  thumbFor: string | null;
-  title: HTMLElement;
-  sub: HTMLElement;
-  side: HTMLElement;
-  sideFor: string;
-}
 
 export const mountDownload: MountView = (container, ctx) => {
   ctx.setActions([
@@ -276,19 +62,24 @@ export const mountDownload: MountView = (container, ctx) => {
   /** Bumped by every submission; an older lookup's reply is dropped. */
   let ticket = 0;
   let stageAnimation: Animation | null = null;
-  let batchView: { paintRow(row: BatchRow<ProbeResult>): void; refresh(): void; dispose(): void } | null = null;
+  let batchView: BatchView | null = null;
 
-  let mode: DownloadMode = "video";
-  let height: number | null = null;
-  let videoPreset: VideoPreset = "compatible";
-  let audioFormat = "mp3";
-  let subs = new Set<string>();
-  let embedSubs = false;
-  let fastSave = false;
-  let caption: string | null = null;
-  let transcriptFormat: TranscriptFormat = "txt";
+  const choice: LinkChoices = {
+    mode: "video",
+    height: null,
+    videoPreset: "compatible",
+    audioFormat: "mp3",
+    subs: new Set<string>(),
+    embedSubs: false,
+    fastSave: false,
+    caption: null,
+    transcriptFormat: "txt",
+    selected: new Set<number>(),
+    sponsorblock: "off",
+    sponsorCategories: new Set<string>(["sponsor"]),
+    playlistFolder: false,
+  };
   let paintActionLabel: (() => void) | null = null;
-  let selected = new Set<number>();
   /** True while an enqueue is in flight or its confirmation is showing. */
   let enqueuing = false;
   let activeEnqueue: symbol | null = null;
@@ -396,60 +187,40 @@ export const mountDownload: MountView = (container, ctx) => {
   const stage = h("div", { class: "stage" });
   container.append(urlBar, setup, stage);
 
-  const paintSetup = () => {
-    if (!store.toolsKnown) return clear(setup);
-    const missing = !store.tools.ytdlp;
-    const busy = Boolean(store.toolBusy.ytdlp);
-    const error = store.toolError.ytdlp;
-    if (!missing && !busy && !error) return clear(setup);
-
-    const progress = store.toolProgress.ytdlp;
-    const fraction = progress && progress.total > 0 ? progress.received / progress.total : null;
-    const bar = progressBar(fraction);
-    setProgress(bar, busy ? fraction : 0);
-    replace(
-      setup,
-      h(
-        "div",
-        { class: `banner glass${error ? " banner-error" : ""}`, attrs: { role: "status" } },
-        h(
-          "div",
-          { class: "banner-text" },
-          h("strong", { text: error ? "Setup could not finish" : "Setting up Claws" }),
-          h("span", {
-            text: error
-              ? error
-              : "Downloading yt-dlp, the engine that reads each site. This happens once and takes a moment.",
-          }),
-          busy ? bar : null,
-        ),
-        error
-          ? button({ label: "Try Again", icon: "retry", variant: "primary", onClick: () => void installEngine() })
-          : null,
-      ),
-    );
-  };
-  const installEngine = () => store.runTool("ytdlp", api.installYtdlp);
-  const offTools = [store.on("tools", paintSetup), store.on("toolProgress", paintSetup)];
-  paintSetup();
-  void store.toolsReady.then(() => {
-    if (!store.tools.ytdlp && !store.toolBusy.ytdlp && !store.toolError.ytdlp) void installEngine();
-  });
+  const offSetup = mountSetupPanel(setup);
 
   function showResult(next: ProbeResult) {
     result = next;
     store.previews.begin(next.url); // a new link replaces the one kept, with its choices and estimates
-    mode = "video";
-    height = null;
-    videoPreset = "compatible";
-    audioFormat = "mp3";
-    subs = new Set();
-    embedSubs = false;
-    fastSave = false;
-    caption = defaultCaption(captionChoices(next), navigator.languages ?? []);
-    transcriptFormat = "txt";
+    choice.mode = "video";
+    choice.height = null;
+    choice.videoPreset = "compatible";
+    choice.audioFormat = "mp3";
+    choice.subs = new Set();
+    choice.embedSubs = false;
+    choice.fastSave = false;
+    choice.caption = defaultCaption(captionChoices(next), navigator.languages ?? []);
+    choice.transcriptFormat = "txt";
+    // Asked for again for each link: SponsorBlock contacts a service of its own.
+    choice.sponsorblock = "off";
+    choice.sponsorCategories = new Set(["sponsor"]);
+    choice.playlistFolder = false;
+    const last = loadLastChoices();
+    if (last) {
+      const playlist = next.kind === "playlist";
+      const kept = applyLastChoices(last, {
+        heights: qualityChoices(next, playlist).map((c) => c.value),
+        audioFormats: AUDIO_FORMATS.map((f) => f.value),
+        transcript: !playlist && captionChoices(next).available,
+      });
+      choice.mode = kept.mode;
+      choice.audioFormat = kept.audioFormat;
+      choice.height = kept.height;
+      choice.videoPreset = kept.videoPreset;
+      choice.fastSave = kept.fastSave;
+    }
     refreshNotices = [];
-    selected = new Set(next.entries.map((_, i) => i));
+    choice.selected = new Set(next.entries.map((_, i) => i));
     phase = "result";
     preview.cancel();
     listRun.reset();
@@ -484,7 +255,7 @@ export const mountDownload: MountView = (container, ctx) => {
         && document.activeElement === matchView?.el.querySelector(".spotify-status");
       if (state.stage === "confirmed" && state.confirmed) {
         if (result?.url !== state.confirmed.url) showResult(controller.snapshot().confirmed!);
-        mode = "audio";
+        choice.mode = "audio";
         freshness = "fresh";
         staleReason = "";
         phase = "result";
@@ -536,14 +307,14 @@ export const mountDownload: MountView = (container, ctx) => {
     store.previews.rekey(next.url); // the session is the link's, wherever the lookup settled
     // A subtitle or caption stays chosen only while the refresh still offers that same track
     // (code and kind); otherwise it is dropped and the notice says so. Nothing else changes.
-    const kept = refreshTrackChoices({ mode, subs, caption }, before, next, navigator.languages ?? []);
-    ({ mode, subs, caption } = kept.choices);
+    const kept = refreshTrackChoices({ mode: choice.mode, subs: choice.subs, caption: choice.caption }, before, next, navigator.languages ?? []);
+    Object.assign(choice, kept.choices);
     refreshNotices = kept.notices;
     // A size the refresh no longer offers (or a cap read from heights saved before exact
     // sizes, which for portrait video were the longer side) goes back to Best, so the cap
     // sent is always the chip shown as chosen.
-    height = keptQuality(height, qualityChoices(next, next.kind === "playlist"));
-    if (!before || before.entries.length !== next.entries.length) selected = new Set(next.entries.map((_, i) => i));
+    choice.height = keptQuality(choice.height, qualityChoices(next, next.kind === "playlist"));
+    if (!before || before.entries.length !== next.entries.length) choice.selected = new Set(next.entries.map((_, i) => i));
     // Sizes estimated for other videos, or read before the sizes offered changed, do not describe
     // these: the kept estimates go (a new generation), and a playlist's run is forgotten.
     if (!estimatesStillApply(before, next)) {
@@ -604,7 +375,7 @@ export const mountDownload: MountView = (container, ctx) => {
     if (mine !== ticket) return;
     if (!store.tools.ytdlp) {
       lastUrl = "";
-      return showError("Couldn't read that link", "yt-dlp is still being set up. Try again in a moment.");
+      return showError("Couldn't read that link", "yt-dlp is not installed yet. Press Set Up Everything above, then try again.");
     }
     lastUrl = url;
 
@@ -676,7 +447,7 @@ export const mountDownload: MountView = (container, ctx) => {
     }
     await store.toolsReady;
     if (mine !== ticket) return;
-    if (!store.tools.ytdlp) return showError("Couldn't read those links", "yt-dlp is still being set up. Try again in a moment.");
+    if (!store.tools.ytdlp) return showError("Couldn't read those links", "yt-dlp is not installed yet. Press Set Up Everything above, then try again.");
     input.value = "";
     fitInput();
     phase = "batch";
@@ -690,22 +461,30 @@ export const mountDownload: MountView = (container, ctx) => {
   }
 
   function currentOptions(): DownloadOptions {
-    const transcript = mode === "transcript" ? transcriptOptions(caption, transcriptFormat) : null;
+    const transcript = choice.mode === "transcript" ? transcriptOptions(choice.caption, choice.transcriptFormat) : null;
     if (transcript) return transcript;
-    const media = mode === "audio" ? "audio" : "video";
-    const chosenSubs = [...subs];
-    const hasAuto = result?.subtitles.some((s) => s.auto && subs.has(s.code)) ?? false;
+    const media = choice.mode === "audio" ? "audio" : "video";
+    const chosenSubs = [...choice.subs];
+    const hasAuto = result?.subtitles.some((s) => s.auto && choice.subs.has(s.code)) ?? false;
     return {
       mode: media,
-      maxHeight: media === "video" ? height : null,
-      videoPreset: media === "video" ? videoPreset : "compatible",
-      audioFormat,
+      maxHeight: media === "video" ? choice.height : null,
+      videoPreset: media === "video" ? choice.videoPreset : "compatible",
+      audioFormat: choice.audioFormat,
       subtitleLangs: media === "video" ? chosenSubs : [],
       autoSubs: hasAuto,
-      embedSubs,
-      fastSave,
+      embedSubs: choice.embedSubs,
+      fastSave: choice.fastSave,
       transcriptFormat: "txt",
+      ...sponsorBlockOptions(),
+      playlistFolder: result?.kind === "playlist" && choice.playlistFolder,
     };
+  }
+
+  /** SponsorBlock as it will run: only for a YouTube link, and never with Fast Save. */
+  function sponsorBlockOptions(): Pick<DownloadOptions, "sponsorblock" | "sponsorblockCategories"> {
+    const on = result !== null && offersSponsorBlock(result) && !choice.fastSave && choice.sponsorblock !== "off";
+    return on ? { sponsorblock: choice.sponsorblock, sponsorblockCategories: [...choice.sponsorCategories].sort() } : { sponsorblock: "off", sponsorblockCategories: [] };
   }
 
   /**
@@ -716,7 +495,7 @@ export const mountDownload: MountView = (container, ctx) => {
    */
   function scheduleEstimate() {
     paintListEstimate?.();
-    if (mode === "transcript") {
+    if (choice.mode === "transcript") {
       // Only captions are fetched: there is no media size to estimate.
       preview.cancel();
       paintPreviewEstimate();
@@ -733,25 +512,11 @@ export const mountDownload: MountView = (container, ctx) => {
 
   function paintPreviewEstimate() {
     if (!previewLine) return;
-    if (mode === "transcript") return paintLine(previewLine, TEXT_ONLY, "");
+    if (choice.mode === "transcript") return paintLine(previewLine, TEXT_ONLY, "");
     const { size, detail } = describeSingle(preview.state);
     paintLine(previewLine, size, detail, preview.state.status === "loading", false, preview.failed);
   }
 
-  function paintRun(run: EstimateRun<EstimateItem>, line: EstimateLine, btn: HTMLButtonElement, count: number) {
-    const s = run.state;
-    const finished = run.key !== null && !s.running && s.done > 0;
-    paintLine(line, describeRun(run), finished ? (aggregate(s.results).tempText ?? "") : "", s.running, true, run.canRetry);
-    setText(btn.querySelector("span")!, s.running ? "Stop Estimating" : "Estimate Sizes");
-    const title = s.running
-      ? "Stops estimating. Sizes already read stay; estimates already running finish in the background and are ignored."
-      : `Reads the size of each selected video, up to ${run.maxItems}, three at a time. Nothing is read until you ask.`;
-    if (btn.title !== title) btn.title = title;
-    btn.setAttribute("aria-disabled", String(!s.running && count === 0));
-  }
-
-  /** The settings the backend reads for an estimate; a change of them asks again. */
-  const estimateSettings = () => [store.settings.audioSelection, store.settings.embedMetadata];
 
   async function startDownload(trigger?: HTMLButtonElement) {
     // A double click, or a click during the confirmation, would queue it twice.
@@ -775,16 +540,22 @@ export const mountDownload: MountView = (container, ctx) => {
     if (trigger) trigger.disabled = true;
     const items =
       result.kind === "playlist"
-        ? result.entries
-            .filter((_, i) => selected.has(i))
-            .map((e) => ({
-              url: e.url,
-              playlistIndex: e.playlistIndex,
-              title: e.title,
-              thumbnail: e.thumbnail,
-              uploader: e.uploader,
-              duration: e.duration,
-            }))
+        ? result.entries.flatMap((e, i) =>
+            choice.selected.has(i)
+              ? [
+                  {
+                    url: e.url,
+                    playlistIndex: e.playlistIndex,
+                    title: e.title,
+                    thumbnail: e.thumbnail,
+                    uploader: e.uploader,
+                    duration: e.duration,
+                    // Its place in the whole playlist, not among the ticked ones.
+                    playlist: { title: sent.title, position: i + 1, count: sent.entries.length },
+                  },
+                ]
+              : [],
+          )
         : [
             {
               url: result.url,
@@ -800,6 +571,17 @@ export const mountDownload: MountView = (container, ctx) => {
       const added = await api.enqueue(items.map((item) => ({ ...item, matchOrigin: origin })), currentOptions(), spotify ? sent.url : lastUrl || sent.url);
       // Usually already applied from the jobs-added event; the revisions make this a no-op.
       store.addJobs(added);
+      // Remembered for the next link. A Spotify match is always audio, so it says nothing
+      // about what the user would choose.
+      if (!spotify) {
+        saveLastChoices({
+          mode: choice.mode,
+          audioFormat: choice.audioFormat,
+          height: choice.height,
+          videoPreset: choice.videoPreset === "original" ? "original" : "compatible",
+          fastSave: choice.fastSave,
+        });
+      }
       enqueuedResult = sent;
       // The mounted view handles its own success below; a replacement view receives this.
       if (mine !== ticket) settleMatch(true);
@@ -833,13 +615,6 @@ export const mountDownload: MountView = (container, ctx) => {
         if (spotify) render();
       }
     }
-  }
-
-  function thumbnailEl(url: string | null, cls: string): HTMLElement {
-    if (!url) return h("div", { class: `${cls} thumb-fallback` }, icon("video", 22));
-    const img = h("img", { class: cls, attrs: { src: url, alt: "", loading: "lazy", decoding: "async", referrerpolicy: "no-referrer", draggable: false } });
-    img.addEventListener("error", () => img.replaceWith(h("div", { class: `${cls} thumb-fallback` }, icon("video", 22))));
-    return img;
   }
 
   function renderPreview(r: ProbeResult): HTMLElement {
@@ -890,240 +665,25 @@ export const mountDownload: MountView = (container, ctx) => {
     freshnessEl.dataset.tone = freshness === "stale" || refreshNotices.length > 0 ? "warn" : "";
   }
 
-  function renderEntries(r: ProbeResult): HTMLElement {
-    const countLabel = h("span", { class: "entries-count" });
-    const list = h("div", { class: "entries", attrs: { role: "group", "aria-label": "Videos in this playlist" } });
-    // Created with a label: an icon-only button is a fixed 28 px wide.
-    const downloadBtn: HTMLButtonElement = button({ label: "Download", icon: "download", variant: "primary", onClick: () => void startDownload(downloadBtn) });
-    const listLine = estimateLine(() => void listRun.retryFailed(listKey()), "Retry Failed", "Asks again only for the videos whose size could not be estimated. Sizes already read stay. Download is not affected.");
-    const listItems = (): EstimateItem[] => {
-      const options = currentOptions();
-      return r.entries.filter((_, i) => selected.has(i)).map((e) => ({ url: e.url, playlistIndex: e.playlistIndex, options }));
-    };
-    // Only the choices: the entries are followed by link and position (EstimateRun.follow),
-    // so a refreshed list with other videos at the same positions does not keep the old
-    // videos' sizes.
-    const listKey = () => runKey(currentOptions(), estimateSettings());
-    const estimateBtn = estimateButton(listRun, () => listRun.start(listItems(), listKey()));
-    paintListEstimate = () => {
-      // Other choices, or an estimated entry unticked: the estimate no longer applies (and
-      // follow resets it, which repaints). An entry ticked since is named as not included.
-      if (!listRun.follow(listKey(), listItems())) return;
-      paintRun(listRun, listLine, estimateBtn, selected.size);
-    };
-
-    const paintCount = () => {
-      paintListEstimate?.();
-      countLabel.textContent = `${selected.size} of ${r.entries.length} selected`;
-      const label = selected.size === 1 ? "Download 1 Video" : `Download ${selected.size} Videos`;
-      replace(downloadBtn, icon("download", 16), h("span", { text: selected.size === 0 ? "Download" : label }));
-      downloadBtn.disabled = selected.size === 0;
-    };
-
-    const toggleAll = button({
-      label: selected.size === r.entries.length ? "Select None" : "Select All",
-      variant: "plain",
-      size: "small",
-      onClick: () => {
-        selected = selected.size === r.entries.length ? new Set() : new Set(r.entries.map((_, i) => i));
-        toggleAll.querySelector("span")!.textContent = selected.size === r.entries.length ? "Select None" : "Select All";
-        list.querySelectorAll<HTMLButtonElement>(".entry").forEach((el, i) => el.setAttribute("aria-checked", String(selected.has(i))));
-        paintCount();
-      },
-    });
-
-    r.entries.forEach((entry, index) => {
-      const item = h(
-        "button",
-        { class: "entry", attrs: { type: "button", role: "checkbox", "aria-checked": String(selected.has(index)) } },
-        h("span", { class: "check" }, icon("check", 12)),
-        thumbnailEl(entry.thumbnail, "entry-thumb"),
-        h(
-          "span",
-          { class: "entry-text" },
-          h("span", { class: "entry-title", text: entry.title }),
-          entry.uploader ? h("span", { class: "entry-sub", text: entry.uploader }) : null,
-        ),
-        h("span", { class: "entry-duration", text: formatDuration(entry.duration) }),
-      );
-      item.addEventListener("click", () => {
-        if (selected.has(index)) selected.delete(index);
-        else selected.add(index);
-        item.setAttribute("aria-checked", String(selected.has(index)));
-        toggleAll.querySelector("span")!.textContent = selected.size === r.entries.length ? "Select None" : "Select All";
-        paintCount();
-      });
-      list.appendChild(item);
-    });
-    paintCount();
-    return h(
-      "div",
-      { class: "entries-block" },
-      h("div", { class: "entries-head" }, sectionTitle("Videos"), countLabel, estimateBtn, toggleAll),
-      h("div", { class: "glass group" }, list),
-      listLine.root,
-      h("div", { class: "actions" }, h("span", { class: "save-to", text: `Saves to ${folderName(store.settings.outputDir)}` }), downloadBtn),
-    );
-  }
-
-  function renderOptions(r: ProbeResult): HTMLElement {
-    const playlist = r.kind === "playlist";
-    const qualities = qualityChoices(r, playlist);
-    const captions = captionChoices(r);
-
-    // The Type control is built once and stays while the rows below it change, so its
-    // thumb slides to the new choice (a CSS spring; still with reduced motion) and the
-    // keyboard stays on it. Transcripts are made one video at a time.
-    const typeHint = h("span");
-    const typeSeg = segmented<DownloadMode>(
-      "Type",
-      [
-        { value: "video", label: "Video", icon: "video" },
-        { value: "audio", label: "Audio Only", icon: "music" },
-        ...(playlist
-          ? []
-          : [
-              {
-                value: "transcript" as const,
-                label: "Transcript",
-                icon: "captions" as const,
-                disabled: !captions.available,
-                title: captions.available ? "Text from the site's captions" : NO_CAPTIONS,
-              },
-            ]),
-      ],
-      mode,
-      (next) => {
-        mode = next;
-        dismissRefreshNotices();
-        paint();
-      },
-    );
-    const typeRow = row("Type", typeSeg.el, typeHint);
-    typeRow.hidden = spotify !== null;
-    const panel = group(typeRow);
-    const body = h("div", { class: "options-body" }, panel);
-
-    const paint = () => {
-      const rows: (Node | null)[] = [];
-      const hint = playlist
-        ? "Transcripts are made one video at a time: open a video's own link to save its captions."
-        : captions.available
-          ? ""
-          : `${NO_CAPTIONS}, so there is no transcript to save.`;
-      typeHint.textContent = hint;
-      typeHint.hidden = !hint;
-
-      if (mode === "transcript") {
-        const formatHint = h("span", { text: TRANSCRIPT_FORMATS.find((f) => f.value === transcriptFormat)?.hint ?? "" });
-        rows.push(
-          row(
-            "Captions",
-            captionSelect(captions, caption, (key) => {
-              caption = key;
-              dismissRefreshNotices();
-            }),
-            "Made from the site's own captions; Claws does not recognise speech. Automatic captions are generated by the site and can contain errors.",
-          ),
-          row(
-            "Save as",
-            chipRadio<TranscriptFormat>("Transcript format", TRANSCRIPT_FORMATS, transcriptFormat, (value) => {
-              transcriptFormat = value;
-              formatHint.textContent = TRANSCRIPT_FORMATS.find((f) => f.value === value)?.hint ?? "";
-            }),
-            formatHint,
-          ),
-        );
-      } else if (mode === "video") {
-        rows.push(
-          row(
-            "Quality",
-            qualityChips(qualities, height, (value) => {
-              height = value;
-              scheduleEstimate();
-            }),
-            qualities.length === 0
-              ? "Quality options appear once the site reports them."
-              : playlist
-                ? "Each video is saved at the largest size it has, up to this limit. Nothing is upscaled."
-                : hasExactSizes(r)
-                  ? "The sizes this video is offered in, by the shorter side. Nothing is upscaled."
-                  : "Saved at the largest size this video has, up to this limit on its shorter side. Nothing is upscaled.",
-          ),
-          presetRow(videoPreset, (next) => {
-            videoPreset = next;
-            scheduleEstimate();
-          }),
-        );
-        if (r.subtitles.length > 0) {
-          rows.push(row("Subtitles", subtitleChips(r.subtitles, subs, () => {
-            dismissRefreshNotices();
-            paint();
-          }), subtitleLimitHint(subs.size)));
-          if (subs.size > 0) {
-            rows.push(
-              row(
-                "Embed in video",
-                toggle("Embed subtitles in the video", embedSubs, (v) => {
-                  embedSubs = v;
-                  paint();
-                }),
-                "Off saves them as separate .srt files.",
-              ),
-            );
-          }
-        }
-      } else {
-        rows.push(
-          row(
-            "Format",
-            chipRadio<string>("Audio format", AUDIO_FORMATS, audioFormat, (value) => {
-              audioFormat = value;
-              scheduleEstimate();
-            }),
-            spotify ? `${audioHint()} FLAC and WAV conversion cannot improve the YouTube source quality.` : audioHint(),
-          ),
-        );
-      }
-      if (mode !== "transcript") rows.push(fastSaveRow());
-      while (typeRow.nextSibling) typeRow.nextSibling.remove();
-      append(panel, rows);
-      paintActionLabel?.();
-      scheduleEstimate();
-    };
-
-    // Fast Save names exactly what it changes for these choices (processing-options.ts, the
-    // mirror of the Rust ProcessingPolicy); it never changes the video or audio downloaded.
-    const fastSaveRow = () => {
-      const hint = fastSaveHint({
-        mode: mode === "audio" ? "audio" : "video",
-        audioFormat,
-        metadata: store.settings.embedMetadata,
-        embeddedSubs: mode === "video" && subs.size > 0 && embedSubs,
-        fastSave,
-      });
-      return row(
-        "Fast Save",
-        toggle("Fast Save", fastSave, (v) => {
-          fastSave = v;
-          paint();
-        }),
-        hint,
-      );
-    };
-    paint();
-    return body;
-  }
-
   function renderResult(r: ProbeResult): HTMLElement {
     const wrap = h("div", { class: "result" }, renderPreview(r));
     if (r.kind === "playlist" && r.entries.length === 0) {
       wrap.append(h("div", { class: "notice" }, icon("alert", 16), h("span", { text: "This playlist has no downloadable videos." })));
       return wrap;
     }
-    wrap.append(sectionTitle("Options"), renderOptions(r));
+    wrap.append(
+      sectionTitle("Options"),
+      mountOptions(r, choice, {
+        spotify: spotify !== null,
+        dismissRefreshNotices,
+        scheduleEstimate,
+        paintActionLabel: () => paintActionLabel?.(),
+      }),
+    );
     if (r.kind === "playlist") {
-      wrap.append(renderEntries(r));
+      const entries = mountEntries(r, choice, { run: listRun, currentOptions, startDownload: (trigger) => void startDownload(trigger) });
+      paintListEstimate = entries.paintEstimate;
+      wrap.append(entries.el);
     } else {
       previewLine = estimateLine(() => preview.retry());
       paintPreviewEstimate();
@@ -1139,7 +699,7 @@ export const mountDownload: MountView = (container, ctx) => {
             paintActionLabel = () => {
               // The "Added" confirmation stays as it is until the view resets.
               if (btn.classList.contains("confirmed")) return;
-              const transcript = mode === "transcript";
+              const transcript = choice.mode === "transcript";
               replace(btn, icon(transcript ? "captions" : "download", 16), h("span", { text: transcript ? "Save Transcript" : "Download" }));
             };
             paintActionLabel();
@@ -1149,348 +709,6 @@ export const mountDownload: MountView = (container, ctx) => {
       );
     }
     return wrap;
-  }
-
-
-  async function addBatch() {
-    const session = store.batch;
-    if (!session || store.links.submitting) return;
-    const options = batchOptions(session.choices);
-    const sending = store.links.enqueue(async (items) => {
-      // No link-cache source: the cache records one looked-up link per call.
-      const added = await api.enqueue(items, options, null);
-      // Usually already applied from the jobs-added event; the revisions make this a no-op.
-      store.addJobs(added);
-      return added;
-    });
-    batchView?.refresh(); // disables the button while the rows are sent
-    const summary = await sending;
-    batchView?.refresh();
-    if (!summary) return;
-    if (summary.added > 0 && store.batch === session) session.estimate = null; // sized links are in the queue now
-    toast(describeEnqueue(summary), {
-      tone: summary.added === 0 && summary.failed > 0 ? "error" : "info",
-      action: summary.added > 0 ? { label: "View Queue", run: () => store.go("queue") } : undefined,
-    });
-    // Everything is queued: back to the empty page, with the keyboard in the link field.
-    // Otherwise the rest stays, to retry.
-    if (store.batch === session && store.links.rows.every((r) => r.added)) {
-      const active = document.activeElement;
-      const wasHere = !active || active === document.body || stage.contains(active);
-      store.clearBatch();
-      if (wasHere) input.focus({ preventScroll: true });
-    }
-  }
-
-  function rowNote(r: BatchRow<ProbeResult>): [string, string] {
-    if (r.added) return ["In the queue", "done"];
-    switch (r.status) {
-      case "waiting":
-        return ["Waiting to be read", ""];
-      case "looking":
-        return ["Reading the link…", ""];
-      case "failed":
-        return [r.error ?? "Couldn't read this link", "error"];
-      case "cancelled":
-        return ["Stopped before it was read", ""];
-      case "ready": {
-        if (r.addError) return [`Couldn't add: ${r.addError}`, "error"];
-        const res = r.result!;
-        const count = res.entries.length;
-        const lead =
-          res.kind === "playlist"
-            ? count === 0
-              ? "Playlist · no downloadable videos"
-              : `Playlist · ${count} ${count === 1 ? "item" : "items"}`
-            : formatDuration(res.duration);
-        return [[lead, res.uploader, res.site].filter(Boolean).join("  ·  "), ""];
-      }
-    }
-  }
-
-  function renderIssues(parsed: ParsedInput): HTMLElement | null {
-    const lines = [
-      ...parsed.invalid.map((i) => ({ line: i.line, text: `Line ${i.line}, “${shorten(i.text)}”: ${i.reason}` })),
-      ...parsed.duplicates.map((d) => ({ line: d.line, text: `Line ${d.line} repeats line ${d.firstLine}; it is read once.` })),
-    ].sort((a, b) => a.line - b.line);
-    if (lines.length === 0) return null;
-    return h(
-      "div",
-      { class: "notice batch-issues" },
-      icon("alert", 16),
-      h(
-        "div",
-        { class: "notice-text" },
-        h("strong", { text: lines.length === 1 ? "1 line was skipped" : `${lines.length} lines were skipped` }),
-        h("ul", {}, ...lines.slice(0, ISSUES_SHOWN).map((l) => h("li", { text: l.text }))),
-        lines.length > ISSUES_SHOWN ? h("span", { text: `And ${lines.length - ISSUES_SHOWN} more.` }) : null,
-      ),
-    );
-  }
-
-  /**
-   * The batch: one row per link with its own status, built ROWS_PER_FRAME rows a frame.
-   * A row change repaints that row only; the counts repaint at most once a frame.
-   */
-  function renderBatch(session: BatchSession): HTMLElement {
-    const links = store.links;
-    const rows = links.rows;
-    const refs = new Map<number, BatchRowRefs>();
-    let built = 0;
-    let buildFrame = 0;
-    let countFrame = 0;
-
-    const counts = h("span", { class: "entries-count" });
-    // The counts change many times a second while links are read, so a screen reader is
-    // told only when reading starts again and when it ends, with the outcome.
-    const announcer = h("span", { class: "visually-hidden", attrs: { role: "status", "aria-live": "polite" } });
-    let wasBusy: boolean | null = null;
-    // Stop and Retry hide themselves; focus moves to the one that appears instead.
-    const swap = (action: () => void, next: () => HTMLElement) => () => {
-      action();
-      cancelAnimationFrame(countFrame);
-      paintCounts();
-      if (!next().hidden) next().focus();
-    };
-    const stopBtn: HTMLButtonElement = button({ label: "Stop", variant: "plain", size: "small", onClick: swap(() => links.cancel(), () => retryBtn) });
-    stopBtn.title = "Stops reading the links not read yet. A lookup already running finishes in the background; its answer is ignored.";
-    const retryBtn: HTMLButtonElement = button({ label: "Retry", icon: "retry", variant: "plain", size: "small", onClick: swap(() => links.retryAll(), () => stopBtn) });
-    const allSelected = () => rows.some(selectable) && rows.every((r) => !selectable(r) || r.selected);
-    // Select All and Download are marked unavailable (aria-disabled), never disabled: a
-    // disabled button that holds focus drops the keyboard to the top of the page.
-    const unavailable = (btn: HTMLElement) => btn.getAttribute("aria-disabled") === "true";
-    const toggleAll = button({
-      label: "Select All",
-      variant: "plain",
-      size: "small",
-      onClick: () => {
-        if (!unavailable(toggleAll)) links.selectAll(!allSelected());
-      },
-    });
-    const clearBtn = button({
-      label: "Clear",
-      variant: "plain",
-      size: "small",
-      onClick: () => {
-        store.clearBatch();
-        input.focus();
-      },
-    });
-    const selectedNote = h("span", { class: "save-to" });
-    const batchLine = estimateLine(() => void batchRun.retryFailed(batchKey()), "Retry Failed", "Asks again only for the videos whose size could not be estimated. Sizes already read stay. Download is not affected.");
-    // The items a download would send now: a row partly queued already counts only the rest.
-    const batchItems = (): EstimateItem[] => {
-      const options = batchOptions(session.choices);
-      return rows
-        .filter((r) => r.selected && selectable(r))
-        .flatMap((r) => remainingItems(r))
-        .map((item) => ({ url: item.url, playlistIndex: item.playlistIndex ?? null, options }));
-    };
-    const batchKey = () => runKey(batchOptions(session.choices), estimateSettings());
-    const estimateBtn = estimateButton(batchRun, () => batchRun.start(batchItems(), batchKey()));
-    paintBatchEstimate = () => {
-      // Other choices, or an estimated link unselected or sent to the queue: the estimate
-      // no longer applies (follow resets it, which repaints). A link that finishes reading
-      // while a run goes is selected on its own; it does not end the run, it is named as
-      // not included.
-      if (!batchRun.follow(batchKey(), batchItems())) return;
-      paintRun(batchRun, batchLine, estimateBtn, links.counts().selectedItems);
-    };
-    const addBtn = button({
-      label: "Download",
-      icon: "download",
-      variant: "primary",
-      onClick: () => {
-        if (!unavailable(addBtn)) void addBatch();
-      },
-    });
-    const addLabel = addBtn.querySelector("span")!;
-
-    const paintCounts = () => {
-      countFrame = 0;
-      const c = links.counts();
-      const ready = c.ready - c.added;
-      counts.textContent = [
-        ready > 0 ? `${ready} ready` : null,
-        c.added > 0 ? `${c.added} added` : null,
-        c.failed > 0 ? `${c.failed} failed` : null,
-        c.looking > 0 ? `${c.looking} reading` : null,
-        c.waiting > 0 ? `${c.waiting} waiting` : null,
-        c.cancelled > 0 ? `${c.cancelled} stopped` : null,
-      ]
-        .filter(Boolean)
-        .join("  ·  ");
-      const busy = c.looking + c.waiting > 0;
-      if (wasBusy !== null && busy !== wasBusy) {
-        announcer.textContent = busy
-          ? `Reading ${c.looking + c.waiting} ${c.looking + c.waiting === 1 ? "link" : "links"}.`
-          : `Finished reading: ${counts.textContent}.`;
-      }
-      wasBusy = busy;
-      // Stop or Retry may hide while it has focus (the reading it controls ended): focus
-      // then moves to the other one, or to Select All, instead of falling to the page.
-      const focused = document.activeElement;
-      stopBtn.hidden = !busy;
-      const again = c.failed + c.cancelled;
-      retryBtn.hidden = again === 0;
-      if ((focused === stopBtn || focused === retryBtn) && (focused as HTMLElement).hidden) {
-        (focused === stopBtn && !retryBtn.hidden ? retryBtn : focused === retryBtn && !stopBtn.hidden ? stopBtn : toggleAll).focus();
-      }
-      retryBtn.querySelector("span")!.textContent = c.cancelled === 0 ? `Retry ${c.failed} Failed` : `Read ${again} Again`;
-      toggleAll.querySelector("span")!.textContent = allSelected() ? "Select None" : "Select All";
-      toggleAll.setAttribute("aria-disabled", String(!rows.some(selectable)));
-      const n = c.selectedItems;
-      addLabel.textContent = n === 0 ? "Download" : n === 1 ? "Download 1 Video" : `Download ${n} Videos`;
-      addBtn.setAttribute("aria-disabled", String(n === 0 || links.submitting));
-      selectedNote.textContent = `${c.selectedRows} of ${rows.length} links selected  ·  Saves to ${folderName(store.settings.outputDir)}`;
-      paintBatchEstimate?.();
-    };
-    const scheduleCounts = () => {
-      if (!countFrame) countFrame = requestAnimationFrame(paintCounts);
-    };
-
-    const fallbackThumb = () => h("div", { class: "entry-thumb thumb-fallback" }, icon("link", 16));
-
-    const paintRow = (r: BatchRow<ProbeResult>) => {
-      scheduleCounts();
-      const ref = refs.get(r.id);
-      if (!ref) return; // not built yet; it is painted when it is
-      const can = selectable(r);
-      ref.pick.setAttribute("aria-checked", String(r.selected));
-      // aria-disabled, not disabled: the row keeps keyboard focus when it changes.
-      ref.pick.setAttribute("aria-disabled", String(!can));
-      ref.pick.dataset.status = r.added ? "added" : r.status;
-      ref.title.textContent = r.result?.title || r.url;
-      ref.title.title = r.url;
-      const [note, tone] = rowNote(r);
-      ref.sub.textContent = note;
-      ref.sub.dataset.tone = tone;
-      const art = r.result ? (r.result.thumbnail ?? r.result.entries.find((e) => e.thumbnail)?.thumbnail ?? null) : null;
-      if (art !== ref.thumbFor) {
-        const next = art ? thumbnailEl(art, "entry-thumb") : fallbackThumb();
-        ref.thumb.replaceWith(next);
-        ref.thumb = next;
-        ref.thumbFor = art;
-      }
-      const side = r.status === "failed" || r.status === "cancelled" ? "retry" : "";
-      if (side !== ref.sideFor) {
-        ref.sideFor = side;
-        replace(
-          ref.side,
-          side
-            ? button({
-                icon: "retry",
-                title: "Read this link again",
-                variant: "plain",
-                size: "small",
-                onClick: () => {
-                  links.retry(r.id);
-                  ref.pick.focus(); // the button goes away; focus stays on the row
-                },
-              })
-            : null,
-        );
-      }
-    };
-
-    const buildRow = (r: BatchRow<ProbeResult>): HTMLElement => {
-      const thumb = fallbackThumb();
-      const title = h("span", { class: "entry-title" });
-      const sub = h("span", { class: "entry-sub" });
-      const pick = h(
-        "button",
-        { class: "entry batch-pick", attrs: { type: "button", role: "checkbox", "aria-checked": "false" } },
-        h("span", { class: "check" }, icon("check", 12)),
-        thumb,
-        h("span", { class: "entry-text" }, title, sub),
-      );
-      pick.addEventListener("click", () => links.setSelected(r.id, !r.selected));
-      const side = h("span", { class: "batch-side" });
-      refs.set(r.id, { pick, thumb, thumbFor: null, title, sub, side, sideFor: "" });
-      paintRow(r);
-      return h("div", { class: "batch-row" }, pick, side);
-    };
-
-    const list = h("div", { class: "batch-list", attrs: { role: "group", "aria-label": "Links in this batch" } });
-    const buildSome = () => {
-      buildFrame = 0;
-      const end = Math.min(built + ROWS_PER_FRAME, rows.length);
-      const fragment = document.createDocumentFragment();
-      for (; built < end; built++) fragment.append(buildRow(rows[built]));
-      list.append(fragment);
-      if (built < rows.length) buildFrame = requestAnimationFrame(buildSome);
-    };
-    buildSome();
-
-    // Choices shared by the whole batch. The rows are shown or hidden, never rebuilt, so
-    // the control in use keeps focus.
-    const choices = session.choices;
-    const qualityRow = row(
-      "Quality",
-      qualityChips(capChoices(), choices.maxHeight, (value) => {
-        choices.maxHeight = value;
-        scheduleCounts(); // an estimate for other choices no longer applies
-      }),
-      "Each video is saved at the largest size it has, up to this limit. Nothing is upscaled.",
-    );
-    const presetChoice = presetRow(choices.videoPreset, (next) => {
-      choices.videoPreset = next;
-      scheduleCounts();
-    });
-    const formatRow = row(
-      "Format",
-      chipRadio<string>("Audio format", AUDIO_FORMATS, choices.audioFormat, (value) => {
-        choices.audioFormat = value;
-        scheduleCounts();
-      }),
-      audioHint(),
-    );
-    const showMode = () => {
-      qualityRow.hidden = choices.mode !== "video";
-      presetChoice.hidden = choices.mode !== "video";
-      formatRow.hidden = choices.mode !== "audio";
-    };
-    const typeSeg = segmented<"video" | "audio">(
-      "Type",
-      [
-        { value: "video", label: "Video", icon: "video" },
-        { value: "audio", label: "Audio Only", icon: "music" },
-      ],
-      choices.mode,
-      (next) => {
-        choices.mode = next;
-        showMode();
-        scheduleCounts();
-      },
-    );
-    showMode();
-
-    batchView = {
-      paintRow,
-      refresh: scheduleCounts,
-      dispose: () => {
-        cancelAnimationFrame(buildFrame);
-        cancelAnimationFrame(countFrame);
-      },
-    };
-    paintCounts();
-
-    return h(
-      "div",
-      { class: "result batch" },
-      renderIssues(session.parsed),
-      sectionTitle("Options"),
-      group(
-        row("Type", typeSeg.el, "Applies to every link here. Subtitles and transcripts can be chosen when a link is read on its own."),
-        qualityRow,
-        presetChoice,
-        formatRow,
-      ),
-      h("div", { class: "entries-head" }, sectionTitle("Links"), counts, announcer, stopBtn, retryBtn, estimateBtn, toggleAll, clearBtn),
-      h("div", { class: "glass group" }, list),
-      batchLine.root,
-      h("div", { class: "actions" }, selectedNote, addBtn),
-    );
   }
 
   function renderRecent(): Node | null {
@@ -1582,7 +800,23 @@ export const mountDownload: MountView = (container, ctx) => {
     const issues = skipped && phase !== "idle" && phase !== "batch" ? renderIssues(skipped) : null;
     switch (phase) {
       case "loading":
-        replace(stage, back, issues, h("div", { class: "loading", attrs: { role: "status" } }, spinner(), h("span", { text: "Reading the link…" })));
+        // The preview card's own shape, so the page does not move when the details arrive.
+        replace(
+          stage,
+          back,
+          issues,
+          h(
+            "div",
+            { class: "result" },
+            h(
+              "section",
+              { class: "preview preview-skeleton glass", attrs: { role: "status", "aria-label": "Reading the link" } },
+              h("div", { class: "preview-thumb" }),
+              h("div", { class: "preview-info" }, h("div", { class: "skeleton-line" }), h("div", { class: "skeleton-line" }), h("div", { class: "skeleton-line" })),
+              h("span", { class: "visually-hidden", text: "Reading the link…" }),
+            ),
+          ),
+        );
         break;
       case "error":
         replace(
@@ -1618,7 +852,9 @@ export const mountDownload: MountView = (container, ctx) => {
           phase = "idle";
           return render();
         }
-        replace(stage, renderBatch(store.batch));
+        batchView = mountBatch(store.batch, { run: batchRun, input, stage, refreshCurrent: () => batchView?.refresh() });
+        paintBatchEstimate = batchView.paintEstimate;
+        replace(stage, batchView.el);
         if (changed) stageAnimation = settleIn(stage.firstElementChild);
         break;
       default:
@@ -1687,17 +923,28 @@ export const mountDownload: MountView = (container, ctx) => {
     createSpotify().restore(matchingReturn.snapshot);
     matchingSessionId = matchingReturn.sessionId;
     enqueuing = matchingReturn.enqueuePending;
-    audioFormat = matchingReturn.audioFormat;
-    fastSave = matchingReturn.fastSave;
+    choice.audioFormat = matchingReturn.audioFormat;
+    choice.fastSave = matchingReturn.fastSave;
   }
   if (returning) {
     result = returning.result;
     lastUrl = returning.typedUrl;
     input.value = returning.typedUrl; // the link field shows the link the details are for
     fitInput();
-    ({ mode, height, videoPreset, audioFormat, embedSubs, fastSave, caption, transcriptFormat } = returning.choices);
-    subs = new Set(returning.choices.subs);
-    selected = new Set(returning.selected);
+    const kept = returning.choices;
+    choice.mode = kept.mode;
+    choice.height = kept.height;
+    choice.videoPreset = kept.videoPreset;
+    choice.audioFormat = kept.audioFormat;
+    choice.embedSubs = kept.embedSubs;
+    choice.fastSave = kept.fastSave;
+    choice.caption = kept.caption;
+    choice.transcriptFormat = kept.transcriptFormat;
+    choice.subs = new Set(kept.subs);
+    choice.selected = new Set(returning.selected);
+    choice.sponsorblock = kept.sponsorblock ?? "off";
+    choice.sponsorCategories = new Set(kept.sponsorCategories?.length ? kept.sponsorCategories : ["sponsor"]);
+    choice.playlistFolder = kept.playlistFolder ?? false;
     freshness = returning.freshness;
     staleReason = returning.staleReason;
     refreshNotices = returning.notices;
@@ -1714,7 +961,7 @@ export const mountDownload: MountView = (container, ctx) => {
   /** Leaving the view: keeps what a return needs, as plain data, and stops what is running. */
   function saveSession() {
     if (spotify) {
-      store.spotifyMatch = enqueuedResult !== null && result === enqueuedResult ? null : { snapshot: spotify.snapshot(), audioFormat, fastSave, sessionId: matchingSessionId, enqueuePending: enqueuing };
+      store.spotifyMatch = enqueuedResult !== null && result === enqueuedResult ? null : { snapshot: spotify.snapshot(), audioFormat: choice.audioFormat, fastSave: choice.fastSave, sessionId: matchingSessionId, enqueuePending: enqueuing };
       store.previews.clear();
       return;
     }
@@ -1725,8 +972,21 @@ export const mountDownload: MountView = (container, ctx) => {
         url: result.url,
         typedUrl: lastUrl || result.url,
         result,
-        choices: { mode, height, videoPreset, audioFormat, subs: [...subs], embedSubs, fastSave, caption, transcriptFormat },
-        selected: [...selected].sort((a, b) => a - b),
+        choices: {
+          mode: choice.mode,
+          height: choice.height,
+          videoPreset: choice.videoPreset,
+          audioFormat: choice.audioFormat,
+          subs: [...choice.subs],
+          embedSubs: choice.embedSubs,
+          fastSave: choice.fastSave,
+          caption: choice.caption,
+          transcriptFormat: choice.transcriptFormat,
+          sponsorblock: choice.sponsorblock,
+          sponsorCategories: [...choice.sponsorCategories],
+          playlistFolder: choice.playlistFolder,
+        },
+        selected: [...choice.selected].sort((a, b) => a - b),
         // The check for changes is dropped with the view, so it cannot be shown as still running.
         freshness: freshness === "checking" ? "stale" : freshness,
         staleReason: checking ? CHECK_INTERRUPTED : staleReason,
@@ -1751,7 +1011,7 @@ export const mountDownload: MountView = (container, ctx) => {
     clearSpotifyView();
     offPaste();
     offFocus();
-    offTools.forEach((off) => off());
+    offSetup();
     offHistory();
     offBatch();
     offBatchRow();

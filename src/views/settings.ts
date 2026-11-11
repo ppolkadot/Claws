@@ -1,6 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { api, errorMessage, type Backdrop, type CookieKind, type QuickOpenShortcut, type Theme } from "../api";
+import type { ToolName } from "../setup";
 import { store } from "../store";
 import { button, chipRadio, segmented, slider, stepper, toast, toggle } from "../ui/components";
 import { h, replace } from "../ui/dom";
@@ -23,6 +24,22 @@ const SHORTCUTS: { value: QuickOpenShortcut; label: string }[] = [
   { value: "ctrl+shift+space", label: "Ctrl+Shift+Space" },
   { value: "off", label: "Off" },
 ];
+
+const SPEED_LIMITS: { value: number; label: string }[] = [
+  { value: 0, label: "No limit" },
+  { value: 512, label: "512 KB/s" },
+  { value: 1024, label: "1 MB/s" },
+  { value: 2048, label: "2 MB/s" },
+  { value: 5120, label: "5 MB/s" },
+  { value: 10240, label: "10 MB/s" },
+  { value: 25600, label: "25 MB/s" },
+];
+
+/** The offered limits, plus a saved value that is not one of them (a hand-edited file). */
+function speedLimits(current: number): { value: number; label: string }[] {
+  if (SPEED_LIMITS.some((option) => option.value === current)) return SPEED_LIMITS;
+  return [...SPEED_LIMITS, { value: current, label: `${current} KiB/s` }];
+}
 
 const onError = (message: string) => toast(message, { tone: "error" });
 
@@ -97,9 +114,19 @@ function buildSettings(container: HTMLElement): () => void {
     row("Filename", template, h("span", {}, "yt-dlp output template. ", h("code", { text: "%(title)s" }), " and ", h("code", { text: "%(id)s" }), " are the usual parts.")),
     row("Simultaneous downloads", stepper("Simultaneous downloads", s().maxConcurrent, 1, 8, (v) => update({ maxConcurrent: v }))),
     row(
+      "Processing alongside",
+      stepper("Processing alongside", s().maxProcessing, 1, 8, (v) => update({ maxProcessing: v })),
+      "How many downloads may be merging or converting without holding up the next transfer. Beyond this number, the next download waits.",
+    ),
+    row(
+      "Speed limit",
+      chipRadio<number>("Speed limit", speedLimits(s().speedLimitKib), s().speedLimitKib, (v) => update({ speedLimitKib: v })),
+      "For each download, so several at once can add up to more. Applies from the next download that starts or resumes; a limited download fetches one segment at a time.",
+    ),
+    row(
       "Embed metadata",
       toggle("Embed metadata", s().embedMetadata, (v) => update({ embedMetadata: v })),
-      "Adds title, uploader and date. Large files may take substantially longer because the whole file can be rewritten.",
+      "Adds title, uploader, date and chapters. Large files may take substantially longer because the whole file can be rewritten.",
     ),
     row(
       "Prefer matching source audio",
@@ -113,6 +140,11 @@ function buildSettings(container: HTMLElement): () => void {
       "Quick Open",
       chipRadio<QuickOpenShortcut>("Quick Open shortcut", SHORTCUTS, s().quickOpenShortcut, (value) => update({ quickOpenShortcut: value })),
       "Brings Claws forward from any app, and looks up a link that is on the clipboard. Press it again to put Claws away.",
+    ),
+    row(
+      "Notify when a download finishes",
+      toggle("Notify when a download finishes", s().notifyWhenDone, (value) => update({ notifyWhenDone: value })),
+      "A Windows notification when a download finishes or fails while Claws is hidden or behind another window.",
     ),
     row(
       "Keep running when closed",
@@ -258,11 +290,12 @@ function buildSettings(container: HTMLElement): () => void {
 
   const toolsGroup = h("div", { class: "tools" });
   const paintTools = () => {
-    const { ytdlp, ffmpeg, jsRuntime } = store.tools;
+    const { ytdlp, ffmpeg, deno, jsRuntime } = store.tools;
+    const denoBusy = Boolean(store.toolBusy.deno);
     const ytdlpBusy = Boolean(store.toolBusy.ytdlp);
     const ffmpegBusy = Boolean(store.toolBusy.ffmpeg);
 
-    const progressFor = (tool: "ytdlp" | "ffmpeg") => {
+    const progressFor = (tool: ToolName) => {
       const p = store.toolProgress[tool];
       const fraction = p && p.total > 0 ? p.received / p.total : null;
       const bar = progressBar(fraction);
@@ -325,24 +358,35 @@ function buildSettings(container: HTMLElement): () => void {
           ffmpegHint,
         ),
         row(
-          "JavaScript runtime",
-          store.toolsKnown
-            ? h(
-                "span",
-                { class: "font-status" },
-                h("span", { class: "tool-dot", attrs: { "data-state": jsRuntime ? "ok" : "missing" } }),
-                jsRuntime ?? "Not found",
-              )
-            : null,
+          `JavaScript runtime${deno ? `  Deno ${deno.version}` : ""}`,
           !store.toolsKnown
-            ? "Checking…"
+            ? null
             : jsRuntime
-              ? `Found on your PATH. yt-dlp uses ${jsRuntime} to read sites such as YouTube.`
-              : "YouTube and some other sites need Deno or Node.js. Install one (deno.com is the simplest), then restart Claws.",
+              ? h(
+                  "span",
+                  { class: "font-status" },
+                  h("span", { class: "tool-dot", attrs: { "data-state": "ok" } }),
+                  jsRuntime,
+                )
+              : h(
+                  "div",
+                  { class: "tool-control" },
+                  denoBusy ? progressFor("deno") : null,
+                  button({ label: "Install", icon: "download", variant: "secondary", size: "small", onClick: () => void store.runTool("deno", api.installDeno) }),
+                ),
+          store.toolError.deno
+            ? store.toolError.deno
+            : !store.toolsKnown
+              ? "Checking…"
+              : deno?.managed
+                ? "Installed by Claws. yt-dlp uses Deno to read sites such as YouTube."
+                : jsRuntime
+                  ? `Found on your PATH. yt-dlp uses ${jsRuntime} to read sites such as YouTube.`
+                  : "YouTube and some other sites need a JavaScript runtime. Install Deno here; it is checked against its published checksum.",
         ),
       ),
     );
-    toolsGroup.querySelectorAll<HTMLButtonElement>("button").forEach((b) => (b.disabled = ytdlpBusy || ffmpegBusy));
+    toolsGroup.querySelectorAll<HTMLButtonElement>("button").forEach((b) => (b.disabled = ytdlpBusy || ffmpegBusy || denoBusy));
   };
   const offTools = [store.on("tools", paintTools), store.on("toolProgress", paintTools)];
   paintTools();

@@ -26,6 +26,47 @@ pub fn bring_forward(app: &AppHandle) {
     }
 }
 
+/// Only when enabled and the window is hidden, minimized or behind.
+pub fn should_notify(enabled: bool, visible: bool, focused: bool, minimized: bool) -> bool {
+    enabled && !(visible && focused && !minimized)
+}
+
+pub fn finished_notice(job: &crate::downloader::Job) -> Option<(&'static str, String)> {
+    use crate::downloader::JobStatus;
+    match job.status {
+        JobStatus::Completed if job.options.mode == "transcript" => Some(("Transcript saved", job.title.clone())),
+        JobStatus::Completed => Some(("Download finished", job.title.clone())),
+        JobStatus::Failed => Some(("Download failed", job.title.clone())),
+        _ => None,
+    }
+}
+
+pub fn notify_finished(app: &AppHandle, job: &crate::downloader::Job) {
+    let Some((title, body)) = finished_notice(job) else { return };
+    let enabled = app.state::<AppState>().settings.lock().unwrap().notify_when_done;
+    let (visible, focused, minimized) = match app.get_webview_window("main") {
+        Some(window) => (
+            window.is_visible().unwrap_or(false),
+            window.is_focused().unwrap_or(false),
+            window.is_minimized().unwrap_or(false),
+        ),
+        None => (false, false, false),
+    };
+    if !should_notify(enabled, visible, focused, minimized) {
+        return;
+    }
+    // The test runtime has no notification plugin.
+    #[cfg(not(test))]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        if let Err(e) = app.notification().builder().title(title).body(body).show() {
+            eprintln!("Could not show the notification: {e}");
+        }
+    }
+    #[cfg(test)]
+    let _ = (title, body);
+}
+
 /// Toggles, like Spotlight: brings Claws forward, or puts it away when already in front.
 fn quick_open(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else { return };
@@ -168,5 +209,41 @@ mod tests {
     fn labels_read_naturally() {
         assert_eq!(shortcut_label("ctrl+alt+d"), "Ctrl+Alt+D");
         assert_eq!(shortcut_label("ctrl+shift+space"), "Ctrl+Shift+Space");
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+    use crate::downloader::{Job, JobStatus};
+
+    fn job(status: &str, mode: &str) -> Job {
+        serde_json::from_value(serde_json::json!({
+            "id": "a", "url": "https://example.com/v", "title": "A long film", "thumbnail": null, "uploader": null,
+            "duration": null, "options": { "mode": mode }, "status": status, "progress": 0, "speed": null, "eta": null,
+            "filePath": null, "error": null, "createdAt": 1
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_notification_is_sent_only_when_asked_for_and_claws_is_not_in_front() {
+        // enabled, visible, focused, minimized
+        assert!(!should_notify(true, true, true, false), "the user is looking at Claws");
+        assert!(should_notify(true, true, false, false), "behind another window");
+        assert!(should_notify(true, false, false, false), "hidden in the notification area");
+        assert!(should_notify(true, true, true, true), "minimized");
+        assert!(!should_notify(false, false, false, false), "switched off in Settings");
+    }
+
+    #[test]
+    fn only_a_finished_or_failed_download_is_news() {
+        assert_eq!(finished_notice(&job("completed", "video")), Some(("Download finished", "A long film".to_string())));
+        assert_eq!(finished_notice(&job("completed", "transcript")), Some(("Transcript saved", "A long film".to_string())));
+        assert_eq!(finished_notice(&job("failed", "audio")), Some(("Download failed", "A long film".to_string())));
+        for status in ["paused", "cancelled", "queued", "downloading", "processing"] {
+            assert_eq!(finished_notice(&job(status, "video")), None, "{status}");
+        }
+        assert_eq!(job("paused", "video").status, JobStatus::Paused);
     }
 }

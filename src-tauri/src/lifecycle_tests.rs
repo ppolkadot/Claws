@@ -462,7 +462,7 @@ impl TestApp {
     }
 
     pub fn enqueue_with(&self, link: &str, options: DownloadOptions) -> String {
-        let item = EnqueueItem { url: link.into(), match_origin: None, playlist_index: None, title: link.into(), thumbnail: None, uploader: None, duration: None };
+        let item = EnqueueItem { url: link.into(), match_origin: None, playlist_index: None, title: link.into(), thumbnail: None, uploader: None, duration: None, playlist: None };
         let added = downloader::enqueue(self.handle(), vec![item], options).expect("enqueue");
         added.jobs[0].job_id.clone()
     }
@@ -1122,7 +1122,6 @@ fn startup_recovery_returns_before_library_work_and_prevents_duplicate_starts() 
     assert_eq!(t.starts().len(), 1);
 }
 
-
 fn original(max_height: Option<u32>) -> DownloadOptions {
     DownloadOptions { max_height, video_preset: crate::download_policy::VideoPreset::Original, ..DownloadOptions::default() }
 }
@@ -1243,7 +1242,6 @@ fn a_saved_job_with_a_preset_this_version_cannot_make_fails_without_starting() {
     assert!(job.error.unwrap_or_default().contains("editing preset"));
     assert_eq!(t.starts().len(), 1, "yt-dlp was never started for it");
 }
-
 
 fn transcript(code: &str, auto: bool, format: crate::transcript::TranscriptFormat) -> DownloadOptions {
     DownloadOptions { mode: "transcript".into(), subtitle_langs: vec![code.into()], auto_subs: auto, transcript_format: format, ..DownloadOptions::default() }
@@ -1482,7 +1480,6 @@ fn a_network_failure_after_a_pre_download_postprocessor_is_not_reported_as_proce
     assert!(!error.contains("processing the file failed"), "a transfer failure was reported as a processing failure: {error}");
 }
 
-
 fn with_captions() -> DownloadOptions {
     DownloadOptions { subtitle_langs: vec!["en".into(), "es".into()], embed_subs: false, ..DownloadOptions::default() }
 }
@@ -1718,4 +1715,181 @@ fn cancelling_a_finished_download_that_never_reached_the_library_keeps_its_retai
     std::thread::sleep(Duration::from_millis(500));
     assert!(workspace.join("oak.en.srt").is_file());
     assert!(t.job(&id).is_some(), "a committed publication is not cancelled");
+}
+
+fn release_merges(t: &TestApp) {
+    std::fs::write(t.out.join("fixture-merge-release"), b"go").unwrap();
+}
+
+#[test]
+fn a_queued_job_starts_transferring_while_three_others_are_processing() {
+    let Some(t) = TestApp::new("slots-free") else { return };
+    // The defaults: three transfers, and two processing jobs that hold no transfer slot.
+    let merging: Vec<String> = ["one", "two", "three"].iter().map(|name| t.enqueue(&format!("https://fixture.invalid/merge-hold/{name}"))).collect();
+    let fourth = t.enqueue("https://fixture.invalid/hang/four");
+    for id in &merging {
+        t.wait_job(id, |j| j.status == JobStatus::Processing, "the merge to start");
+    }
+    // Three merges overflow the processing limit by one, which holds one of three slots.
+    t.wait_job(&fourth, running, "the fourth to transfer beside three merges");
+    for id in &merging {
+        assert_eq!(t.job(id).unwrap().status, JobStatus::Processing, "a merge ended before it was released");
+    }
+
+    release_merges(&t);
+    for id in &merging {
+        t.wait_job(id, |j| j.status == JobStatus::Completed, "the completion");
+        wait_until("the finished job's disk claim to go", || t.state().disk_ledger.lock().unwrap().held(id).is_none());
+    }
+    assert!(running(&t.job(&fourth).unwrap()), "the transfer was disturbed by the completions");
+}
+
+#[test]
+fn processing_beyond_its_limit_holds_a_transfer_slot() {
+    let Some(t) = TestApp::new("slots-full") else { return };
+    {
+        let state = t.state();
+        let mut settings = state.settings.lock().unwrap();
+        settings.max_concurrent = 1;
+        settings.max_processing = 1;
+    }
+    let first = t.enqueue("https://fixture.invalid/merge-hold/first");
+    let second = t.enqueue("https://fixture.invalid/merge-hold/second");
+    let third = t.enqueue("https://fixture.invalid/hang/third");
+    // The second merge exceeds the limit and keeps the only slot, so the third waits.
+    t.wait_job(&first, |j| j.status == JobStatus::Processing, "the first merge");
+    t.wait_job(&second, |j| j.status == JobStatus::Processing, "the second merge");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(t.job(&third).unwrap().status, JobStatus::Queued, "more ran at once than the two limits allow");
+    assert_eq!(t.starts().len(), 2);
+
+    release_merges(&t);
+    t.wait_job(&third, running, "the third once the merges are done");
+    for id in [&first, &second] {
+        t.wait_job(id, |j| j.status == JobStatus::Completed, "the completion");
+        wait_until("the finished job's disk claim to go", || t.state().disk_ledger.lock().unwrap().held(id).is_none());
+    }
+}
+
+fn one_at_a_time(t: &TestApp) {
+    t.state().settings.lock().unwrap().max_concurrent = 1;
+}
+
+#[test]
+fn bulk_pause_resume_and_retry_act_on_every_matching_job_in_one_call() {
+    let Some(t) = TestApp::new("bulk") else { return };
+    one_at_a_time(&t);
+    let first = t.enqueue("https://fixture.invalid/hang/bulk-a");
+    let second = t.enqueue("https://fixture.invalid/hang/bulk-b");
+    let third = t.enqueue("https://fixture.invalid/hang/bulk-c");
+    t.wait_job(&first, running, "the first download");
+
+    assert_eq!(downloader::pause_all(t.handle()), 3);
+    for id in [&first, &second, &third] {
+        t.wait_job(id, |j| j.status == JobStatus::Paused, "the pause");
+    }
+    assert_eq!(downloader::pause_all(t.handle()), 0, "nothing is left to pause");
+
+    assert_eq!(downloader::resume_all(t.handle()), 3);
+    // One starts (a paused job's old worker may still be leaving); the other two wait.
+    let all = [&first, &second, &third];
+    wait_until("one of them to run again", || all.iter().any(|id| running(&t.job(id).unwrap())));
+    let waiting: Vec<&String> = all.iter().copied().filter(|id| t.job(id).unwrap().status == JobStatus::Queued).collect();
+    assert_eq!(waiting.len(), 2, "one slot, so two still wait");
+
+    // A failed job is tried again; the paused ones are left alone.
+    for id in &waiting {
+        downloader::pause(t.handle(), id);
+    }
+    t.state().settings.lock().unwrap().max_concurrent = 2;
+    let failing = t.enqueue("https://fixture.invalid/fail/bulk-fail");
+    t.wait_job(&failing, |j| j.status == JobStatus::Failed, "the failure");
+    let starts = |name: &str| t.starts().iter().filter(|line| line.contains(name)).count();
+    assert_eq!(starts("bulk-fail"), 1);
+    assert_eq!(downloader::retry_failed(t.handle()), 1);
+    wait_until("the failed job to start again", || starts("bulk-fail") == 2);
+    for id in &waiting {
+        assert_eq!(t.job(id).unwrap().status, JobStatus::Paused, "Retry Failed must not resume a paused job");
+    }
+}
+
+#[test]
+fn a_job_moved_to_the_top_starts_next_and_keeps_its_place_after_a_restart() {
+    let Some(t) = TestApp::new("prioritize") else { return };
+    one_at_a_time(&t);
+    let first = t.enqueue("https://fixture.invalid/hang/top-a");
+    let second = t.enqueue("https://fixture.invalid/hang/top-b");
+    let third = t.enqueue("https://fixture.invalid/hang/top-c");
+    t.wait_job(&first, running, "the first download");
+
+    downloader::prioritize(t.handle(), &third);
+    let moved = t.job(&third).unwrap().priority;
+    assert!(moved > 0);
+    downloader::prioritize(t.handle(), &third);
+    assert_eq!(t.job(&third).unwrap().priority, moved, "a job already on top is not moved again");
+    downloader::prioritize(t.handle(), &first);
+    assert_eq!(t.job(&first).unwrap().priority, 0, "a running job is not moved");
+
+    downloader::cancel(t.handle(), &first);
+    t.wait_job(&third, running, "the moved job to start before the older one");
+    assert_eq!(t.job(&second).unwrap().status, JobStatus::Queued);
+
+    wait_until("the order to be saved", || t.saved_queue().iter().any(|j| j.id == third && j.priority == moved));
+    let t = t.restart();
+    assert_eq!(t.job(&third).unwrap().priority, moved);
+    assert_eq!(t.job(&second).unwrap().priority, 0);
+}
+
+#[test]
+fn the_processing_stage_is_named_while_it_runs_and_is_not_saved() {
+    let Some(t) = TestApp::new("stage") else { return };
+    let id = t.enqueue("https://fixture.invalid/merge-hold/staged");
+    let job = t.wait_job(&id, |j| j.status == JobStatus::Processing, "the merge");
+    assert_eq!(job.stage.as_deref(), Some("Merging video and audio"));
+    downloader::flush_queue(t.handle()).expect("the queue is saved");
+    let text = std::fs::read_to_string(t.dir.join("queue.json")).unwrap();
+    assert!(text.contains(&id) && text.contains("\"processing\""), "the processing job is in the saved queue");
+    assert!(!text.contains("\"stage\""), "the stage was written to the queue file");
+    release_merges(&t);
+    t.wait_job(&id, |j| j.status == JobStatus::Completed, "the completion");
+}
+
+fn playlist_item(link: &str, title: &str, position: u32, count: u32) -> EnqueueItem {
+    let place = downloader::PlaylistPlace { title: title.into(), position, count };
+    EnqueueItem { url: link.into(), match_origin: None, playlist_index: None, title: link.into(), thumbnail: None, uploader: None, duration: None, playlist: Some(place) }
+}
+
+#[test]
+fn a_playlist_saved_into_a_folder_is_numbered_published_there_and_never_overwrites() {
+    let Some(t) = TestApp::new("playlist-folder") else { return };
+    let foldered = DownloadOptions { playlist_folder: true, ..DownloadOptions::default() };
+    let items = vec![
+        playlist_item("https://fixture.invalid/ok-fast/alpha", "Road: trips?", 3, 12),
+        playlist_item("https://fixture.invalid/ok-fast/beta", "Road: trips?", 4, 12),
+    ];
+    // Something of the user's already has the second file's name.
+    let folder = t.out.join("Road trips");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("04 - beta.mp4"), b"mine").unwrap();
+
+    let added = downloader::enqueue(t.handle(), items, foldered.clone()).expect("enqueue");
+    let (first, second) = (added.jobs[0].job_id.clone(), added.jobs[1].job_id.clone());
+    assert_eq!(t.job(&first).unwrap().name_prefix.as_deref(), Some("Road trips/03 - "));
+
+    let done = t.wait_job(&first, |j| j.status == JobStatus::Completed, "the first video");
+    assert_eq!(std::fs::read(folder.join("03 - alpha.mp4")).unwrap(), b"merged");
+    assert_eq!(Path::new(done.file_path.as_deref().unwrap()), folder.join("03 - alpha.mp4"));
+    assert!(done.execution.unwrap().filename_template.starts_with("Road trips/03 - "), "the folder is frozen with the template");
+
+    // The taken name is never replaced; the download is kept for Try Again.
+    let refused = t.wait_job(&second, |j| j.status == JobStatus::Failed, "the second video to be refused its name");
+    assert!(refused.error.unwrap_or_default().contains("already"), "the reason names the existing file");
+    assert_eq!(std::fs::read(folder.join("04 - beta.mp4")).unwrap(), b"mine");
+
+    // Without the option the same playlist item is saved flat, as before.
+    let flat = downloader::enqueue(t.handle(), vec![playlist_item("https://fixture.invalid/ok-fast/gamma", "Road: trips?", 5, 12)], DownloadOptions::default()).expect("enqueue");
+    let id = flat.jobs[0].job_id.clone();
+    assert_eq!(t.job(&id).unwrap().name_prefix, None);
+    t.wait_job(&id, |j| j.status == JobStatus::Completed, "the flat download");
+    assert_eq!(std::fs::read(t.out.join("gamma.mp4")).unwrap(), b"merged");
 }

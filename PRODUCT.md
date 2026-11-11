@@ -24,7 +24,7 @@ Native Rust shell around yt-dlp and ffmpeg, so site coverage tracks yt-dlp's ext
 
 ## Operating Context
 
-- Everything runs locally; the only network traffic is to the sites being downloaded from and to GitHub for yt-dlp updates.
+- Everything runs locally; the only network traffic is to the sites being downloaded from, to GitHub for the tools Claws installs when asked (yt-dlp, ffmpeg, Deno), to Spotify's public pages for a pasted track link, and, only for a download where the user turns SponsorBlock on, to the SponsorBlock service.
 - yt-dlp is downloaded and updated by the app into its own data directory. ffmpeg is taken from PATH when present (it is on this machine) and otherwise fetched by the app.
 - Some sites need a login, so cookies can come from a browser profile or a cookies.txt file.
 

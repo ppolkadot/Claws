@@ -1,6 +1,6 @@
 // Mirrors ProcessingPolicy in download_policy.rs.
 // Contract: Fast Save skips the optional passes that can rewrite the finished file, that is
-// writing metadata, embedding subtitles and embedding cover art. Necessary work stays:
+// writing metadata and chapters, embedding subtitles, embedding cover art and SponsorBlock. Necessary work stays:
 // audio conversion, merging video with audio and any container repair the download needs.
 
 export interface FastSaveChoices {
@@ -10,6 +10,7 @@ export interface FastSaveChoices {
   /** Video only: subtitles are chosen and set to be embedded rather than saved beside it. */
   embeddedSubs: boolean;
   fastSave: boolean;
+  sponsorBlock?: boolean;
 }
 
 /** Whether cover art is embedded when Fast Save is off: MP3 and M4A audio downloads. */
@@ -20,9 +21,10 @@ export function embedsCoverArt(mode: string, audioFormat: string): boolean {
 /** The optional passes Fast Save skips for these choices, in the order they are named. */
 export function skippedByFastSave(c: FastSaveChoices): string[] {
   return [
-    c.metadata ? "writing title, uploader and date into the file" : null,
+    c.metadata ? "writing title, uploader, date and chapters into the file" : null,
     c.embeddedSubs ? "embedding subtitles (they are saved as .srt files instead)" : null,
     embedsCoverArt(c.mode, c.audioFormat) ? "embedding cover art (MP3 and M4A files are saved without it)" : null,
+    c.sponsorBlock ? "SponsorBlock (nothing is marked or removed)" : null,
   ].filter((item): item is string => item !== null);
 }
 

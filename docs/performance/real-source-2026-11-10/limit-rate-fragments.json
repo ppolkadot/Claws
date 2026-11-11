@@ -1,0 +1,26 @@
+[
+  {
+    "source": "hls",
+    "fragments": 1,
+    "limitKiB": 1024,
+    "seconds": 17.39,
+    "bytes": 16777216,
+    "effectiveKiBps": 942
+  },
+  {
+    "source": "hls",
+    "fragments": 8,
+    "limitKiB": 1024,
+    "seconds": 3.16,
+    "bytes": 16777216,
+    "effectiveKiBps": 5179
+  },
+  {
+    "source": "plain",
+    "fragments": 8,
+    "limitKiB": 1024,
+    "seconds": 16.99,
+    "bytes": 16777216,
+    "effectiveKiBps": 964
+  }
+]

@@ -49,6 +49,18 @@ impl VideoPreset {
     }
 }
 
+/// What SponsorBlock does to a download, when the user asks for it (YouTube only).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum SponsorBlock {
+    #[default]
+    Off,
+    Mark,
+    Remove,
+}
+
+pub const SPONSORBLOCK_CATEGORIES: [&str; 8] = ["sponsor", "selfpromo", "interaction", "intro", "outro", "preview", "music_offtopic", "filler"];
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum Transport {
@@ -97,9 +109,9 @@ pub fn converts_audio(mode: &str, audio_format: &str) -> bool {
 
 /// What a download does to its streams after transferring them.
 ///
-/// Contract: Fast Save skips the optional passes (metadata, embedded subtitles and embedded
-/// cover art), because each can rewrite the finished file. Necessary work stays: audio
-/// conversion, a video merge and any container repair yt-dlp itself decides on. A transcript
+/// Contract: Fast Save skips the optional passes (metadata and chapters, embedded subtitles,
+/// embedded cover art and SponsorBlock), because each can rewrite the finished file. Necessary
+/// work stays: audio conversion, a video merge and any container repair yt-dlp itself decides on. A transcript
 /// downloads no media, so nothing here applies to it.
 ///
 /// The Fast Save hint in the interface (`src/processing-options.ts`) restates this contract
@@ -112,6 +124,8 @@ pub struct ProcessingPolicy {
     /// MP3 and M4A only. A missing thumbnail makes yt-dlp skip the step, which cannot be
     /// known in advance, so sizing assumes the pass happens.
     pub embed_thumbnail: bool,
+    /// A whole-file pass either way (chapters written or segments cut), so Fast Save turns it off.
+    pub sponsorblock: SponsorBlock,
 }
 
 impl ProcessingPolicy {
@@ -122,6 +136,7 @@ impl ProcessingPolicy {
             embed_metadata: optional && execution.embed_metadata,
             embed_subtitles: optional && options.mode == "video" && !options.subtitle_langs.is_empty() && options.embeds_subtitles(),
             embed_thumbnail: optional && options.mode == "audio" && matches!(options.audio_format.as_str(), "mp3" | "m4a"),
+            sponsorblock: if optional && !options.sponsorblock_categories.is_empty() { options.sponsorblock } else { SponsorBlock::Off },
         }
     }
 
@@ -130,7 +145,7 @@ impl ProcessingPolicy {
     /// temporary output); for M4A it depends on the backend yt-dlp finds, so it is counted
     /// as one.
     pub fn rewrites_output(&self) -> bool {
-        self.embed_metadata || self.embed_subtitles || self.embed_thumbnail
+        self.embed_metadata || self.embed_subtitles || self.embed_thumbnail || self.sponsorblock != SponsorBlock::Off
     }
 
     /// The sizing plan for this job, as admission and the preview both use it.
@@ -326,8 +341,42 @@ fn media_args(push: &mut impl FnMut(&[&str]), options: &DownloadOptions, executi
         }
     }
     if policy.embed_metadata {
-        push(&["--embed-metadata"]);
+        // Asked for by name so chapter embedding does not rest on yt-dlp's default.
+        push(&["--embed-metadata", "--embed-chapters"]);
     }
+    let categories = options.sponsorblock_categories.join(",");
+    match policy.sponsorblock {
+        SponsorBlock::Off => {}
+        // The markers are chapters, so they are only kept if chapters are embedded.
+        SponsorBlock::Mark => push(&["--sponsorblock-mark", &categories, "--embed-chapters"]),
+        SponsorBlock::Remove => push(&["--sponsorblock-remove", &categories]),
+    }
+}
+
+/// `<folder>/<NN> - ` prefix for a playlist item: Windows-safe title folder, number padded to
+/// the playlist's length (two digits minimum). `%` is doubled because this feeds a yt-dlp output template.
+pub fn playlist_prefix(title: &str, position: u32, count: u32) -> String {
+    const RESERVED: [&str; 22] = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",
+        "LPT7", "LPT8", "LPT9",
+    ];
+    let cleaned: String = title.chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { ' ' } else { c }).collect();
+    let mut name = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    name = name.chars().take(80).collect();
+    // No ".." anywhere and no leading dot: the name is one plain folder, never a way up.
+    while name.contains("..") {
+        name = name.replace("..", ".");
+    }
+    let mut name = name.trim_end_matches(['.', ' ']).trim_start_matches(['.', ' ']).to_string();
+    if name.is_empty() {
+        name = "Playlist".into();
+    }
+    let stem = name.split('.').next().unwrap_or_default().trim().to_ascii_uppercase();
+    if RESERVED.contains(&stem.as_str()) {
+        name.insert(0, '_');
+    }
+    let width = count.max(position).to_string().len().max(2);
+    format!("{name}/{position:0width$} - ").replace('%', "%%")
 }
 
 // Failure categories, so a cached extraction is refreshed only when the evidence says the
@@ -462,6 +511,73 @@ mod tests {
         assert_eq!(value_after(&args, "-f"), value_after(&normal, "-f"));
         assert_eq!(value_after(&args, "-S"), value_after(&normal, "-S"));
         assert!(normal.contains(&"--embed-subs".to_string()) && normal.contains(&"--embed-metadata".to_string()));
+    }
+
+    #[test]
+    fn chapters_go_with_the_metadata_pass_and_never_alone() {
+        let on = JobExecution::freeze(&Settings { output_dir: "D:/Out".into(), embed_metadata: true, ..Settings::default() }, false);
+        let args = download_args(vec![], &options("video"), &on, Path::new("W"), Source::Url("https://e.com/v"));
+        assert!(args.contains(&"--embed-metadata".to_string()) && args.contains(&"--embed-chapters".to_string()));
+        let off = JobExecution::freeze(&Settings { output_dir: "D:/Out".into(), embed_metadata: false, ..Settings::default() }, false);
+        let args = download_args(vec![], &options("video"), &off, Path::new("W"), Source::Url("https://e.com/v"));
+        assert!(!args.contains(&"--embed-chapters".to_string()), "no metadata pass, so no chapters either");
+    }
+
+    fn sponsor(mode: SponsorBlock, fast_save: bool) -> (Vec<String>, ProcessingPolicy) {
+        let settings = Settings { output_dir: "D:/Out".into(), embed_metadata: false, ..Settings::default() };
+        let options = DownloadOptions { sponsorblock: mode, sponsorblock_categories: vec!["selfpromo".into(), "sponsor".into()], fast_save, ..DownloadOptions::default() };
+        let execution = JobExecution::freeze(&settings, fast_save);
+        let policy = ProcessingPolicy::new(&options, &execution);
+        (download_args(vec![], &options, &execution, Path::new("W"), Source::Url("https://e.com/v")), policy)
+    }
+
+    #[test]
+    fn sponsorblock_marks_or_removes_the_chosen_categories_and_counts_as_a_rewrite() {
+        let (mark, policy) = sponsor(SponsorBlock::Mark, false);
+        assert_eq!(value_after(&mark, "--sponsorblock-mark"), ["selfpromo,sponsor"]);
+        assert!(mark.contains(&"--embed-chapters".to_string()), "markers are chapters: they must be embedded to be kept");
+        assert!(!mark.contains(&"--sponsorblock-remove".to_string()));
+        assert!(policy.rewrites_output());
+
+        let (remove, policy) = sponsor(SponsorBlock::Remove, false);
+        assert_eq!(value_after(&remove, "--sponsorblock-remove"), ["selfpromo,sponsor"]);
+        assert!(!remove.contains(&"--sponsorblock-mark".to_string()));
+        assert!(policy.rewrites_output());
+
+        let (off, policy) = sponsor(SponsorBlock::Off, false);
+        assert!(!off.iter().any(|a| a.starts_with("--sponsorblock")));
+        assert!(!policy.rewrites_output());
+    }
+
+    #[test]
+    fn fast_save_skips_sponsorblock_and_its_rewrite() {
+        for mode in [SponsorBlock::Mark, SponsorBlock::Remove] {
+            let (args, policy) = sponsor(mode, true);
+            assert!(!args.iter().any(|a| a.starts_with("--sponsorblock")), "{mode:?}");
+            assert!(!policy.rewrites_output(), "{mode:?}");
+            assert_eq!(policy.sponsorblock, SponsorBlock::Off);
+        }
+    }
+
+    #[test]
+    fn a_playlist_prefix_is_a_safe_folder_and_a_padded_number() {
+        assert_eq!(playlist_prefix("My Playlist", 3, 12), "My Playlist/03 - ");
+        assert_eq!(playlist_prefix("My Playlist", 7, 150), "My Playlist/007 - ");
+        assert_eq!(playlist_prefix("a/b\\c: d? <e> |f| \"g\" *h", 1, 5), "a b c d e f g h/01 - ");
+        assert_eq!(playlist_prefix("  trailing dots... ", 1, 5), "trailing dots/01 - ");
+        assert_eq!(playlist_prefix("..", 1, 5), "Playlist/01 - ");
+        assert_eq!(playlist_prefix("", 1, 5), "Playlist/01 - ");
+        assert_eq!(playlist_prefix("con", 1, 5), "_con/01 - ");
+        assert_eq!(playlist_prefix("LPT1.backup", 1, 5), "_LPT1.backup/01 - ");
+        assert_eq!(playlist_prefix("100% live", 2, 5), "100%% live/02 - ", "a literal percent is escaped for the template");
+        assert_eq!(playlist_prefix("line\nbreak\ttab", 2, 5), "line break tab/02 - ");
+        let long = playlist_prefix(&"x".repeat(300), 1, 5);
+        assert_eq!(long, format!("{}/01 - ", "x".repeat(80)));
+        assert_eq!(playlist_prefix("P", 123, 5), "P/123 - ");
+        for prefix in [playlist_prefix("../../etc", 1, 2), playlist_prefix("C:\\Windows", 1, 2)] {
+            assert!(!prefix.contains("..") && !prefix.contains(':') && !prefix.contains('\\'), "{prefix}");
+            assert_eq!(prefix.matches('/').count(), 1, "{prefix}");
+        }
     }
 
     const AUDIO_TARGETS: [&str; 6] = ["mp3", "m4a", "opus", "flac", "wav", "best"];
