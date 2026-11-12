@@ -67,6 +67,94 @@ pub fn apply_backdrop(window: &WebviewWindow, kind: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// The window is borderless and draws its own traffic lights, but tao still gives it
+/// `WS_SYSMENU` (and `WS_CAPTION`), and `apply_backdrop` extends the DWM frame over the
+/// whole client area. Together those make DWM paint Windows' own minimize/restore/close
+/// glyphs over the top-right corner once the window is maximized. DWM only draws caption
+/// buttons for a window with `WS_SYSMENU`, so the style is removed and kept removed: tao
+/// rebuilds the style bits whenever one of its window flags changes, which is why this is
+/// a subclass that edits every style change, not a one-off `SetWindowLongPtr`.
+/// Snap, Win+Arrow, minimize and maximize keep working; only the Alt+Space system menu
+/// goes. The traffic lights stay the only buttons.
+#[cfg(windows)]
+pub fn hide_system_buttons(window: &WebviewWindow) -> Result<(), String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Shell::SetWindowSubclass;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+
+    /// Id of this subclass on the window; any value unique to it will do.
+    const SUBCLASS_ID: usize = 0x434C_4157; // "CLAW"
+
+    let hwnd = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
+    unsafe {
+        if !SetWindowSubclass(hwnd, Some(style_guard), SUBCLASS_ID, 0).as_bool() {
+            return Err("Could not hide the system window buttons.".into());
+        }
+        // Setting the current style again runs it through the guard, and the frame is
+        // recalculated so DWM stops drawing the buttons right away.
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        SetWindowLongPtrW(hwnd, GWL_STYLE, style);
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn hide_system_buttons(_window: &WebviewWindow) -> Result<(), String> {
+    Ok(())
+}
+
+/// The window style with the system menu (and with it DWM's caption buttons) removed.
+#[cfg(windows)]
+fn without_system_menu(style: u32) -> u32 {
+    style & !windows::Win32::UI::WindowsAndMessaging::WS_SYSMENU.0
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn style_guard(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    _id: usize,
+    _data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::Shell::DefSubclassProc;
+    use windows::Win32::UI::WindowsAndMessaging::{GWL_STYLE, STYLESTRUCT, WM_STYLECHANGING};
+
+    // For WM_STYLECHANGING, wparam says which style is changing and lparam points at the
+    // old and new values, which may be edited before the change is applied.
+    if msg == WM_STYLECHANGING && wparam.0 as i32 == GWL_STYLE.0 && lparam.0 != 0 {
+        let change = &mut *(lparam.0 as *mut STYLESTRUCT);
+        change.styleNew = without_system_menu(change.styleNew);
+    }
+    DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::without_system_menu;
+
+    #[test]
+    fn only_the_system_menu_bit_is_removed() {
+        // The style the live window had: caption, sysmenu, thick frame, min and max boxes.
+        let live = 0x15CF_0000;
+        assert_eq!(without_system_menu(live), 0x15C7_0000);
+        assert_eq!(without_system_menu(0x15C7_0000), 0x15C7_0000);
+    }
+}
+
 /// SetWindowCompositionAttribute is exported by user32 but missing from its import
 /// library, so it is looked up at runtime. False means no blur.
 #[cfg(windows)]

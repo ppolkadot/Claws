@@ -121,6 +121,9 @@ pub fn run() {
 
             if let Some(main) = app.get_webview_window("main") {
                 window::apply_theme(&main, &settings.theme);
+                if let Err(e) = window::hide_system_buttons(&main) {
+                    notices.push(e);
+                }
                 if let Err(e) = window::apply_backdrop(&main, &settings.backdrop) {
                     notices.push(e);
                 }
