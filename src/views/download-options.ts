@@ -161,7 +161,7 @@ export function mountOptions(r: ProbeResult, choice: LinkChoices, deps: OptionsD
     const about = "Asks sponsor.ajay.app for community-marked segments in this video.";
     if (choice.fastSave) return [row("SponsorBlock", h("span", { class: "row-note", text: "Off while Fast Save is on" }), "Marking or removing segments rewrites the file, which Fast Save skips.")];
     const hints: Record<SponsorBlockMode, string> = {
-      off: "Claws contacts sponsor.ajay.app only when SponsorBlock is enabled for this download.",
+      off: "Claws contacts sponsor.ajay.app only if you choose Mark or Remove for this download.",
       mark: `${about} Marks chosen segments as chapters without cutting.`,
       remove: `${about} Cuts chosen segments from the file. A cut can leave a brief glitch, and the shown size is approximate.`,
     };

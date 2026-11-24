@@ -42,7 +42,7 @@ async function confirmRemove(item: HistoryItem) {
   const base = provable
     ? `“${item.title}” will leave your library. You can also delete the file from your disk.`
     : hasFile
-      ? `“${item.title}” will leave your library. This download was saved by an older version of Claws, which did not record enough to prove the file at that location is still the one it saved, so Claws will not delete it from your disk. Use Show in folder to find it.`
+      ? `“${item.title}” will leave your library. This download was saved by an older version of Claws, which did not record enough to prove the file at that location is still the one it saved, so Claws will not delete it from your disk. Use “Show in folder” to find it.`
       : `“${item.title}” will leave your library.`;
   const message = [base, keptRemovalWarning(item)].filter(Boolean).join(" ");
   const choice = await confirmSheet("Remove from library?", message, [

@@ -121,7 +121,7 @@ function buildSettings(container: HTMLElement): () => void {
     row(
       "Speed limit",
       chipRadio<number>("Speed limit", speedLimits(s().speedLimitKib), s().speedLimitKib, (v) => update({ speedLimitKib: v })),
-      "Applies per download, so concurrent downloads can add up to more. Takes effect on the next start or resume and fetches one segment at a time while limited.",
+      "Applies per download, so concurrent downloads can add up to more. Takes effect on the next start or resume. A limited download fetches one segment at a time.",
     ),
     row(
       "Embed metadata",

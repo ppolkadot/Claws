@@ -50,7 +50,7 @@ docs/assets/screenshot-light.png, then replace this comment with:
 ## Quick start
 
 1. Download the installer from the [latest release](https://github.com/ppolkadot/Claws/releases/latest) and run it.
-2. Press **Set Up Everything** on first launch to install yt-dlp, ffmpeg and Deno.
+2. Press **Set up everything** on first launch to install yt-dlp, ffmpeg and Deno.
 3. Paste a link with <kbd>Ctrl</kbd>+<kbd>V</kbd>, pick a quality, press **Download**.
 
 ## Features
@@ -71,7 +71,7 @@ Claws runs on [yt-dlp](https://github.com/yt-dlp/yt-dlp), so it handles any site
 
 ### Managing
 
-The queue runs several downloads at once with live progress, speed and time left. Progress is weighted by bytes across the video and audio streams, and a download whose total is unknown shows bytes so far rather than a guessed percentage. You can pause, resume, cancel and retry jobs one at a time or all at once (**Pause All**, **Resume All**, **Retry Failed**), and **Move to top** puts a waiting job first in line; the order survives a restart. A summary line counts what is downloading, processing, waiting, paused and failed. While a file is processed, its row names the step (merging, converting audio, applying SponsorBlock) when yt-dlp reports it, and a failed job shows its full message with a **Copy** button. The taskbar button follows overall progress, and a Windows notification says when a download finishes or fails while Claws is hidden or behind another window. Unfinished jobs come back paused after a restart, with the folder and file name they started with.
+The queue runs several downloads at once with live progress, speed and time left. Progress is weighted by bytes across the video and audio streams, and a download whose total is unknown shows bytes so far rather than a guessed percentage. You can pause, resume, cancel and retry jobs one at a time or all at once (**Pause all**, **Resume all**, **Retry failed**), and **Move to top** puts a waiting job first in line; the order survives a restart. A summary line counts what is downloading, processing, waiting, paused and failed. While a file is processed, its row names the step (merging, converting audio, applying SponsorBlock) when yt-dlp reports it, and a failed job shows its full message with a **Copy** button. The taskbar button follows overall progress, and a Windows notification says when a download finishes or fails while Claws is hidden or behind another window. Unfinished jobs come back paused after a restart, with the folder and file name they started with.
 
 A job that has finished transferring and is merging or converting no longer holds up the next transfer. Up to two such jobs run beside the transfer limit, so with the defaults up to five are active at once. An optional per-download **speed limit** is off by default.
 
@@ -95,7 +95,7 @@ The desktop shows through the window, blurred by the Windows composition API; th
 
 1. Download `Claws_<version>_x64-setup.exe` from the [Releases](https://github.com/ppolkadot/Claws/releases) page. Current release: 1.0.9, SHA-256 `3ce6d049d578120fb0b156a5dd1eef9a0a48757d7dfd11002f581941e63b2283`.
 2. Run it. Releases are not code-signed yet, so Windows SmartScreen may warn on first run; choose **More info → Run anyway**.
-3. On first launch the Download page lists the tools that are missing: yt-dlp, ffmpeg and a JavaScript runtime (Deno). **Set Up Everything** downloads each into its own folder from its project's GitHub releases and verifies it against the published SHA-256 before use. Nothing is fetched until you press the button, a tool already on your `PATH` counts as ready, and ffmpeg and Deno can be skipped with **Not Now**.
+3. On first launch the Download page lists the tools that are missing: yt-dlp, ffmpeg and a JavaScript runtime (Deno). **Set up everything** downloads each into its own folder from its project's GitHub releases and verifies it against the published SHA-256 before use. Nothing is fetched until you press the button, a tool already on your `PATH` counts as ready, and ffmpeg and Deno can be skipped with **Not now**.
 
 Upgrading keeps your settings, Library and unfinished queue.
 
@@ -110,8 +110,8 @@ Upgrading keeps your settings, Library and unfinished queue.
 
 ## Using Claws
 
-1. **Paste a link** into the field on the Download page and press **Get Info**, or press <kbd>Ctrl</kbd>+<kbd>V</kbd> anywhere. For several unrelated links, paste one per line and press <kbd>Ctrl</kbd>+<kbd>Enter</kbd>.
-2. **Choose** Video, Audio Only or Transcript, a quality, Compatible or Original, and optionally subtitles. For a playlist or batch, tick the items you want; **Estimate Sizes** totals the selection on request.
+1. **Paste a link** into the field on the Download page and press **Get info**, or press <kbd>Ctrl</kbd>+<kbd>V</kbd> anywhere. For several unrelated links, paste one per line and press <kbd>Ctrl</kbd>+<kbd>Enter</kbd>.
+2. **Choose** Video, Audio only or Transcript, a quality, Compatible or Original, and optionally subtitles. For a playlist or batch, tick the items you want; **Estimate sizes** totals the selection on request.
 3. **Press Download.** The job joins the queue. Finished files appear in the Library, where the *Drag file* handle drops them into Explorer or an editor.
 
 ### Keyboard shortcuts
@@ -132,7 +132,7 @@ Upgrading keeps your settings, Library and unfinished queue.
 | Section | Options |
 | --- | --- |
 | **Downloads** | Output folder (default `Downloads\Claws`), filename template (a yt-dlp output template), simultaneous downloads (1–8), processing alongside (1–8, default 2), speed limit (per download, off by default), embed metadata, prefer matching source audio |
-| **Quick Access** | Quick Open shortcut (Ctrl+Alt+D, Ctrl+Alt+Space, Ctrl+Shift+Space or off), notify when a download finishes, keep running when closed, open at login |
+| **Quick access** | Quick Open shortcut (Ctrl+Alt+D, Ctrl+Alt+Space, Ctrl+Shift+Space or off), notify when a download finishes, keep running when closed, open at login |
 | **Appearance** | Theme (System, Light, Dark), window material (Glass, Acrylic, Mica, Solid), transparency, font status |
 | **Sign-in** | Cookies from none, a browser (Firefox, Chrome, Edge, Brave, Opera, Vivaldi), or a `cookies.txt` file |
 | **Tools** | yt-dlp version and one-click update, ffmpeg status and install, and the JavaScript runtime (Deno or Node.js) with a Deno install when none is found |
@@ -163,39 +163,39 @@ Choose **Settings → Sign-in → Browser**. Firefox is the most reliable source
 <details>
 <summary><b>A download that used to work fails now</b></summary>
 
-Sites change often. Open **Settings → Tools** and press **Check for Updates** to get the newest yt-dlp. For YouTube, also check that **Settings → Tools** shows a JavaScript runtime (Deno or Node.js).
+Sites change often. Open **Settings → Tools** and press **Check for updates** to get the newest yt-dlp. For YouTube, also check that **Settings → Tools** shows a JavaScript runtime (Deno or Node.js).
 </details>
 
 <details>
 <summary><b>Quick Open does nothing when I press the shortcut</b></summary>
 
-Another app may already use that key combination; Claws says so when it starts or when you change the shortcut. Choose a different one in **Settings → Quick Access**. The shortcut only works while Claws is running, so keep **Keep running when closed** on, and turn on **Open at login** to have it from the moment you sign in.
+Another app may already use that key combination; Claws says so when it starts or when you change the shortcut. Choose a different one in **Settings → Quick access**. The shortcut only works while Claws is running, so keep **Keep running when closed** on, and turn on **Open at login** to have it from the moment you sign in.
 </details>
 
 <details>
 <summary><b>Claws is still running after I closed its window</b></summary>
 
-That is on purpose, so downloads continue and Quick Open keeps working. Press <kbd>Ctrl</kbd>+<kbd>Q</kbd>, or choose **Quit Claws** from its icon in the notification area. To make closing the window quit, turn off **Settings → Quick Access → Keep running when closed**.
+That is on purpose, so downloads continue and Quick Open keeps working. Press <kbd>Ctrl</kbd>+<kbd>Q</kbd>, or choose **Quit Claws** from its icon in the notification area. To make closing the window quit, turn off **Settings → Quick access → Keep running when closed**.
 </details>
 
 <details>
 <summary><b>A download says the file already exists</b></summary>
 
-Claws never replaces a file that is already in the output folder. Getting the same video again, even in another quality, produces the same name. Move or rename the earlier file, then press **Try Again**: the download was kept, so only the move is left. To keep several qualities side by side, add the quality to the filename template, for example `%(title).150B [%(id)s] %(height)sp.%(ext)s`.
+Claws never replaces a file that is already in the output folder. Getting the same video again, even in another quality, produces the same name. Move or rename the earlier file, then press **Try again**: the download was kept, so only the move is left. To keep several qualities side by side, add the quality to the filename template, for example `%(title).150B [%(id)s] %(height)sp.%(ext)s`.
 </details>
 
 <details>
 <summary><b>"Not enough free space"</b></summary>
 
-Large videos need room for the downloaded streams and for the merged file while both exist, plus a safety margin. Space other downloads have already used is not counted twice. The check runs when a transfer starts and on processing notifications (merging, embedding); the latter are best effort, and a late low-space notification does not reject an otherwise finished result. Free up space on the drive named in the message, or choose another output folder for new downloads, then press **Try Again**: what was already downloaded is kept.
+Large videos need room for the downloaded streams and for the merged file while both exist, plus a safety margin. Space other downloads have already used is not counted twice. The check runs when a transfer starts and on processing notifications (merging, embedding); the latter are best effort, and a late low-space notification does not reject an otherwise finished result. Free up space on the drive named in the message, or choose another output folder for new downloads, then press **Try again**: what was already downloaded is kept.
 </details>
 
 <details>
 <summary><b>"Claws could not save its download queue" or "…could not add it to your Library"</b></summary>
 
 Claws keeps its records in `%APPDATA%\dev.claws.downloader\`. When it cannot write there (a full drive, or a folder it may not change), it does not start a download, delete files or forget a finished one without a saved record. Nothing is lost:
-- A download that could not start stays in the queue with its folder; press **Try Again** once the problem is fixed.
-- A finished file that could not be added to the Library is already in the output folder. **Try Again** only adds it to the Library; nothing is downloaded again. If Claws is closed first, it finishes this the next time it starts.
+- A download that could not start stays in the queue with its folder; press **Try again** once the problem is fixed.
+- A finished file that could not be added to the Library is already in the output folder. **Try again** only adds it to the Library; nothing is downloaded again. If Claws is closed first, it finishes this the next time it starts.
 </details>
 
 <details>
@@ -235,7 +235,7 @@ Claws is a [Tauri 2](https://tauri.app) app. The Rust backend drives two externa
 
 **Transcripts** run yt-dlp with `--skip-download` and exactly one caption track. Claws parses the VTT or SRT file itself, strips markup and the repeats rolling automatic captions carry while keeping genuinely repeated speech, and publishes the text through the same work folder and journal as a video.
 
-**Work folders.** yt-dlp writes only inside the job's own `<output folder>\.claws-work\<id>\`. On success Claws moves the finished file and any separate subtitles into the output folder without replacing anything; if the name is taken, the download is kept and **Try Again** only finishes the move. Cancelling deletes the work folder, which Claws identifies by a marker inside it.
+**Work folders.** yt-dlp writes only inside the job's own `<output folder>\.claws-work\<id>\`. On success Claws moves the finished file and any separate subtitles into the output folder without replacing anything; if the name is taken, the download is kept and **Try again** only finishes the move. Cancelling deletes the work folder, which Claws identifies by a marker inside it.
 
 ## Performance
 

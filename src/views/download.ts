@@ -375,7 +375,7 @@ export const mountDownload: MountView = (container, ctx) => {
     if (mine !== ticket) return;
     if (!store.tools.ytdlp) {
       lastUrl = "";
-      return showError("Couldn't read that link", "yt-dlp is not installed yet. Press Set up everything above, then try again.");
+      return showError("Couldn't read that link", "yt-dlp is not installed yet. Finish setup above, then try again.");
     }
     lastUrl = url;
 
@@ -447,7 +447,7 @@ export const mountDownload: MountView = (container, ctx) => {
     }
     await store.toolsReady;
     if (mine !== ticket) return;
-    if (!store.tools.ytdlp) return showError("Couldn't read those links", "yt-dlp is not installed yet. Press Set up everything above, then try again.");
+    if (!store.tools.ytdlp) return showError("Couldn't read those links", "yt-dlp is not installed yet. Finish setup above, then try again.");
     input.value = "";
     fitInput();
     phase = "batch";
