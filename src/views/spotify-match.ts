@@ -55,7 +55,7 @@ export function mountSpotifyMatch(actions: SpotifyMatchActions): SpotifyMatchVie
   // The controller validates 300 Unicode code points; native maxlength counts UTF-16 units.
   const query = h("input", { class: "text-input spotify-query", attrs: { id: "spotify-query", type: "text", "aria-label": "Search YouTube", placeholder: "Artist and song title" } });
   const search = button({ label: "Find on YouTube", onClick: () => actions.search() });
-  const retry = button({ label: "Try Again", onClick: () => actions.retry() });
+  const retry = button({ label: "Try again", onClick: () => actions.retry() });
   const notices = h("div", { class: "spotify-notices" });
   const status = h("p", { class: "row-hint spotify-status", attrs: { role: "status", "aria-live": "polite" } });
   const candidatesHost = h("div", { class: "spotify-candidates-host" });

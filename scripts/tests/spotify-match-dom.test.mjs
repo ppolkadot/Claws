@@ -83,11 +83,11 @@ test('identical warning and error text is shown once; distinct warnings stay in 
 test('Retry follows retryability, not a missing track', () => {
  installFakeDom(); let retries=0;
  const terminal=renderSpotifyMatch(state({stage:'failed',track:null,candidates:[],error:'Albums are not supported.',retryable:false}),actions({retry:()=>retries++}));
- assert.equal(buttons(terminal,'Try Again').length,0);
+ assert.equal(buttons(terminal,'Try again').length,0);
  const retryable=renderSpotifyMatch(state({stage:'failed',track:null,candidates:[],error:'Could not resolve.',retryable:true}),actions({retry:()=>retries++}));
- buttons(retryable,'Try Again')[0].click(); assert.equal(retries,1);
+ buttons(retryable,'Try again')[0].click(); assert.equal(retries,1);
  const withTrack=renderSpotifyMatch(state({stage:'editable',candidates:[],error:'x',retryable:false}),actions());
- assert.equal(buttons(withTrack,'Try Again').length,0);
+ assert.equal(buttons(withTrack,'Try again').length,0);
 });
 
 
@@ -102,14 +102,14 @@ test('empty persistent hosts do not reserve layout rows and action hosts have al
 });
 test('removing focused Retry restores query focus; code-point validation replaces UTF16 maxlength', () => {
  installFakeDom();const view=mountSpotifyMatch(actions());view.update(state({stage:'editable',retryable:true}));
- const retry=buttons(view,'Try Again')[0];retry.focus();view.update(state({retryable:false}));
+ const retry=buttons(view,'Try again')[0];retry.focus();view.update(state({retryable:false}));
  assert.equal(document.activeElement,input(view));
  assert.equal(input(view).getAttribute('maxlength'),null);
 });
 
 test('Retry keeps focus through a busy resolution and returns to query after recovery', () => {
  installFakeDom();const view=mountSpotifyMatch(actions());view.update(state({stage:'failed',track:null,candidates:[],retryable:true}));
- buttons(view,'Try Again')[0].focus();view.update(state({stage:'resolving',track:null,candidates:[],retryable:false}));
+ buttons(view,'Try again')[0].focus();view.update(state({stage:'resolving',track:null,candidates:[],retryable:false}));
  const status=findAll(view.el,n=>n.getAttribute('aria-live')==='polite')[0];assert.equal(document.activeElement,status);
  view.update(state());assert.equal(document.activeElement,input(view));
 });

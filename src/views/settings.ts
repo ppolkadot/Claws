@@ -121,17 +121,17 @@ function buildSettings(container: HTMLElement): () => void {
     row(
       "Speed limit",
       chipRadio<number>("Speed limit", speedLimits(s().speedLimitKib), s().speedLimitKib, (v) => update({ speedLimitKib: v })),
-      "For each download, so several at once can add up to more. Applies from the next download that starts or resumes; a limited download fetches one segment at a time.",
+      "Applies per download, so concurrent downloads can add up to more. Takes effect on the next start or resume and fetches one segment at a time while limited.",
     ),
     row(
       "Embed metadata",
       toggle("Embed metadata", s().embedMetadata, (v) => update({ embedMetadata: v })),
-      "Adds title, uploader, date and chapters. Large files may take substantially longer because the whole file can be rewritten.",
+      "Adds title, uploader, date and chapters. May rewrite the file after download, which takes longer on large files.",
     ),
     row(
       "Prefer matching source audio",
       toggle("Prefer matching source audio", s().audioSelection === "preferMatching", (v) => update({ audioSelection: v ? "preferMatching" : "best" })),
-      "For audio downloads, picks a stream already in the chosen format so it can be saved without conversion. Its bitrate may differ from the site's best stream. Applies to downloads that have not started yet.",
+      "For audio downloads, picks a stream already in the chosen format when available and saves it without conversion. Bitrate may differ from the site's best stream. Applies to downloads that have not started yet.",
     ),
   );
 
@@ -144,7 +144,7 @@ function buildSettings(container: HTMLElement): () => void {
     row(
       "Notify when a download finishes",
       toggle("Notify when a download finishes", s().notifyWhenDone, (value) => update({ notifyWhenDone: value })),
-      "A Windows notification when a download finishes or fails while Claws is hidden or behind another window.",
+      "Notifies on finish or failure while Claws is hidden, minimized or unfocused.",
     ),
     row(
       "Keep running when closed",
@@ -165,10 +165,10 @@ function buildSettings(container: HTMLElement): () => void {
     return row(
       "Font",
       inUse
-        ? h("span", { class: "font-status" }, h("span", { class: "tool-dot", attrs: { "data-state": "ok" } }), "Salted Flutters Polaris")
+        ? h("span", { class: "row-note", text: "Salted Flutters Polaris" })
         : button({ label: "Font details…", variant: "secondary", size: "small", onClick: () => void api.openFontPage().catch((e) => onError(errorMessage(e))) }),
       inUse
-        ? "In use throughout Claws."
+        ? undefined
         : "Salted Flutters Polaris is unavailable. Reinstall Claws to restore the bundled font.",
     );
   }
@@ -220,7 +220,7 @@ function buildSettings(container: HTMLElement): () => void {
         }),
         intensityValue,
       ),
-      "How much of the desktop shows through. Lower it if text is hard to read over a busy wallpaper.",
+      "Lower this if text is hard to read over a busy wallpaper.",
     ),
     fontRow,
   );
@@ -253,7 +253,7 @@ function buildSettings(container: HTMLElement): () => void {
             h("span", { class: "path", text: path || "No file chosen", attrs: { title: path } }),
             button({ label: "Choose…", variant: "secondary", size: "small", onClick: () => void chooseCookies() }),
           ),
-          path ? "A cookies.txt exported from your browser." : "Choose a cookies.txt file to start using it.",
+          path ? undefined : "Choose a cookies.txt file exported from your browser.",
         ),
       );
     } else {
@@ -336,8 +336,7 @@ function buildSettings(container: HTMLElement): () => void {
             { class: "tool-control" },
             ytdlpBusy ? progressFor("ytdlp") : null,
             button({
-              label: ytdlp ? "Check for Updates" : "Install",
-              icon: "retry",
+              label: ytdlp ? "Check for updates" : "Install",
               variant: "secondary",
               size: "small",
               onClick: () => void store.runTool("ytdlp", ytdlp ? api.updateYtdlp : api.installYtdlp),
@@ -353,27 +352,20 @@ function buildSettings(container: HTMLElement): () => void {
                 "div",
                 { class: "tool-control" },
                 ffmpegBusy ? progressFor("ffmpeg") : null,
-                button({ label: "Install", icon: "download", variant: "secondary", size: "small", onClick: () => void store.runTool("ffmpeg", api.installFfmpeg) }),
+                button({ label: "Install", variant: "secondary", size: "small", onClick: () => void store.runTool("ffmpeg", api.installFfmpeg) }),
               ),
           ffmpegHint,
         ),
         row(
-          `JavaScript runtime${deno ? `  Deno ${deno.version}` : ""}`,
-          !store.toolsKnown
+          `JavaScript runtime${deno ? `  Deno ${deno.version}` : jsRuntime ? `  ${jsRuntime}` : ""}`,
+          !store.toolsKnown || jsRuntime
             ? null
-            : jsRuntime
-              ? h(
-                  "span",
-                  { class: "font-status" },
-                  h("span", { class: "tool-dot", attrs: { "data-state": "ok" } }),
-                  jsRuntime,
-                )
-              : h(
-                  "div",
-                  { class: "tool-control" },
-                  denoBusy ? progressFor("deno") : null,
-                  button({ label: "Install", icon: "download", variant: "secondary", size: "small", onClick: () => void store.runTool("deno", api.installDeno) }),
-                ),
+            : h(
+                "div",
+                { class: "tool-control" },
+                denoBusy ? progressFor("deno") : null,
+                button({ label: "Install", variant: "secondary", size: "small", onClick: () => void store.runTool("deno", api.installDeno) }),
+              ),
           store.toolError.deno
             ? store.toolError.deno
             : !store.toolsKnown
@@ -394,11 +386,11 @@ function buildSettings(container: HTMLElement): () => void {
   container.append(
     h("div", { class: "settings" },
       sectionTitle("Downloads"), downloads,
-      sectionTitle("Quick Access"), quickAccess,
+      sectionTitle("Quick access"), quickAccess,
       sectionTitle("Appearance"), appearance,
       sectionTitle("Sign-in"), cookies,
       sectionTitle("Tools"), toolsGroup,
-      h("p", { class: "footnote", text: "Claws uses yt-dlp and ffmpeg and runs entirely on this PC. Only download content you have the right to save." }),
+      h("p", { class: "footnote", text: "Only download content you have the right to save." }),
     ),
   );
 

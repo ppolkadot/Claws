@@ -25,7 +25,7 @@ export function mountEntries(r: ProbeResult, choice: LinkChoices, deps: Playlist
   const list = h("div", { class: "entries", attrs: { role: "group", "aria-label": "Videos in this playlist" } });
   // Created with a label: an icon-only button is a fixed 28 px wide.
   const downloadBtn: HTMLButtonElement = button({ label: "Download", icon: "download", variant: "primary", onClick: () => deps.startDownload(downloadBtn) });
-  const listLine = estimateLine(() => void listRun.retryFailed(listKey()), "Retry Failed", "Asks again only for the videos whose size could not be estimated. Sizes already read stay. Download is not affected.");
+  const listLine = estimateLine(() => void listRun.retryFailed(listKey()), "Retry failed", "Asks again only for the videos whose size could not be estimated. Sizes already read stay. Download is not affected.");
   const listItems = (): EstimateItem[] => {
     const options = deps.currentOptions();
     return r.entries.filter((_, i) => choice.selected.has(i)).map((e) => ({ url: e.url, playlistIndex: e.playlistIndex, options }));
@@ -45,18 +45,18 @@ export function mountEntries(r: ProbeResult, choice: LinkChoices, deps: Playlist
   const paintCount = () => {
     paintEstimate();
     countLabel.textContent = `${choice.selected.size} of ${r.entries.length} selected`;
-    const label = choice.selected.size === 1 ? "Download 1 Video" : `Download ${choice.selected.size} Videos`;
+    const label = choice.selected.size === 1 ? "Download 1 video" : `Download ${choice.selected.size} videos`;
     replace(downloadBtn, icon("download", 16), h("span", { text: choice.selected.size === 0 ? "Download" : label }));
     downloadBtn.disabled = choice.selected.size === 0;
   };
 
   const toggleAll = button({
-    label: choice.selected.size === r.entries.length ? "Select None" : "Select All",
+    label: choice.selected.size === r.entries.length ? "Select none" : "Select all",
     variant: "plain",
     size: "small",
     onClick: () => {
       choice.selected = choice.selected.size === r.entries.length ? new Set() : new Set(r.entries.map((_, i) => i));
-      toggleAll.querySelector("span")!.textContent = choice.selected.size === r.entries.length ? "Select None" : "Select All";
+      toggleAll.querySelector("span")!.textContent = choice.selected.size === r.entries.length ? "Select none" : "Select all";
       list.querySelectorAll<HTMLButtonElement>(".entry").forEach((el, i) => el.setAttribute("aria-checked", String(choice.selected.has(i))));
       paintCount();
     },
@@ -80,7 +80,7 @@ export function mountEntries(r: ProbeResult, choice: LinkChoices, deps: Playlist
       if (choice.selected.has(index)) choice.selected.delete(index);
       else choice.selected.add(index);
       item.setAttribute("aria-checked", String(choice.selected.has(index)));
-      toggleAll.querySelector("span")!.textContent = choice.selected.size === r.entries.length ? "Select None" : "Select All";
+      toggleAll.querySelector("span")!.textContent = choice.selected.size === r.entries.length ? "Select none" : "Select all";
       paintCount();
     });
     list.appendChild(item);

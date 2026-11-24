@@ -148,7 +148,7 @@ html[data-backdrop="none"][data-theme="dark"] .glass {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 6px;
   height: 24px;
   padding: 0 13px;
   border: 0;
@@ -289,7 +289,7 @@ html[data-backdrop="none"][data-theme="dark"] .glass {
 .bar {
   position: relative;
   height: 4px;
-  margin-top: 7px;
+  margin-top: 8px;
   overflow: hidden;
   border-radius: 2px;
   background: var(--fill-2);

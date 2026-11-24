@@ -42,13 +42,13 @@ async function confirmRemove(item: HistoryItem) {
   const base = provable
     ? `“${item.title}” will leave your library. You can also delete the file from your disk.`
     : hasFile
-      ? `“${item.title}” will leave your library. This download was saved by an older version of Claws, which did not record enough to prove the file at that location is still the one it saved, so Claws will not delete it from your disk. Use Show in Folder to find it.`
+      ? `“${item.title}” will leave your library. This download was saved by an older version of Claws, which did not record enough to prove the file at that location is still the one it saved, so Claws will not delete it from your disk. Use Show in folder to find it.`
       : `“${item.title}” will leave your library.`;
   const message = [base, keptRemovalWarning(item)].filter(Boolean).join(" ");
-  const choice = await confirmSheet("Remove from Library?", message, [
-    { label: "Remove from Library", value: "remove", variant: "primary" },
-    ...(provable ? [{ label: "Delete File Too", value: "delete", variant: "danger" as const }] : []),
-    ...(hasFile && !provable ? [{ label: "Show in Folder", value: "reveal", variant: "secondary" as const }] : []),
+  const choice = await confirmSheet("Remove from library?", message, [
+    { label: "Remove from library", value: "remove", variant: "primary" },
+    ...(provable ? [{ label: "Delete file too", value: "delete", variant: "danger" as const }] : []),
+    ...(hasFile && !provable ? [{ label: "Show in folder", value: "reveal", variant: "secondary" as const }] : []),
   ]);
   if (!choice) return;
   try {
@@ -132,13 +132,13 @@ export const mountLibrary: MountView = (container, ctx) => {
   });
   const searchBox = h("label", { class: "search glass" }, icon("search", 15), search);
   const clearAll = button({
-    label: "Clear All",
+    label: "Clear all",
     variant: "secondary",
     size: "small",
     onClick: async () => {
       const message = ["This removes every entry from the library. Downloaded files stay on your disk.", keptClearWarning(store.history)].filter(Boolean).join(" ");
       const choice = await confirmSheet("Clear the whole library?", message, [
-        { label: "Clear Library", value: "clear", variant: "danger" },
+        { label: "Clear library", value: "clear", variant: "danger" },
       ]);
       if (choice !== "clear") return;
       try {
@@ -158,7 +158,7 @@ export const mountLibrary: MountView = (container, ctx) => {
     keptNote.hidden = text === null;
     if (text === null) return;
     const retry = button({
-      label: "Check Again",
+      label: "Check again",
       variant: "secondary",
       size: "small",
       onClick: () => {
@@ -241,12 +241,12 @@ export const mountLibrary: MountView = (container, ctx) => {
         h("p", {
           class: "empty-text",
           text: none
-            ? "Finished downloads show up here with their artwork, so you can find and open them again."
+            ? "Finished downloads appear here."
             : query
               ? `Nothing ${kind === "all" ? "in your library" : `under ${LIBRARY_KINDS.find((k) => k.value === kind)?.label ?? kind}`} matches “${search.value.trim()}”.`
               : `Nothing in your library was saved as ${kind === "audio" ? "audio" : `a ${kind}`}.`,
         }),
-        none ? button({ label: "Paste a Link", icon: "link", variant: "primary", onClick: () => store.go("download") }) : null,
+        none ? button({ label: "Paste a link", variant: "primary", onClick: () => store.go("download") }) : null,
       );
     }
   };

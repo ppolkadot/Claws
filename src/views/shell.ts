@@ -120,7 +120,7 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
     gliding.forEach((el, i) => glideFrom(el, before[i] - (el === scroller ? page : el).getBoundingClientRect().left, 0));
     // Hidden content must not be reachable by keyboard while it is off screen.
     sidebar.toggleAttribute("inert", !open);
-    const label = `${open ? "Hide" : "Show"} Sidebar (Ctrl+Alt+S)`;
+    const label = `${open ? "Hide" : "Show"} sidebar (Ctrl+Alt+S)`;
     toggle.setAttribute("aria-label", label);
     toggle.title = label;
     toggle.setAttribute("aria-expanded", String(open));

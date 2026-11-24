@@ -67,8 +67,7 @@ export function mountSetupPanel(slot: HTMLElement): () => void {
     });
 
     const start = button({
-      label: working ? "Setting Up…" : failed ? "Try Again" : "Set Up Everything",
-      icon: failed && !working ? "retry" : "download",
+      label: working ? "Setting up…" : failed ? "Try again" : "Set up everything",
       variant: "primary",
       onClick: setUpEverything,
     });
@@ -95,7 +94,7 @@ export function mountSetupPanel(slot: HTMLElement): () => void {
           { class: "setup-actions" },
           missing.includes("ytdlp") || working
             ? null
-            : button({ label: "Not Now", variant: "plain", onClick: () => store.dismissSetup() }),
+            : button({ label: "Not now", variant: "plain", onClick: () => store.dismissSetup() }),
           start,
         ),
       ),

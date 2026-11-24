@@ -263,16 +263,16 @@ function paintRow(refs: RowRefs, job: Job, previous: Job | undefined) {
 
 export const mountQueue: MountView = (container, ctx) => {
   const clearBtn = button({
-    label: "Clear Finished",
+    label: "Clear finished",
     variant: "secondary",
     size: "small",
     onClick: () => void api.clearFinished().catch(fail),
   });
   const bulk = (label: string, title: string, run: () => Promise<number>) =>
     button({ label, title, variant: "secondary", size: "small", onClick: () => void run().catch(fail) });
-  const pauseAll = bulk("Pause All", "Pauses every download that is waiting or running", api.pauseAll);
-  const resumeAll = bulk("Resume All", "Resumes every paused download", api.resumeAll);
-  const retryFailed = bulk("Retry Failed", "Tries every failed download again", api.retryFailed);
+  const pauseAll = bulk("Pause all", "Pauses every download that is waiting or running", api.pauseAll);
+  const resumeAll = bulk("Resume all", "Resumes every paused download", api.resumeAll);
+  const retryFailed = bulk("Retry failed", "Tries every failed download again", api.retryFailed);
   const bulkButtons = [pauseAll, resumeAll, retryFailed];
   ctx.setActions([...bulkButtons, clearBtn]);
 
@@ -286,7 +286,7 @@ export const mountQueue: MountView = (container, ctx) => {
     h("div", { class: "empty-symbol" }, icon("list", 46)),
     h("h2", { class: "empty-title", text: "Nothing is downloading" }),
     h("p", { class: "empty-text", text: "Links you download appear here with live progress. Finished files go to your Library." }),
-    button({ label: "Paste a Link", icon: "link", variant: "primary", onClick: () => store.go("download") }),
+    button({ label: "Paste a link", variant: "primary", onClick: () => store.go("download") }),
   );
   container.append(summaryLine, list, empty);
 

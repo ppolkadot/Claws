@@ -44,7 +44,7 @@ type Phase = "idle" | "loading" | "result" | "error" | "batch" | "spotify";
 export const mountDownload: MountView = (container, ctx) => {
   ctx.setActions([
     button({
-      label: "Open Folder",
+      label: "Open folder",
       icon: "folder",
       variant: "secondary",
       size: "small",
@@ -137,7 +137,7 @@ export const mountDownload: MountView = (container, ctx) => {
       spellcheck: false,
     },
   });
-  const goButton = button({ label: "Get Info", variant: "primary", onClick: () => void submit() });
+  const goButton = button({ label: "Get info", variant: "primary", onClick: () => void submit() });
   const goLabel = goButton.querySelector("span")!;
   const pasteButton = button({
     icon: "paste",
@@ -170,7 +170,7 @@ export const mountDownload: MountView = (container, ctx) => {
     input.rows = Math.min(Math.max(lines, 1), 6);
     urlBar.classList.toggle("multiline", lines > 1);
     const count = lines > 1 ? parseLinks(input.value).links.length : 0;
-    goLabel.textContent = count > 1 ? `Look Up ${count} Links` : "Get Info";
+    goLabel.textContent = count > 1 ? `Look up ${count} links` : "Get info";
   }
   input.addEventListener("input", fitInput);
   // Enter looks up a single link. With several lines, Enter adds a line and Ctrl+Enter
@@ -375,7 +375,7 @@ export const mountDownload: MountView = (container, ctx) => {
     if (mine !== ticket) return;
     if (!store.tools.ytdlp) {
       lastUrl = "";
-      return showError("Couldn't read that link", "yt-dlp is not installed yet. Press Set Up Everything above, then try again.");
+      return showError("Couldn't read that link", "yt-dlp is not installed yet. Press Set up everything above, then try again.");
     }
     lastUrl = url;
 
@@ -447,7 +447,7 @@ export const mountDownload: MountView = (container, ctx) => {
     }
     await store.toolsReady;
     if (mine !== ticket) return;
-    if (!store.tools.ytdlp) return showError("Couldn't read those links", "yt-dlp is not installed yet. Press Set Up Everything above, then try again.");
+    if (!store.tools.ytdlp) return showError("Couldn't read those links", "yt-dlp is not installed yet. Press Set up everything above, then try again.");
     input.value = "";
     fitInput();
     phase = "batch";
@@ -589,11 +589,11 @@ export const mountDownload: MountView = (container, ctx) => {
       const jobs = added.jobs;
       if (trigger) {
         trigger.classList.add("confirmed");
-        replace(trigger, icon("check", 16), h("span", { text: jobs.length === 1 ? "Added" : `${jobs.length} Added` }));
+        replace(trigger, icon("check", 16), h("span", { text: jobs.length === 1 ? "Added" : `${jobs.length} added` }));
         await new Promise((resolve) => setTimeout(resolve, 650));
       }
       toast(jobs.length === 1 ? "Added to the queue." : `${jobs.length} videos added to the queue.`, {
-        action: { label: "View Queue", run: () => store.go("queue") },
+        action: { label: "View queue", run: () => store.go("queue") },
       });
       if (mine !== ticket) return; // another link was submitted meanwhile
       clearSpotify();
@@ -700,7 +700,7 @@ export const mountDownload: MountView = (container, ctx) => {
               // The "Added" confirmation stays as it is until the view resets.
               if (btn.classList.contains("confirmed")) return;
               const transcript = choice.mode === "transcript";
-              replace(btn, icon(transcript ? "captions" : "download", 16), h("span", { text: transcript ? "Save Transcript" : "Download" }));
+              replace(btn, icon(transcript ? "captions" : "download", 16), h("span", { text: transcript ? "Save transcript" : "Download" }));
             };
             paintActionLabel();
             return btn;
@@ -717,7 +717,7 @@ export const mountDownload: MountView = (container, ctx) => {
     return h(
       "section",
       { class: "recent" },
-      h("div", { class: "recent-head" }, sectionTitle("Recent"), button({ label: "Show Library", variant: "plain", size: "small", onClick: () => store.go("library") })),
+      h("div", { class: "recent-head" }, sectionTitle("Recent"), button({ label: "Show library", variant: "plain", size: "small", onClick: () => store.go("library") })),
       group(
         ...recent.map((item) =>
           h(
@@ -755,7 +755,7 @@ export const mountDownload: MountView = (container, ctx) => {
       { class: "batch-return" },
       h("span", { text: `Your list of ${total} ${total === 1 ? "link" : "links"} is kept${waiting > 0 ? `, ${waiting} not added yet` : ""}.` }),
       button({
-        label: "Back to Links",
+        label: "Back to links",
         variant: "secondary",
         size: "small",
         onClick: () => {
@@ -828,7 +828,7 @@ export const mountDownload: MountView = (container, ctx) => {
             { class: "notice notice-error", attrs: { role: "alert" } },
             icon("alert", 18),
             h("div", { class: "notice-text" }, h("strong", { text: errorTitle }), h("span", { text: errorText })),
-            errorRetry ? button({ label: "Try Again", variant: "secondary", size: "small", onClick: () => void submit() }) : null,
+            errorRetry ? button({ label: "Try again", variant: "secondary", size: "small", onClick: () => void submit() }) : null,
           ),
         );
         break;
@@ -865,7 +865,7 @@ export const mountDownload: MountView = (container, ctx) => {
             "div",
             { class: "empty" },
             h("div", { class: "empty-symbol" }, icon("download", 46)),
-            h("h2", { class: "empty-title", text: "Paste a link to get started" }),
+            h("h2", { class: "empty-title", text: "Paste a link" }),
             h("p", {
               class: "empty-text",
               text: "Claws saves video and audio from over a thousand sites. Copy a link, then press Ctrl+V anywhere in this window.",

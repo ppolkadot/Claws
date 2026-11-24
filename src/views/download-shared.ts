@@ -76,7 +76,7 @@ export function presetRow(value: VideoPreset, onChange: (next: VideoPreset) => v
 }
 
 export const NO_CAPTIONS = "No captions available for this video";
-export const TEXT_ONLY = "Text only — the video is not downloaded";
+export const TEXT_ONLY = "Text only. Claws saves the captions without downloading the video.";
 
 export function captionSelect(choices: CaptionChoices, value: string | null, onChange: (key: string) => void): HTMLSelectElement {
   const optgroup = (label: string, tracks: CaptionChoices["human"]) =>
@@ -203,7 +203,7 @@ export const STOP_GUARD_MS = 600;
 export function estimateButton(run: EstimateRun<EstimateItem>, start: () => void): HTMLButtonElement {
   let startedAt = -Infinity;
   const btn: HTMLButtonElement = button({
-    label: "Estimate Sizes",
+    label: "Estimate sizes",
     variant: "plain",
     size: "small",
     onClick: () => {
@@ -251,7 +251,7 @@ export function paintRun(run: EstimateRun<EstimateItem>, line: EstimateLine, btn
   const s = run.state;
   const finished = run.key !== null && !s.running && s.done > 0;
   paintLine(line, describeRun(run), finished ? (aggregate(s.results).tempText ?? "") : "", s.running, true, run.canRetry);
-  setText(btn.querySelector("span")!, s.running ? "Stop Estimating" : "Estimate Sizes");
+  setText(btn.querySelector("span")!, s.running ? "Stop estimating" : "Estimate sizes");
   const title = s.running
     ? "Stops estimating. Sizes already read stay; estimates already running finish in the background and are ignored."
     : `Reads the size of each selected video, up to ${run.maxItems}, three at a time. Nothing is read until you ask.`;

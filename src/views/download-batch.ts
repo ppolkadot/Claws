@@ -62,7 +62,7 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
     if (summary.added > 0 && store.batch === session) session.estimate = null;
     toast(describeEnqueue(summary), {
       tone: summary.added === 0 && summary.failed > 0 ? "error" : "info",
-      action: summary.added > 0 ? { label: "View Queue", run: () => store.go("queue") } : undefined,
+      action: summary.added > 0 ? { label: "View queue", run: () => store.go("queue") } : undefined,
     });
     if (store.batch === session && store.links.rows.every((r) => r.added)) {
       const active = document.activeElement;
@@ -93,13 +93,13 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
   };
   const stopBtn: HTMLButtonElement = button({ label: "Stop", variant: "plain", size: "small", onClick: swap(() => links.cancel(), () => retryBtn) });
   stopBtn.title = "Stops reading the links not read yet. A lookup already running finishes in the background; its answer is ignored.";
-  const retryBtn: HTMLButtonElement = button({ label: "Retry", icon: "retry", variant: "plain", size: "small", onClick: swap(() => links.retryAll(), () => stopBtn) });
+  const retryBtn: HTMLButtonElement = button({ label: "Retry", variant: "plain", size: "small", onClick: swap(() => links.retryAll(), () => stopBtn) });
   const allSelected = () => rows.some(selectable) && rows.every((r) => !selectable(r) || r.selected);
   // Select All and Download are marked unavailable (aria-disabled), never disabled: a
   // disabled button that holds focus drops the keyboard to the top of the page.
   const unavailable = (btn: HTMLElement) => btn.getAttribute("aria-disabled") === "true";
   const toggleAll = button({
-    label: "Select All",
+    label: "Select all",
     variant: "plain",
     size: "small",
     onClick: () => {
@@ -116,7 +116,7 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
     },
   });
   const selectedNote = h("span", { class: "save-to" });
-  const batchLine = estimateLine(() => void batchRun.retryFailed(batchKey()), "Retry Failed", "Asks again only for the videos whose size could not be estimated. Sizes already read stay. Download is not affected.");
+  const batchLine = estimateLine(() => void batchRun.retryFailed(batchKey()), "Retry failed", "Asks again only for the videos whose size could not be estimated. Sizes already read stay. Download is not affected.");
   // The items a download would send now: a row partly queued already counts only the rest.
   const batchItems = (): EstimateItem[] => {
     const options = batchOptions(session.choices);
@@ -175,11 +175,11 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
     if ((focused === stopBtn || focused === retryBtn) && (focused as HTMLElement).hidden) {
       (focused === stopBtn && !retryBtn.hidden ? retryBtn : focused === retryBtn && !stopBtn.hidden ? stopBtn : toggleAll).focus();
     }
-    retryBtn.querySelector("span")!.textContent = c.cancelled === 0 ? `Retry ${c.failed} Failed` : `Read ${again} Again`;
-    toggleAll.querySelector("span")!.textContent = allSelected() ? "Select None" : "Select All";
+    retryBtn.querySelector("span")!.textContent = c.cancelled === 0 ? `Retry ${c.failed} failed` : `Read ${again} again`;
+    toggleAll.querySelector("span")!.textContent = allSelected() ? "Select none" : "Select all";
     toggleAll.setAttribute("aria-disabled", String(!rows.some(selectable)));
     const n = c.selectedItems;
-    addLabel.textContent = n === 0 ? "Download" : n === 1 ? "Download 1 Video" : `Download ${n} Videos`;
+    addLabel.textContent = n === 0 ? "Download" : n === 1 ? "Download 1 video" : `Download ${n} videos`;
     addBtn.setAttribute("aria-disabled", String(n === 0 || links.submitting));
     selectedNote.textContent = `${c.selectedRows} of ${rows.length} links selected  ·  Saves to ${folderName(store.settings.outputDir)}`;
     paintEstimate();
@@ -270,7 +270,7 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
       choices.maxHeight = value;
       scheduleCounts();
     }),
-    "Each video is saved at the largest size it has, up to this limit. Nothing is upscaled.",
+    "Saves each video at its largest size up to this limit, without upscaling.",
   );
   const presetChoice = presetRow(choices.videoPreset, (next) => {
     choices.videoPreset = next;
@@ -293,7 +293,7 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
     "Type",
     [
       { value: "video", label: "Video", icon: "video" },
-      { value: "audio", label: "Audio Only", icon: "music" },
+      { value: "audio", label: "Audio only", icon: "music" },
     ],
     choices.mode,
     (next) => {
@@ -320,7 +320,7 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
     renderIssues(session.parsed),
     sectionTitle("Options"),
     group(
-      row("Type", typeSeg.el, "Applies to every link here. Subtitles and transcripts can be chosen when a link is read on its own."),
+      row("Type", typeSeg.el, "Applies to every link in this list. Open a link on its own for subtitles or a transcript."),
       qualityRow,
       presetChoice,
       formatRow,

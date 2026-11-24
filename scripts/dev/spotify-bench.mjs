@@ -119,7 +119,7 @@ try {
   check("Keyboard confirmation focuses Download instead of the URL field", await evaluate("document.activeElement===__s.button('Download')"));
   check("Desktop confirmed review has two columns", await evaluate("getComputedStyle(document.querySelector('.spotify-review')).gridTemplateColumns.split(' ').length===2 && Boolean(document.querySelector('.spotify-result'))"));
   check("Selected recording receives the sole full probe", await evaluate("JSON.stringify(__s.calls.filter(c=>c.cmd==='probe_url').map(c=>c.payload.url))===JSON.stringify(['https://www.youtube.com/watch?v=abcdefghijk'])"));
-  check("Confirmation forces audio and hides Type controls", await evaluate("document.querySelector('[aria-label=Type]').closest('.row').hidden && document.querySelector('[aria-label=Type] [aria-checked=true]').textContent==='Audio Only'"));
+  check("Confirmation forces audio and hides Type controls", await evaluate("document.querySelector('[aria-label=Type]').closest('.row').hidden && document.querySelector('[aria-label=Type] [aria-checked=true]').textContent==='Audio only'"));
   await evaluate("__s.click('FLAC'); document.querySelector('[aria-label=\"Fast Save\"]').click()");
   await evaluate("__s.nav('queue').then(()=>__s.nav('download'))");
   await until("Boolean(__s.button('Download'))");
@@ -200,21 +200,21 @@ try {
     await lookup(url);
     await until("Boolean(__s.pendingResolve)");
     await evaluate("__s.nav('queue').then(()=>__s.nav('download'))");
-    check(`Interrupted ${url.includes('spotify.link') ? 'short-link' : 'full-track'} resolution restores Retry`, await evaluate("Boolean(__s.button('Try Again')) && !__s.button('Try Again').disabled && document.querySelector('.spotify-match').textContent.includes('interrupted')"));
+    check(`Interrupted ${url.includes('spotify.link') ? 'short-link' : 'full-track'} resolution restores Retry`, await evaluate("Boolean(__s.button('Try again')) && !__s.button('Try again').disabled && document.querySelector('.spotify-match').textContent.includes('interrupted')"));
     await evaluate("__s.holdResolve=false; __s.pendingResolve.reject({code:'network',message:'Synthetic interruption',retryable:true}); __s.wait(50)");
   }
   await evaluate("__s.failResolve=true");
   await lookup(spotifyUrl);
-  await until("Boolean(__s.button('Try Again'))");
-  check("Retry action aligns to panel right edge", await evaluate("(() => {const p=document.querySelector('.spotify-match'),b=__s.button('Try Again');return Math.abs(b.getBoundingClientRect().right-(p.getBoundingClientRect().right-parseFloat(getComputedStyle(p).paddingRight)))<3;})()"));
+  await until("Boolean(__s.button('Try again'))");
+  check("Retry action aligns to panel right edge", await evaluate("(() => {const p=document.querySelector('.spotify-match'),b=__s.button('Try again');return Math.abs(b.getBoundingClientRect().right-(p.getBoundingClientRect().right-parseFloat(getComputedStyle(p).paddingRight)))<3;})()"));
   await evaluate("__s.failResolve=false; const q=document.querySelector('#spotify-query'); q.value='manual metadata recovery'; q.dispatchEvent(new Event('input',{bubbles:true})); __s.click('Find on YouTube')");
   await until("document.querySelectorAll('input[name=spotify-match]').length===3");
-  check("Successful manual search removes stale metadata Retry", await evaluate("!__s.button('Try Again')"));
+  check("Successful manual search removes stale metadata Retry", await evaluate("!__s.button('Try again')"));
 
   await evaluate("__s.failResolve=true");
   await lookup(spotifyUrl);
-  await until("Boolean(__s.button('Try Again'))");
-  await evaluate("__s.failResolve=false; __s.button('Try Again').focus(); __s.click('Try Again')");
+  await until("Boolean(__s.button('Try again'))");
+  await evaluate("__s.failResolve=false; __s.button('Try again').focus(); __s.click('Try again')");
   await until("document.querySelectorAll('input[name=spotify-match]').length===3");
   check("Recovered Retry returns focus to query", await evaluate("document.activeElement===document.querySelector('#spotify-query')"));
 
