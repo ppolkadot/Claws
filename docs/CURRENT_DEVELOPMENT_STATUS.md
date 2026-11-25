@@ -2,9 +2,16 @@
 
 ## Version and delivery
 
-**1.0.9c** is the Windows build on `main`. The npm, Cargo and Tauri version files stay `1.0.9`, which is also the version Windows reports. See the [1.0.9c build notes](releases/1.0.9c.md) for the installer, checksum and verification evidence.
+**1.0.9d** is the Windows build on `main` and [GitHub Releases](https://github.com/ppolkadot/Claws/releases/tag/v1.0.9d). The npm, Cargo and Tauri version files stay `1.0.9`, which is also the version Windows reports. See the [1.0.9d build notes](releases/1.0.9d.md) for the installer, checksum and verification evidence.
 
 The earlier [1.0.9 GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.9) has its own [release notes](releases/1.0.9.md) and installer.
+
+## What 1.0.9d adds
+
+- SteamCMD acceptance recognises both exact publisher names Valve uses: `Valve` (the official bootstrap ZIP) and `Valve Corp.` (an updated copy). Both still need a signature Windows verifies with `WinVerifyTrust`, and lookalike names are refused.
+- A video Wallpaper Engine item can be saved as **MP4** (H.264 with AAC audio when present) or **GIF** (silent, 15 fps, a palette per frame so FFmpeg's memory stays bounded for long clips) beside the default project **ZIP**. Claws offers the video formats only when Valve's Workshop type is Video, then checks the downloaded `project.json` and reads only the video file it declares inside the item. Scene, web and application projects stay ZIP and are never run.
+- Conversion uses the managed FFmpeg under the existing tool guard, with one local input, no remote protocols, bounded diagnostics, cancellation and free-space checks. Odd frame sides are rounded down to even numbers instead of scaling up; source resolution and aspect ratio are otherwise kept. A failed or cancelled conversion leaves no partial file, an existing export is never replaced, and SteamCMD's copy is removed only after a successful save.
+- The opt-in live SteamCMD test (`CLAWS_TEST_STEAMCMD`) accepts several `;`-separated disposable executable paths.
 
 ## What 1.0.9a added
 
@@ -22,7 +29,7 @@ The earlier [1.0.9 GitHub release](https://github.com/ppolkadot/Claws/releases/t
 
 Follows [the 2026-11-25 plan](superpowers/plans/2026-11-25-unslop-and-wallpaper-engine-plan.md).
 
-- Wallpaper Engine: a preview card, the Steam library source (no sign-in in Claws), SteamCMD with a saved, Valve-signature-checked location and account, Sign in to Steam, progress and Cancel, classified SteamCMD errors with the full output, title-based ZIP names, free-space checks, collections refused, required items flagged, a Settings section, and a full dev mock. See the [no-sign-in spike](wallpaper-engine-no-login-spike.md).
+- Wallpaper Engine: a preview card, the Steam library source (no sign-in in Claws), SteamCMD with a saved, Valve-signature-checked location and account, Sign in to Steam, progress and Cancel, classified SteamCMD errors with the full output, title-based ZIP, MP4 and GIF names, free-space checks, collections refused, required items flagged, a Settings section, and a full dev mock. See the [no-sign-in spike](wallpaper-engine-no-login-spike.md).
 - Second unslop pass ([review log](UNSLOP_UI_REVIEW.md#2026-11-25-second-pass)): site names, English dates, audio counts, shorter copy, and edge alignment. Before and after screenshots of the dev mock are in [performance/2026-11-25-unslop](performance/2026-11-25-unslop/).
 - Toolbar: the buttons now centre on the traffic lights' line (`y = 34px`, toolbar 68px tall), and only the window controls take clicks in their corner.
 - Queue summary: at most three facts (downloading with its speed and time left, then failures). With nothing transferring it shows only the paused and failed counts.
@@ -59,7 +66,7 @@ Settings schema stays 2 and queue schema stays 3; every new field is defaulted.
 | Real slow source | No affected source/format was supplied. Controlled benchmarks do not establish an Internet throughput improvement. Follow [speed diagnosis](performance/speed-diagnosis.md). |
 | Native drag | Explorer/editor import, a stalled receiver, swapped buttons, long/UNC paths and Windows 10 acceptance need disposable-environment checks. See [manual acceptance](HANDOFF.md#manual-acceptance). |
 | Installed application | Fresh installation/upgrade and manual real-WebView2 checks remain unverified. |
-| Wallpaper Engine | Live Valve metadata, collection detection and Valve's signature on a downloaded `steamcmd.exe` are covered by opt-in live tests (`CLAWS_TEST_NETWORK`, `CLAWS_TEST_STEAMCMD`). Still to check live: a SteamCMD download with an owning account, the Steam library source on a PC with Steam, and both in the native app. |
+| Wallpaper Engine | Live Valve metadata, collection detection and Valve's signatures on both disposable `steamcmd.exe` builds (`Valve` and `Valve Corp.`) are covered by opt-in live tests (`CLAWS_TEST_NETWORK`, `CLAWS_TEST_STEAMCMD`). MP4/GIF conversion is covered against generated FFmpeg fixtures with ffprobe. Still to check live: a real video wallpaper's conversion, a SteamCMD download with an owning account, the Steam library source on a PC with Steam, and both in the native app. |
 | Spotify | Real share-link redirect smoke, OS-level IME composition, listening-based playback and live outage/removal behavior remain unverified. Historical native saves and synthetic UI checks are recorded separately. |
 | Disk behavior | Real peak space across all postprocessors and constrained-volume behavior need controlled measurements; no strict pre-FFmpeg launch gate is claimed. |
 | Optional permission cleanup | `core:window:allow-destroy` is still used by `onCloseRequested`. Replace that close path before considering removal. |

@@ -14,7 +14,7 @@ Paste a link, choose a quality, and the file lands on your disk. Built with nati
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-34C759?logo=opensourceinitiative&logoColor=white)
 
-[**Download 1.0.9c for Windows**](https://github.com/ppolkadot/Claws/raw/refs/heads/main/installers/Claws_1.0.9c_x64-setup.exe) · [Documentation](docs/README.md) · [1.0.9c build notes](docs/releases/1.0.9c.md)
+[**Download 1.0.9d for Windows**](https://github.com/ppolkadot/Claws/releases/download/v1.0.9d/Claws_1.0.9d_x64-setup.exe) · [Documentation](docs/README.md) · [1.0.9d build notes](docs/releases/1.0.9d.md)
 
 <!--
 Screenshot slot. Add high-DPI captures at docs/assets/screenshot-dark.png and
@@ -49,7 +49,7 @@ docs/assets/screenshot-light.png, then replace this comment with:
 
 ## Quick start
 
-1. Download the [1.0.9c Windows installer](https://github.com/ppolkadot/Claws/raw/refs/heads/main/installers/Claws_1.0.9c_x64-setup.exe) and run it.
+1. Download the [1.0.9d Windows installer](https://github.com/ppolkadot/Claws/releases/download/v1.0.9d/Claws_1.0.9d_x64-setup.exe) and run it.
 2. Press **Set up everything** on first launch to install yt-dlp, ffmpeg and Deno.
 3. Paste a link with <kbd>Ctrl</kbd>+<kbd>V</kbd>, pick a quality, press **Download**.
 
@@ -71,14 +71,22 @@ Claws runs on [yt-dlp](https://github.com/yt-dlp/yt-dlp), so it handles any site
 
 ### Wallpaper Engine
 
-Paste one Wallpaper Engine Steam Workshop item link into **Download**. Claws shows the wallpaper's preview, title, type and size, then saves the whole project as `<title> (<item ID>).zip` in the download folder. Workshop collections and other games' items are refused with a message; open each wallpaper on its own. Exports run separately from the media queue, keep running if you switch tabs, and can be cancelled.
+Paste one Wallpaper Engine Steam Workshop item link into **Download**. Claws shows the wallpaper's preview, title, type and size, then saves it in the download folder as `<title> (<item ID>).zip` (the whole project, as Steam downloaded it). Workshop collections and other games' items are refused with a message; open each wallpaper on its own. Exports run separately from the media queue, keep running if you switch tabs, and can be cancelled.
 
-There are two sources:
+A video wallpaper can also be saved as **MP4** or **GIF** (see [formats](#wallpaper-engine-formats) below); every other project is saved as its ZIP. There are two sources:
 
-- **Steam library (no sign-in in Claws).** If Steam is installed and signed in with the account that owns Wallpaper Engine, press **Subscribe in Steam**, subscribe on the page that opens, and wait. Claws watches your Steam libraries for up to ten minutes and enables **Save ZIP** when Steam has downloaded the wallpaper. Claws only reads Steam's folders.
-- **SteamCMD.** Press **Install SteamCMD**: Claws downloads Valve's [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD) into its own tools folder, accepts it only with Valve's signature, and lets it update itself. You can also **Choose…** a copy you already have (outside OneDrive). Claws fills in the Steam account name when it finds one on this PC (from SteamCMD's own sign-ins or the Steam client); check that it is the account that owns Wallpaper Engine, then press **Sign in to Steam…** once: SteamCMD opens in its own window for the password and any Steam Guard code; type `quit` when it says it is logged in. Claws remembers the SteamCMD location and account name (never a password). SteamCMD keeps its own copy of each wallpaper unless **Remove SteamCMD's copy** is on.
+- **Steam library (no sign-in in Claws).** If Steam is installed and signed in with the account that owns Wallpaper Engine, press **Subscribe in Steam**, subscribe on the page that opens, and wait. Claws watches your Steam libraries for up to ten minutes and enables Save when Steam has downloaded the wallpaper. Claws only reads Steam's folders.
+- **SteamCMD.** Press **Install SteamCMD**: Claws downloads Valve's [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD) into its own tools folder, accepts it only with a valid Valve signature, and lets it update itself. You can also **Choose…** a copy you already have (outside OneDrive). Claws fills in the Steam account name when it finds one on this PC (from SteamCMD's own sign-ins or the Steam client); check that it is the account that owns Wallpaper Engine, then press **Sign in to Steam…** once: SteamCMD opens in its own window for the password and any Steam Guard code; type `quit` when it says it is logged in. Claws remembers the SteamCMD location and account name (never a password). SteamCMD keeps its own copy of each wallpaper unless **Remove SteamCMD's copy** is on; that copy is removed only after the save succeeded.
 
 Anonymous SteamCMD sign-ins cannot download Wallpaper Engine items, and Valve's public item details carry no download link, so one of these two sources is needed (see the [spike notes](docs/wallpaper-engine-no-login-spike.md)). A wallpaper that needs other Workshop items says so; download those as well. **View in Steam** opens the item page, in the browser when Steam is not installed.
+
+#### Wallpaper Engine formats
+
+- **ZIP** is the default and works for every item. It keeps the whole project, including scene, web and application projects, which Claws only ever archives and never opens or runs.
+- **MP4** is H.264 video with AAC audio when the wallpaper has sound, in an MP4 that plays and edits in common players. It contains the wallpaper's own video, not the project, so its other files are not kept.
+- **GIF** is a silent, looping animation at 15 frames per second, with a colour palette fitted to each frame. It keeps the source resolution, so it is much larger than MP4 for a long or high-resolution clip; short loops work best.
+
+MP4 and GIF are offered only when Valve's Workshop tags say the item is a video, and Claws checks the downloaded `project.json` again before converting. If it declares no video, or a file outside the item, Claws refuses and offers **Save as ZIP**. The video keeps its source resolution and aspect ratio; odd sides are rounded down to the nearest even number, which the encoders require, and nothing is upscaled. Converting needs FFmpeg, which first-run setup or **Settings → Tools** installs (an FFmpeg on your `PATH` counts). A conversion that fails or is cancelled leaves no partial file behind, and an existing export is never replaced.
 
 ### Managing
 
@@ -104,8 +112,8 @@ The desktop shows through the window, blurred by the Windows composition API; th
 
 ### Windows installer
 
-1. Download [Claws 1.0.9c for Windows x64](https://github.com/ppolkadot/Claws/raw/refs/heads/main/installers/Claws_1.0.9c_x64-setup.exe) from `main`. See the [SHA-256 checksum](installers/Claws_1.0.9c_x64-setup.exe.sha256) and [build notes](docs/releases/1.0.9c.md).
-2. Verify the checksum and run the installer. The installer is unsigned. Windows reports version `1.0.9` because `1.0.9c` is the build nickname.
+1. Download [Claws 1.0.9d for Windows x64](https://github.com/ppolkadot/Claws/releases/download/v1.0.9d/Claws_1.0.9d_x64-setup.exe) from GitHub Releases. See the [SHA-256 checksum](installers/Claws_1.0.9d_x64-setup.exe.sha256) and [build notes](docs/releases/1.0.9d.md).
+2. Verify the checksum and run the installer. The installer is unsigned. Windows reports version `1.0.9`, and Claws shows the `1.0.9d` nickname in the sidebar.
 3. On first launch the Download page lists the tools that are missing: yt-dlp, ffmpeg and a JavaScript runtime (Deno). **Set up everything** downloads each into its own folder from its project's GitHub releases and verifies it against the published SHA-256 before use. Nothing is fetched until you press the button, a tool already on your `PATH` counts as ready, and ffmpeg and Deno can be skipped with **Not now**.
 
 Claws uses the same app data location for this build. The [GitHub Releases page](https://github.com/ppolkadot/Claws/releases) carries the separately published releases.
@@ -116,7 +124,7 @@ Claws uses the same app data location for this build. The [GitHub Releases page]
 | --- | --- |
 | OS | Windows 11. Windows 10 has not been tested. |
 | Runtime | Microsoft Edge WebView2, included with Windows 11. |
-| ffmpeg | Merges HD video with audio and converts audio. Claws uses the copy on your `PATH`, or installs one (first-run setup or **Settings → Tools**). |
+| ffmpeg | Merges HD video with audio, converts audio, and converts Workshop video wallpapers to MP4 or GIF. Claws uses the copy on your `PATH`, or installs one (first-run setup or **Settings → Tools**). |
 | JavaScript runtime | Recent YouTube extraction needs Deno or Node.js. Claws installs Deno for you, or uses either one found on your `PATH`; **Settings → Tools** shows which. |
 
 ## Using Claws
@@ -351,7 +359,8 @@ claws/
 │   ├── probe.rs, links.rs      Reading links; saved details for instant lookups
 │   ├── transcript.rs           Caption parsing and text/SRT/VTT output
 │   ├── spotify.rs, spotify_match.rs   Spotify identity and YouTube ranking
-│   ├── workshop.rs             Wallpaper Engine Workshop lookup, SteamCMD export and ZIP packaging
+│   ├── workshop.rs             Wallpaper Engine Workshop lookup, SteamCMD export and saving
+│   ├── workshop_media.rs       Checking a video project and converting it with FFmpeg
 │   ├── tools.rs                Installing and updating yt-dlp, ffmpeg and Deno
 │   ├── desktop.rs, window.rs   Quick Open, tray, notifications; glass and materials
 │   ├── file_drag.rs            Native outgoing file drag
