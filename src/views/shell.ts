@@ -151,7 +151,8 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
 
   const observer = new IntersectionObserver(
     ([entry]) => content.classList.toggle("scrolled", !entry.isIntersecting),
-    { root: scroller, rootMargin: "-52px 0px 0px 0px", threshold: 0 },
+    // The large title counts as gone once it is under the toolbar (--toolbar-h).
+    { root: scroller, rootMargin: "-68px 0px 0px 0px", threshold: 0 },
   );
   observer.observe(largeTitle);
 

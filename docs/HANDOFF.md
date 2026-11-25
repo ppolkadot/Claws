@@ -1,6 +1,6 @@
 # Developer handoff
 
-Start with [current status](CURRENT_DEVELOPMENT_STATUS.md) and the [1.0.9a build notes](releases/1.0.9a.md). The handoff describes how to work on Claws; release chronology is recorded in `releases/` and git history.
+Start with [current status](CURRENT_DEVELOPMENT_STATUS.md) and the [1.0.9b build notes](releases/1.0.9b.md). The handoff describes how to work on Claws; release chronology is recorded in `releases/` and git history.
 
 ## Architecture and scope
 

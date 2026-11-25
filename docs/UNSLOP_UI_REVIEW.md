@@ -435,7 +435,9 @@ Fixed:
 
 Left for the owner:
 
-- [ ] Traffic lights centre about 8px below the toolbar buttons (`.chrome { top: 20px }` is recorded in DESIGN.md). Decide whether to move the chrome or the toolbar line.
-- [ ] Queue summary still lists every count (`1 downloading · 1 processing · …`); trim to the counts that need action if wanted.
+- [x] Traffic lights centre about 8px below the toolbar buttons (`.chrome { top: 20px }` is recorded in DESIGN.md). Decide whether to move the chrome or the toolbar line. Done: 1.0.9b moved the toolbar buttons to the traffic lights' line (`y = 34px`, toolbar 68px tall).
+- [x] Queue summary still lists every count (`1 downloading · 1 processing · …`); trim to the counts that need action if wanted. Done: 1.0.9b shows at most three facts, and only paused and failed counts when nothing is transferring.
+- [x] Finished Queue rows and Library tiles used a wide text control for Drag file. Done in 1.0.9b: it is an icon button, so every Queue row ends on the same line.
+- [x] Link details, wallpaper items, Spotify matches, lists and errors had no way back to the empty Download page. Done in 1.0.9b: a Back control and the Esc key return there; a kept list stays one **Back to links** away and a running wallpaper export keeps running.
 - [ ] Toasts and the alert sheet keep the bouncy spring DESIGN.md asks for (U20).
 - [ ] `document.title` keeps its em dash (window title, not prose).

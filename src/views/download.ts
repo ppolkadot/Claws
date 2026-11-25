@@ -830,6 +830,40 @@ export const mountDownload: MountView = (container, ctx) => {
     );
   }
 
+  /**
+   * Back to the first Download page: an empty link field, no details and no file info. A kept
+   * list stays one "Back to links" away; a running wallpaper export keeps running and is shown
+   * again when its link is opened.
+   */
+  function goHome() {
+    if (phase === "idle" || enqueuing) return;
+    ticket += 1; // replies to lookups still running are ignored
+    activeEnqueue = null;
+    clearSpotify();
+    dropWorkshop();
+    store.workshopShown = false;
+    store.previews.clear();
+    result = null;
+    lastUrl = "";
+    skipped = null;
+    input.value = "";
+    fitInput();
+    phase = "idle";
+    render();
+    input.focus({ preventScroll: true });
+  }
+
+  /** Above anything the stage shows: Back, and the line that keeps a list one press away. */
+  function stageNav(): HTMLElement | null {
+    const kept = batchReturn();
+    if (phase === "idle") return kept;
+    const back = button({ label: "Back", icon: "back", variant: "plain", size: "small", onClick: goHome });
+    back.classList.add("stage-back");
+    back.title = "Back to an empty Download page (Esc)";
+    back.disabled = enqueuing;
+    return h("div", { class: "stage-nav" }, back, kept);
+  }
+
   function batchReturn(): HTMLElement | null {
     if (!store.batch || phase === "batch") return null;
     const total = store.links.rows.length;
@@ -886,7 +920,7 @@ export const mountDownload: MountView = (container, ctx) => {
     const key = stageKey();
     const changed = key !== shownKey;
     shownKey = key;
-    const back = batchReturn();
+    const back = stageNav();
     const issues = skipped && phase !== "idle" && phase !== "batch" ? renderIssues(skipped) : null;
     switch (phase) {
       case "loading":
@@ -948,8 +982,8 @@ export const mountDownload: MountView = (container, ctx) => {
         }
         batchView = mountBatch(store.batch, { run: batchRun, input, stage, refreshCurrent: () => batchView?.refresh() });
         paintBatchEstimate = batchView.paintEstimate;
-        replace(stage, batchView.el);
-        if (changed) stageAnimation = settleIn(stage.firstElementChild);
+        replace(stage, back, batchView.el);
+        if (changed) stageAnimation = settleIn(batchView.el);
         break;
       default:
         replace(
@@ -1103,11 +1137,21 @@ export const mountDownload: MountView = (container, ctx) => {
     }
   }
 
+  // Esc on the Download page goes back to its start, unless a dialog or a menu has it.
+  const onEscape = (event: KeyboardEvent) => {
+    if (event.key !== "Escape" || event.defaultPrevented || document.querySelector("dialog[open]")) return;
+    if (phase === "idle") return;
+    event.preventDefault();
+    goHome();
+  };
+  container.addEventListener("keydown", onEscape);
+
   render();
   input.focus();
   takePaste();
 
   return () => {
+    container.removeEventListener("keydown", onEscape);
     saveSession();
     clearSpotifyView();
     workshopView?.dispose();

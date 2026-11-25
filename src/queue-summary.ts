@@ -88,3 +88,16 @@ export function taskbarState(jobs: Iterable<SummaryJob>): TaskbarState {
 export function sameTaskbarState(a: TaskbarState, b: TaskbarState): boolean {
   return a.status === b.status && (a.status !== "normal" || (b.status === "normal" && a.progress === b.progress));
 }
+
+/**
+ * The Queue's summary line, at most three facts: while something transfers, how many and how
+ * fast (with the time left when it is known), plus failures, which need action. With nothing
+ * transferring, only what needs the user: paused and failed. The rows show the rest.
+ */
+export function summaryParts(s: QueueSummary, speed: (bytesPerSecond: number) => string, eta: (seconds: number) => string): string[] {
+  if (s.downloading > 0) {
+    const pace = [s.speed !== null ? speed(s.speed) : "", s.eta !== null ? `${s.etaApproximate ? "about " : ""}${eta(s.eta)}` : ""].filter(Boolean).join(", ");
+    return [`${s.downloading} downloading`, pace, s.failed > 0 ? `${s.failed} failed` : ""].filter(Boolean);
+  }
+  return [s.paused > 0 ? `${s.paused} paused` : "", s.failed > 0 ? `${s.failed} failed` : ""].filter(Boolean);
+}

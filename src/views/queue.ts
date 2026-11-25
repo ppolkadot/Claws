@@ -1,6 +1,6 @@
 import { api, errorMessage, type Job } from "../api";
 import { folderName, formatBytes, formatEta, formatSpeed } from "../format";
-import { summarize } from "../queue-summary";
+import { summarize, summaryParts } from "../queue-summary";
 import { keptKey, keptLabel } from "../kept-files";
 import { store } from "../store";
 import { button, toast } from "../ui/components";
@@ -300,15 +300,7 @@ export const mountQueue: MountView = (container, ctx) => {
       if (!shown[i] && document.activeElement === btn) (bulkButtons.find((_, j) => shown[j]) ?? clearBtn).focus({ preventScroll: true });
       btn.hidden = !shown[i];
     });
-    const parts = [
-      s.downloading > 0 ? `${s.downloading} downloading` : null,
-      s.processing > 0 ? `${s.processing} processing` : null,
-      s.queued > 0 ? `${s.queued} waiting` : null,
-      s.paused > 0 ? `${s.paused} paused` : null,
-      s.failed > 0 ? `${s.failed} failed` : null,
-      s.speed !== null ? formatSpeed(s.speed) : null,
-      s.eta !== null ? `${s.etaApproximate ? "about " : ""}${formatEta(s.eta)}` : null,
-    ].filter(Boolean);
+    const parts = summaryParts(s, formatSpeed, formatEta);
     const text = parts.join("  ·  ");
     if (summaryLine.textContent !== text) summaryLine.textContent = text;
     summaryLine.hidden = parts.length === 0;

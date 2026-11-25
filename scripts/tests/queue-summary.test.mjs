@@ -72,3 +72,16 @@ test("the window is told again only when what it shows changes", () => {
   assert.equal(sameTaskbarState({ status: "none" }, { status: "none" }), true);
   assert.equal(sameTaskbarState({ status: "none" }, { status: "indeterminate" }), false);
 });
+
+test("the summary line says at most three things: transfers, pace and failures", async () => {
+  const { summaryParts } = await import("../../.test-build/queue-summary.js");
+  const speed = (b) => `${b / 1_000_000} MB/s`;
+  const eta = (s) => `${s}s left`;
+  const busy = summarize([transfer(1, 2, { speed: 6_000_000, eta: 41 }), job("processing"), job("paused"), job("failed")]);
+  assert.deepEqual(summaryParts(busy, speed, eta), ["1 downloading", "6 MB/s, 41s left", "1 failed"]);
+  const waiting = summarize([transfer(1, 2, { speed: 2_000_000, eta: 10 }), job("queued")]);
+  assert.deepEqual(summaryParts(waiting, speed, eta), ["1 downloading", "2 MB/s"], "no time left while something waits");
+  assert.deepEqual(summaryParts(summarize([job("downloading")]), speed, eta), ["1 downloading"]);
+  assert.deepEqual(summaryParts(summarize([job("paused"), job("paused"), job("failed"), job("queued")]), speed, eta), ["2 paused", "1 failed"]);
+  assert.deepEqual(summaryParts(summarize([job("processing"), job("completed")]), speed, eta), []);
+});

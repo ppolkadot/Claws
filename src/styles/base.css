@@ -27,7 +27,11 @@
   --spring-bouncy-d: 480ms;
 
   --sidebar-w: 248px;
-  --toolbar-h: 52px;
+  /* The toolbar's line is the window controls' line: .chrome sits at top 20px and its 28px
+     toggle centres at 34px, so a 68px toolbar centres its buttons and title there too. */
+  --toolbar-h: 68px;
+  /* Where a page starts: unchanged by the taller toolbar, which is empty above the large title. */
+  --page-top: 52px;
 
   --blue: #0a84ff;
   --blue-fill: #0071e3; /* white text on this is 4.7:1 */
@@ -217,6 +221,7 @@ textarea:focus-visible {
   position: fixed;
   top: 20px;
   left: 22px;
+  /* Above the toolbar, sheets' scrim excepted: only these controls answer in this corner. */
   z-index: 40;
   display: flex;
   align-items: center;
@@ -494,7 +499,7 @@ html[data-backdrop="none"] .sidebar-panel {
   position: absolute;
   inset: 0;
   overflow-y: auto;
-  padding: var(--toolbar-h) 28px 40px;
+  padding: var(--page-top) 28px 40px;
   scrollbar-gutter: stable;
 }
 .page {

@@ -593,6 +593,28 @@
 .batch-pick:focus-visible {
   outline-offset: -4px;
 }
+/* Back, above whatever the Download stage shows; a kept list's line sits beside it. */
+.stage-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 12px;
+}
+/* Back reads as navigation: accent ink, its chevron on the section-title text line. */
+.stage-back {
+  gap: 2px;
+  margin-left: -4px;
+  padding-left: 4px;
+  color: var(--blue);
+  font-size: 13px;
+}
+.stage-back:hover {
+  color: var(--blue);
+}
+.stage-nav .batch-return {
+  flex: 1;
+  margin: 0;
+}
 .batch-return {
   display: flex;
   align-items: center;
@@ -775,8 +797,9 @@
   display: flex;
   flex: none;
   justify-content: flex-end;
-  /* Room for three 28px buttons, so rows with fewer end on the same line. */
-  min-width: 88px;
+  /* Room for the most a row shows (folder, drag, kept files, remove: four 28px buttons), so
+     every row's text and bar end on the same line. */
+  min-width: 118px;
   gap: 2px;
 }
 .job[data-status="failed"] .job-status {

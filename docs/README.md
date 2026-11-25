@@ -6,6 +6,7 @@ Use these documents for the current project:
 - [Developer handoff](HANDOFF.md): architecture, safety contracts, build/test commands and manual acceptance.
 - [User guide](../README.md): installation, features, settings and troubleshooting.
 - [Product brief](../PRODUCT.md) and [design system](../DESIGN.md): product scope and visual rules.
+- [1.0.9b build notes](releases/1.0.9b.md): Windows installer on `main`, the Steam library and SteamCMD sources, and verification.
 - [1.0.9a build notes](releases/1.0.9a.md): Windows installer on `main`, Workshop downloads and verification.
 - [1.0.9 release notes](releases/1.0.9.md): installer, checksum, build source and packaging evidence.
 - [1.0.8 release notes](releases/1.0.8.md): installer, checksum, build source and packaging evidence.

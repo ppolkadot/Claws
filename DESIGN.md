@@ -259,7 +259,7 @@ Neutral grey-white and graphite tints over whatever the desktop shows, with one 
 
 A two-column window grid: the sidebar column (248px; 220px under 1000px wide) and the content column. The sidebar is a floating pane inset 8px from the window's top, bottom and left edges with a 14px radius, so its corners sit concentric with the window. Collapsing it (toolbar toggle or Ctrl+Alt+S) springs the grid column to 0 while the pane slides 28px left and fades; the traffic lights and the toggle are fixed at 20px/22px from the window corner and never move. Ctrl+1 to Ctrl+4 switch sections.
 
-The toolbar (52px) floats over the content with no fill at the top of a page; once the large title has scrolled under it, it gains chrome material, a bottom hairline, and the page title fades up into it. The scroll area pads 52px top, 28px sides (20px under 1000px) and 40px bottom, with a stable scrollbar gutter, and centres a 900px page.
+The toolbar (68px) floats over the content with no fill at the top of a page. Its buttons and title centre 34px from the window's top, on the same line as the traffic lights and the sidebar toggle, so the window controls and the toolbar read as one bar; only the window controls answer clicks in their corner. Once the large title has scrolled under it, it gains chrome material, a bottom hairline, and the page title fades up into it. The scroll area pads 52px top, 28px sides (20px under 1000px) and 40px bottom, with a stable scrollbar gutter, and centres a 900px page.
 
 Content is inset-grouped: a glass panel holds rows at least 46px tall (10px 14px 10px 16px padding), label left and control right (control at most 62% wide), separated by hairlines that start at the text inset (16px), or past the thumbnail in media lists. Section titles sit 26px above their group. The library is an auto-fill grid of tiles at a 208px minimum with 16px gaps. Spacing runs on a 4/6/8/12/16/20/28 rhythm. Under 1000px rows wrap and the preview stacks.
 
@@ -317,7 +317,7 @@ A fill track, 9px radius, 2px inset, with a white (graphite in dark) thumb at 7p
 Sidebar items are 32px, 8px radius, 13px / 500, with a 17px icon in accent text. Hover shows fill on non-current items. The current page is marked by one travelling indicator (selection tint, 8px radius) that moves between items on `--spring-snappy` rather than each item lighting up. The Queue item carries a fill-2 capsule badge (18px, 11px / 600, tabular) that pops on a bouncy spring when the count rises. The footer holds the tool-status chip: a 7px status dot (green ok, orange missing, red error) with an 11.5px tabular line, plus a progress bar while setting up.
 
 ### Toolbar and large title
-The large title belongs to the page; the toolbar title belongs to the window. As the large title passes under the 52px toolbar, the toolbar gains chrome material and the 14px title rises 4px into place on `--spring-smooth`. When the sidebar is closed the toolbar pads 138px left to clear the fixed window controls.
+The large title belongs to the page; the toolbar title belongs to the window. As the large title passes under the 68px toolbar, the toolbar gains chrome material and the 14px title rises 4px into place on `--spring-smooth`. When the sidebar is closed the toolbar pads 138px left to clear the fixed window controls.
 
 ### Window controls
 12px red, yellow and green circles with 8px glyphs revealed on group hover or keyboard focus, a 0.5px dark inset edge, and a brightness press; grey when the window is inactive.

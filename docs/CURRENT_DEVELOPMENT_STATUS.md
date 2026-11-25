@@ -2,7 +2,7 @@
 
 ## Version and delivery
 
-**1.0.9a** is the Windows build on `main`. The npm, Cargo and Tauri version remains `1.0.9`, which is also the version Windows reports. See the [1.0.9a build notes](releases/1.0.9a.md) for the installer, checksum and verification evidence.
+**1.0.9b** is the Windows build on `main`. The npm, Cargo and Tauri version files stay `1.0.9`, which is also the version Windows reports. See the [1.0.9b build notes](releases/1.0.9b.md) for the installer, checksum and verification evidence.
 
 The earlier [1.0.9 GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.9) has its own [release notes](releases/1.0.9.md) and installer.
 
@@ -11,12 +11,16 @@ The earlier [1.0.9 GitHub release](https://github.com/ppolkadot/Claws/releases/t
 - Wallpaper Engine Steam Workshop downloads via SteamCMD. Claws saves the project and its assets as a ZIP. The [user guide](../README.md#wallpaper-engine) covers setup and sign-in.
 - [UI cleanup](UNSLOP_UI_REVIEW.md) for copy, icons and spacing, plus a visible filename label and simpler Library hover behavior.
 
-## On branch `t3/wallpaper-engine-unslop` (not released)
+## What 1.0.9b adds
 
 Follows [the 2026-11-25 plan](superpowers/plans/2026-11-25-unslop-and-wallpaper-engine-plan.md).
 
 - Wallpaper Engine: a preview card, the Steam library source (no sign-in in Claws), SteamCMD with a saved, Valve-signature-checked location and account, Sign in to Steam, progress and Cancel, classified SteamCMD errors with the full output, title-based ZIP names, free-space checks, collections refused, required items flagged, a Settings section, and a full dev mock. See the [no-sign-in spike](wallpaper-engine-no-login-spike.md).
 - Second unslop pass ([review log](UNSLOP_UI_REVIEW.md#2026-11-25-second-pass)): site names, English dates, audio counts, shorter copy, and edge alignment. Before and after screenshots of the dev mock are in [performance/2026-11-25-unslop](performance/2026-11-25-unslop/).
+- Toolbar: the buttons now centre on the traffic lights' line (`y = 34px`, toolbar 68px tall), and only the window controls take clicks in their corner.
+- Queue summary: at most three facts (downloading with its speed and time left, then failures). With nothing transferring it shows only the paused and failed counts.
+- Drag file is an icon button in finished Queue rows and Library tiles, so every Queue row ends on the same line.
+- Download page: a Back control and the Esc key return to the empty Download page from link details, wallpaper items, Spotify matches, lists and errors. A kept list stays one **Back to links** away, and a running wallpaper export keeps running.
 
 ## What 1.0.9 added
 

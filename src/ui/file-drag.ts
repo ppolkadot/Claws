@@ -14,8 +14,10 @@ export function fileDragButton(id: string): HTMLButtonElement {
   let gesture = idleGesture;
   let listening: AbortController | null = null;
   const control = button({
-    label: "Drag file",
-    title: "Drag to copy the file into a folder or an editor. Enter, Space or a click shows it in its folder.",
+    // An icon like its neighbours, so every row's actions take the same room. The name says what
+    // a drag does and what a click (or Enter, Space) does instead.
+    icon: "grip",
+    title: "Drag file to a folder or an editor. Click to show it in its folder.",
     variant: "plain",
     onClick: (event) => {
       if (revealsOnClick(gesture, event.detail)) void api.revealDownload(id).catch(fail);
