@@ -372,9 +372,9 @@ All surface changes below preserve Claws's color palette, typography family/size
 
 ## 8. Owner Decisions / Tasks
 
-- [ ] [src/views/download.ts:871](file:///C:/Users/A3/Claws/src/views/download.ts#L871) — **Unverified claim / `U4`:** `"Claws saves video and audio from over a thousand sites."` ([PRODUCT.md:23](file:///C:/Users/A3/Claws/PRODUCT.md#L23) cites yt-dlp's 1,800+ site list, whereas [PRODUCT.md:43](file:///C:/Users/A3/Claws/PRODUCT.md#L43) says not to promise sites yt-dlp cannot extract). Confirm whether to cut this sentence as listed in Section 3 or keep it.
-- [ ] [src/styles/views.css:862-880](file:///C:/Users/A3/Claws/src/styles/views.css#L862-L880) — **`U20` vs `DESIGN.md`:** Library `.tile:hover` lift (`transform: translateY(-2px)`) and `.tile:hover .tile-img` zoom (`transform: scale(1.03)`) match `U20`'s `hover:scale-*` trigger, but both are explicitly specified in [DESIGN.md:272, 341](file:///C:/Users/A3/Claws/DESIGN.md#L272). Decide whether to keep as-is or drop them in both `DESIGN.md` and `views.css`.
-- [ ] [src/views/settings.ts:97-114](file:///C:/Users/A3/Claws/src/views/settings.ts#L97-L114) & [src/ui/layout.ts:5-17](file:///C:/Users/A3/Claws/src/ui/layout.ts#L5-L17) — **`U7` / Form-label guardrail:** `template` (`<input class="text-input mono">`) uses `aria-label="Filename template"` while `"Filename"` in `row()` is a `<span class="row-title">`. Confirm whether to give `template` an explicit `id="settings-filename"` and render `<label for="settings-filename">` in `row()`.
+- [x] Give the paste shortcut without the site count in [Download](../src/views/download.ts).
+- [x] Remove the tile lift and artwork zoom from [Library styles](../src/styles/views.css) and [DESIGN.md](../DESIGN.md). Keep the actions that appear on hover and focus.
+- [x] Associate the visible [Settings filename label](../src/views/settings.ts) with its input.
 
 ---
 

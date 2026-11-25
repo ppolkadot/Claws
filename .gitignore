@@ -9,8 +9,8 @@ src-tauri/gen/
 __pycache__/
 
 # ---- Installers -------------------------------------------------------------------
-# New installers, checksums and build records are attached to the GitHub Release, not
-# committed. The files already tracked here are historical records and stay as they are.
+# Installers and checksums normally go on GitHub Releases. Add named builds for main
+# explicitly when requested. Keep tracked installers and their records immutable.
 installers/*
 
 # ---- Fonts ------------------------------------------------------------------------

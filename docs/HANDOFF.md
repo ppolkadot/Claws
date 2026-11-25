@@ -1,6 +1,6 @@
 # Developer handoff
 
-Start with [current status](CURRENT_DEVELOPMENT_STATUS.md) and [release notes](releases/1.0.9.md). The handoff describes how to work on Claws; release chronology is recorded in `releases/` and git history.
+Start with [current status](CURRENT_DEVELOPMENT_STATUS.md) and the [1.0.9a build notes](releases/1.0.9a.md). The handoff describes how to work on Claws; release chronology is recorded in `releases/` and git history.
 
 ## Architecture and scope
 
@@ -13,6 +13,7 @@ Claws is a Windows Tauri 2 desktop app with plain TypeScript/CSS. Rust invokes y
 | Space accounting and previews | `disk_budget.rs`, `estimate.rs` |
 | Probing, saved links and transcripts | `probe.rs`, `links.rs`, `transcript.rs` |
 | Spotify identity and YouTube search/ranking | `spotify.rs`, `spotify_match.rs`; frontend `spotify-match.ts` and its view |
+| Wallpaper Engine Workshop lookup and ZIP export | `workshop.rs`; frontend `workshop-link.ts` and `views/workshop.ts` |
 | Tools and desktop integration | `tools.rs`, `desktop.rs`, `file_drag.rs`, `window.rs`, `commands.rs` |
 | Frontend state and navigation | `store.ts`, `api.ts`, `views/`, pure helpers and `ui/` |
 
@@ -62,7 +63,7 @@ git diff --check
 
 Repository-wide `cargo fmt --check` has pre-existing drift. Keep unrelated formatting out of focused edits.
 
-For an authorized installer build, synchronize `package.json`, `package-lock.json` (root and package entries), `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and `src-tauri/tauri.conf.json`, then run `npm run tauri build -- --bundles nsis`. Output is under `src-tauri/target/release/bundle/nsis/`. Record the source commit/snapshot, installer hash, extracted version and embedded-asset checks in the release notes under `releases/`. Attach the installer and its `.sha256` to the GitHub Release; do not commit new installers (`installers/*` is ignored). The files already tracked in `installers/` are historical records: keep them immutable, and a source edit does not replace a packaged release.
+For an authorized installer build, synchronize `package.json`, `package-lock.json` (root and package entries), `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and `src-tauri/tauri.conf.json`, then run `npm run tauri build -- --bundles nsis`. Output is under `src-tauri/target/release/bundle/nsis/`. Record the source commit or snapshot, installer hash, extracted version and embedded asset checks in `releases/`. GitHub Releases normally carry the installer and checksum. When asked for a build on `main`, add the named installer and checksum to `installers/` explicitly. Keep every tracked installer immutable.
 
 `.github/workflows/ci.yml` runs the frontend tests, the build, the backend tests and Clippy on `windows-latest` for every push and pull request. Tests that need a real yt-dlp or FFmpeg skip there, so run them locally before a release.
 

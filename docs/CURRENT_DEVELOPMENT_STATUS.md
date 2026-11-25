@@ -2,15 +2,20 @@
 
 ## Version and delivery
 
-Source version: **1.0.9** on `main`, merged from `improve/phase-0-safety-net` ([pull request 1](https://github.com/ppolkadot/Claws/pull/1)). The [GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.9) carries the installer; see the [1.0.9 release notes](releases/1.0.9.md). Earlier releases, including [1.0.8](https://github.com/ppolkadot/Claws/releases/tag/v1.0.8), stay as historical artifacts.
+**1.0.9a** is the Windows build on `main`. The npm, Cargo and Tauri version remains `1.0.9`, which is also the version Windows reports. See the [1.0.9a build notes](releases/1.0.9a.md) for the installer, checksum and verification evidence.
 
-The [1.0.9 release notes](releases/1.0.9.md) and installer build record identify the packaged source tree, checksums and verification. The installer is unsigned; upgrade over an earlier install and a clean-machine install remain unverified. Build records describe packaging-time state, while the GitHub release records publication. Older release records and binaries remain historical evidence.
+The earlier [1.0.9 GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.9) has its own [release notes](releases/1.0.9.md) and installer.
+
+## What 1.0.9a added
+
+- Wallpaper Engine Steam Workshop downloads via SteamCMD. Claws saves the project and its assets as a ZIP. The [user guide](../README.md#wallpaper-engine) covers setup and sign-in.
+- [UI cleanup](UNSLOP_UI_REVIEW.md) for copy, icons and spacing, plus a visible filename label and simpler Library hover behavior.
 
 ## What 1.0.9 added
 
 The improvement plan on top of 1.0.8. The installer was installed and launched by the owner; the features below have not been exercised against real downloads.
 
-- **Safety net:** Windows CI for every push and pull request; new installers are no longer committed.
+- **Safety net:** Windows CI for every push and pull request.
 - **Download speed:** the benchmark gate did not justify `formats=dashy` or an aria2c transport ([real-source benchmark](performance/real-source-benchmark.md)); processing no longer holds a transfer slot (`max_processing`); a per-download speed limit; the fragment default stays at 8 ([fragment count](performance/fragment-count.md)).
 - **Setup:** Claws installs Deno itself and a first-run panel installs yt-dlp, ffmpeg and Deno from one button. yt-dlp is no longer fetched without asking.
 - **Queue and Library:** bulk actions, Move to Top, a summary line, the processing step, error details with Copy, taskbar progress, finish notifications, Library sorting and filtering, remembered choices. Dropping a link onto the window is deferred (see the [handoff](HANDOFF.md)).
@@ -36,6 +41,7 @@ Settings schema stays 2 and queue schema stays 3; every new field is defaulted.
 | Real slow source | No affected source/format was supplied. Controlled benchmarks do not establish an Internet throughput improvement. Follow [speed diagnosis](performance/speed-diagnosis.md). |
 | Native drag | Explorer/editor import, a stalled receiver, swapped buttons, long/UNC paths and Windows 10 acceptance need disposable-environment checks. See [manual acceptance](HANDOFF.md#manual-acceptance). |
 | Installed application | Fresh installation/upgrade and manual real-WebView2 checks remain unverified. |
+| Wallpaper Engine | Live Valve metadata and the refusal of an anonymous request were verified. A successful download with an owning account still needs a live check. |
 | Spotify | Real share-link redirect smoke, OS-level IME composition, listening-based playback and live outage/removal behavior remain unverified. Historical native saves and synthetic UI checks are recorded separately. |
 | Disk behavior | Real peak space across all postprocessors and constrained-volume behavior need controlled measurements; no strict pre-FFmpeg launch gate is claimed. |
 | Optional permission cleanup | `core:window:allow-destroy` is still used by `onCloseRequested`. Replace that close path before considering removal. |
@@ -44,6 +50,6 @@ Clip sections remain deferred. Speech recognition, lyrics and replay metadata ar
 
 ## Verification
 
-The packaged 1.0.9 source passed 468 Rust tests (3 opt-in live tests ignored), 316 frontend tests, warning-denying Clippy and the production build; CI passed on the branch. Installer archive integrity and executable version were checked, and the owner installed and launched it. These are release-specific observations; use the [handoff commands](HANDOFF.md#build-and-checks) to validate subsequent source changes.
+See the [1.0.9a build notes](releases/1.0.9a.md) for the checks run against the packaged source and installer.
 
 Historical test counts and release chronology belong in release records and git history, not additional status sections. This page does not claim that fixture or headless-browser success proves native or live-site acceptance.

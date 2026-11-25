@@ -2,7 +2,7 @@
 
 # Claws
 
-**A local video downloader for Windows.**
+**A local video, audio and wallpaper downloader for Windows.**
 
 Paste a link, choose a quality, and the file lands on your disk. Built with native Windows desktop blur, spring-driven UI motion and no cloud dependencies: everything runs locally on your PC.
 
@@ -14,7 +14,7 @@ Paste a link, choose a quality, and the file lands on your disk. Built with nati
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-34C759?logo=opensourceinitiative&logoColor=white)
 
-[**Download the latest release**](https://github.com/ppolkadot/Claws/releases/latest) · [Documentation](docs/README.md) · [Release notes](docs/releases/)
+[**Download 1.0.9a for Windows**](https://github.com/ppolkadot/Claws/raw/refs/heads/main/installers/Claws_1.0.9a_x64-setup.exe) · [Documentation](docs/README.md) · [1.0.9a build notes](docs/releases/1.0.9a.md)
 
 <!--
 Screenshot slot. Add high-DPI captures at docs/assets/screenshot-dark.png and
@@ -49,7 +49,7 @@ docs/assets/screenshot-light.png, then replace this comment with:
 
 ## Quick start
 
-1. Download the installer from the [latest release](https://github.com/ppolkadot/Claws/releases/latest) and run it.
+1. Download the [1.0.9a Windows installer](https://github.com/ppolkadot/Claws/raw/refs/heads/main/installers/Claws_1.0.9a_x64-setup.exe) and run it.
 2. Press **Set up everything** on first launch to install yt-dlp, ffmpeg and Deno.
 3. Paste a link with <kbd>Ctrl</kbd>+<kbd>V</kbd>, pick a quality, press **Download**.
 
@@ -68,6 +68,12 @@ Claws runs on [yt-dlp](https://github.com/yt-dlp/yt-dlp), so it handles any site
 - **Spotify links.** Paste a single track link (`open.spotify.com/track/...` or a `spotify.link` short link) and Claws searches YouTube for matching audio. You preview the candidates and pick the right recording before anything downloads; the file is labelled `Source: YouTube match`. It is YouTube audio, so the recording may differ from the Spotify version. No Spotify account is needed, and albums, playlists and batches are not supported.
 - **Chapters, SponsorBlock and Fast Save.** With *Embed metadata* on, a video's chapters are written into the file. For YouTube, an optional per-download SponsorBlock setting (off by default) either marks sponsor segments as chapters or cuts them out; it asks `sponsor.ajay.app` about the video only when enabled, and removing segments makes the file smaller than the preview and can leave a brief glitch at a cut. *Fast Save* skips metadata, chapters, cover art, SponsorBlock and embedded subtitles so a large file is not rewritten after it downloads. Merging and conversion the format requires still happen.
 - **Into an editor.** A finished download has a *Drag file* handle that starts a real Windows file drag (copy only) into Explorer or an editor's media bin. The file stays in your Library. Press Enter on the handle to show it in its folder instead.
+
+### Wallpaper Engine
+
+Paste one Wallpaper Engine Steam Workshop item link into **Download**. Use **Choose SteamCMD** to select Valve’s `steamcmd.exe`, enter your Steam account name, and press **Download ZIP**. Claws saves the full project as `Wallpaper Engine <item ID>.zip` in the download folder. Use **Open folder** to find the ZIP. Workshop exports run separately from the media queue.
+
+Extract [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD) to a writable folder outside OneDrive or other sync folders, such as `C:\SteamCMD`. Run SteamCMD and enter `login YOUR_ACCOUNT_NAME` using the account that owns Wallpaper Engine. Complete any password and Steam Guard prompts there, then type `quit`. Claws uses the saved SteamCMD sign-in. SteamCMD keeps a copy of the project in its Workshop folder, so allow space for both that copy and the ZIP. **View in Steam** opens the original item page.
 
 ### Managing
 
@@ -91,13 +97,13 @@ The desktop shows through the window, blurred by the Windows composition API; th
 
 ## Installation
 
-### From a release
+### Windows installer
 
-1. Download `Claws_<version>_x64-setup.exe` from the [Releases](https://github.com/ppolkadot/Claws/releases) page. Current release: 1.0.9, SHA-256 `3ce6d049d578120fb0b156a5dd1eef9a0a48757d7dfd11002f581941e63b2283`.
-2. Run it. Releases are not code-signed yet, so Windows SmartScreen may warn on first run; choose **More info → Run anyway**.
+1. Download [Claws 1.0.9a for Windows x64](https://github.com/ppolkadot/Claws/raw/refs/heads/main/installers/Claws_1.0.9a_x64-setup.exe) from `main`. See the [SHA-256 checksum](installers/Claws_1.0.9a_x64-setup.exe.sha256) and [build notes](docs/releases/1.0.9a.md).
+2. Verify the checksum and run the installer. The installer is unsigned. Windows reports version `1.0.9` because `1.0.9a` is the build nickname.
 3. On first launch the Download page lists the tools that are missing: yt-dlp, ffmpeg and a JavaScript runtime (Deno). **Set up everything** downloads each into its own folder from its project's GitHub releases and verifies it against the published SHA-256 before use. Nothing is fetched until you press the button, a tool already on your `PATH` counts as ready, and ffmpeg and Deno can be skipped with **Not now**.
 
-Upgrading keeps your settings, Library and unfinished queue.
+Claws uses the same app data location for this build. The [GitHub Releases page](https://github.com/ppolkadot/Claws/releases) carries the separately published releases.
 
 ### Requirements
 
@@ -255,9 +261,9 @@ Two ideas were measured and dropped because they did not reach the 1.5× gate on
 
 ## Privacy and security
 
-Claws sends no telemetry and makes no account calls. Network traffic goes to the sites you download from (including the servers their artwork comes from), to GitHub when yt-dlp, ffmpeg or Deno is installed or updated, to `sponsor.ajay.app` through yt-dlp when SponsorBlock is on, and to public Spotify and YouTube pages for track matching. Notifications are local Windows notifications.
+Claws sends no telemetry. Network traffic goes to the sites you download from (including the servers their artwork comes from), to GitHub when yt-dlp, ffmpeg or Deno is installed or updated, to `sponsor.ajay.app` through yt-dlp when SponsorBlock is on, and to public Spotify and YouTube pages for track matching. For Wallpaper Engine links, Claws checks the item with Valve and SteamCMD handles sign-in and downloads. Claws receives the Steam account name only. Notifications are local Windows notifications.
 
-- **Verified tools.** Every tool archive is checked against the SHA-256 its project publishes and discarded on a mismatch. Unpacking is defensive: names that could land outside the tool folder are skipped, encrypted entries and links are refused, and entry counts and bytes written are capped whatever size an entry claims.
+- **Verified tools.** Claws checks the SHA-256 of each tool archive it installs against the hash its project publishes and discards mismatches. Unpacking is defensive: names that could land outside the tool folder are skipped, encrypted entries and links are refused, and entry counts and bytes written are capped whatever size an entry claims.
 - **Untrusted input.** Only `http` and `https` links are accepted, and they reach yt-dlp as plain arguments after `--`, never through a shell. Anything that ends up on the command line (browser names, cookie files, filename templates, SponsorBlock categories) is validated first, and text from sites is rendered as text, never HTML.
 - **Least privilege.** The interface can only open files and folders the app itself recorded, and the window runs under a strict Content Security Policy.
 - Cookies are used only while a source is set in **Settings → Sign-in**. yt-dlp reads them on each lookup or download and sends each cookie only to the site it belongs to.
@@ -320,13 +326,14 @@ cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --featu
 claws/
 ├── src/                        Frontend (TypeScript + CSS, no framework)
 │   ├── views/                  Download (options, playlist, batch), Queue, Library, Settings,
-│   │                           setup panel, Spotify match, window shell
+│   │                           setup panel, Spotify match, Wallpaper Engine, window shell
 │   ├── ui/                     Controls, layout, icons, spring motion, progress and row-order
 │   │                           logic, the file-drag gesture
 │   ├── store.ts, api.ts        App state and the typed backend calls
 │   ├── queue-events.ts         Revisioned job table; queue-summary.ts the summary line
 │   ├── download-input.ts       Link parsing and the three-at-a-time lookup scheduler
 │   ├── download-estimates.ts   Size and free-space wording
+│   ├── workshop-link.ts        Steam Workshop item link detection
 │   ├── setup.ts, last-choices.ts, library-search.ts   Setup steps, remembered choices, Library sorting
 │   └── styles/                 Materials and tokens, components, screens, fonts
 ├── src-tauri/src/              Backend (Rust)
@@ -339,6 +346,7 @@ claws/
 │   ├── probe.rs, links.rs      Reading links; saved details for instant lookups
 │   ├── transcript.rs           Caption parsing and text/SRT/VTT output
 │   ├── spotify.rs, spotify_match.rs   Spotify identity and YouTube ranking
+│   ├── workshop.rs             Wallpaper Engine Workshop lookup, SteamCMD export and ZIP packaging
 │   ├── tools.rs                Installing and updating yt-dlp, ffmpeg and Deno
 │   ├── desktop.rs, window.rs   Quick Open, tray, notifications; glass and materials
 │   ├── file_drag.rs            Native outgoing file drag
