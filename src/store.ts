@@ -22,6 +22,7 @@ import { LinkBatch, type ParsedInput } from "./download-input";
 import { PreviewMemory } from "./preview-session";
 import { isSpotifyInput, type SpotifyMatchSnapshot } from "./spotify-match";
 import { isWorkshopLink } from "./workshop-link";
+import type { WorkshopSession } from "./workshop-session";
 import { JobTable } from "./queue-events";
 import type { LibraryKind, LibraryOrder } from "./library-search";
 
@@ -115,6 +116,9 @@ const defaultSettings: Settings = {
   keepRunning: true,
   openAtLogin: false,
   audioSelection: "preferMatching",
+  steamcmdPath: "",
+  steamAccount: "",
+  removeSteamcmdCopy: false,
 };
 
 class Store {
@@ -167,12 +171,19 @@ class Store {
    * lookups still running from a replaced batch count towards its limit of three.
    */
   batch: BatchSession | null = null;
+  /**
+   * The Wallpaper Engine item last opened on Download, with its export. Kept while the user
+   * is elsewhere, so a running export is shown again on return.
+   */
+  workshop: WorkshopSession | null = null;
+  /** Download showed the Workshop item when it was left. */
+  workshopShown = false;
   readonly links = new LinkBatch<ProbeResult>(async (url) => {
     if (isSpotifyInput(url)) {
       throw new Error("Open this Spotify track individually to choose and review a YouTube match. Spotify albums and playlists aren't supported yet.");
     }
-    if (isWorkshopLink(url) && await api.isWallpaperWorkshopItem(url).catch(() => false)) {
-      throw new Error("Open this Wallpaper Engine link on its own to download the project.");
+    if (isWorkshopLink(url)) {
+      throw new Error("Open this Workshop link on its own to download the wallpaper.");
     }
     return api.probe(url);
   }, {

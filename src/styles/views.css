@@ -1050,3 +1050,20 @@
     max-width: 100%;
   }
 }
+
+/* Wallpaper Engine item: the export's stage and bar, and why it cannot start yet. */
+.workshop-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 16px 6px 0;
+}
+.workshop-panel .actions .workshop-reason {
+  margin-left: auto;
+}
+.workshop-panel .actions .btn[hidden] {
+  display: none;
+}
+.workshop-panel .text-input {
+  width: 180px;
+}

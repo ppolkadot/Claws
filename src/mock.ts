@@ -40,6 +40,9 @@ const settings: Settings = {
   keepRunning: true,
   openAtLogin: false,
   audioSelection: "preferMatching",
+  steamcmdPath: "",
+  steamAccount: "",
+  removeSteamcmdCopy: false,
 };
 
 const job = (id: string, title: string, hues: [number, number], over: Partial<Job>): Job => ({
@@ -454,6 +457,62 @@ async function sampleInstall(tool: ToolName): Promise<ToolsStatus> {
   return { ...mockTools };
 }
 
+// Sample Wallpaper Engine items: 2250845956 is a scene wallpaper, an id ending in 2 a
+// collection, in 3 another game's item, in 0 missing. Account names starting with "fail_" show
+// each SteamCMD failure ("fail_guard", "fail_password", "fail_access"); others succeed.
+const mockSubscribed = new Set<string>();
+let mockWallpaperCancelled = false;
+
+function mockWorkshopDetails(url: string) {
+  const id = new URL(url).searchParams.get("id") ?? "";
+  if (id.endsWith("2")) return { kind: "collection", title: "Sample: Neon city set", items: 12 };
+  if (id.endsWith("3")) return { kind: "otherApp", appId: 480 };
+  if (id.endsWith("0")) return { kind: "notFound" };
+  return {
+    kind: "wallpaper",
+    item: {
+      id,
+      title: id === "2250845956" ? "Sample: Hooded cat in neon" : `Sample: Wallpaper ${id}`,
+      previewUrl: art(300, 200),
+      fileSize: 31_224_037,
+      timeUpdated: Math.floor(now / 1000),
+      wallpaperType: "Scene",
+      requiredItems: id.endsWith("7") ? ["1111111111"] : [],
+    },
+  };
+}
+
+async function mockWallpaperDownload(url: string, source: string, account: string | null) {
+  mockWallpaperCancelled = false;
+  const steps: [string, number | null][] =
+    source === "library"
+      ? [["saving", 0], ["saving", 35], ["saving", 70], ["saving", 100]]
+      : [["updating", 40], ["updating", 100], ["signingIn", null], ["downloading", null], ["downloading", null], ["saving", 50], ["saving", 100]];
+  for (const [stage, percent] of steps) {
+    if (mockWallpaperCancelled) return { status: "cancelled" };
+    void emit("workshop-progress", { url, stage, percent });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    if (account?.startsWith("fail_") && stage === "signingIn") {
+      const kind = account.slice(5);
+      const message =
+        kind === "guard"
+          ? "Steam needs a Steam Guard code for this account. Use Sign in to Steam to enter it, then try again."
+          : kind === "password"
+            ? "Steam rejected the sign-in for this account. Use Sign in to Steam to enter the password again, then try again."
+            : "This Steam account can't download this item. Check that it owns Wallpaper Engine and that the item is still public.";
+      return {
+        status: "failed",
+        message,
+        detail: "Redirecting stderr to '%USERPROFILE%\\SteamCMD\\logs\\stderr.txt'\nLogging in user '<account>' to Steam Public...FAILED (Sample failure)",
+      };
+    }
+  }
+  if (mockWallpaperCancelled) return { status: "cancelled" };
+  const id = new URL(url).searchParams.get("id");
+  const filename = `Sample Wallpaper (${id}).zip`;
+  return { status: "saved", filename, path: `${settings.outputDir}\\${filename}` };
+}
+
 export function installMock() {
   mockWindows("main");
   mockIPC(
@@ -464,12 +523,27 @@ export function installMock() {
           throw new Error("Native file dragging requires the Windows app.");
         case "bootstrap":
           return { settings, jobs, history, notices: [] };
-        case "is_wallpaper_workshop_item":
-          return new URL(String(payload.url)).searchParams.get("id") === "2250845956";
+        case "workshop_item_details":
+          return mockWorkshopDetails(String(payload.url));
+        case "find_wallpaper_in_library": {
+          const id = new URL(String(payload.url)).searchParams.get("id") ?? "";
+          return { steam: true, found: id.endsWith("6") || mockSubscribed.has(id) };
+        }
+        case "open_workshop_item": {
+          // Sample mode: "subscribing" puts the item in the library a few seconds later.
+          const id = new URL(String(payload.url)).searchParams.get("id") ?? "";
+          setTimeout(() => mockSubscribed.add(id), 4000);
+          return null;
+        }
         case "choose_steamcmd":
+          return "C:\\SteamCMD\\steamcmd.exe";
+        case "sign_in_steamcmd":
+          return null;
         case "download_wallpaper":
-        case "open_workshop_item":
-          throw new Error("Steam Workshop downloads require the Windows app.");
+          return mockWallpaperDownload(String(payload.url), String(payload.source), (payload.account as string | null) ?? null);
+        case "cancel_wallpaper_download":
+          mockWallpaperCancelled = true;
+          return null;
         case "tools_status":
           return { ...mockTools };
         case "install_ytdlp":

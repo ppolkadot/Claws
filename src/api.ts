@@ -7,6 +7,7 @@ import type { JobEvent, JobRemoved, JobsAdded } from "./queue-events.js";
 import type { Resolution, VideoPreset } from "./resolution.js";
 import type { KeptRecord, KeptRepairReport, KeptRevealResult } from "./kept-files.js";
 import type { TranscriptFormat } from "./transcript-options.js";
+import type { LibraryStatus, WallpaperOutcome, WorkshopLookup, WorkshopSource } from "./workshop-session.js";
 
 export type { DownloadEstimate, DragOutcome, JobEvent, JobRemoved, JobsAdded, KeptRecord, KeptRepairReport, KeptRevealResult, Resolution, TranscriptFormat, VideoPreset };
 
@@ -37,6 +38,12 @@ export interface Settings {
   openAtLogin: boolean;
   /** Audio-only downloads: prefer a stream already in the chosen format. */
   audioSelection: AudioSelection;
+  /** Valve's steamcmd.exe for Wallpaper Engine downloads; empty when none was chosen. */
+  steamcmdPath: string;
+  /** The Steam account SteamCMD signs in with. */
+  steamAccount: string;
+  /** Remove SteamCMD's copy of a wallpaper once its ZIP is saved. */
+  removeSteamcmdCopy: boolean;
 }
 
 export type QuickOpenShortcut = "ctrl+alt+d" | "ctrl+alt+space" | "ctrl+shift+space" | "off";
@@ -308,11 +315,14 @@ export interface MatchOrigin {
 }
 
 export const api = {
-  isWallpaperWorkshopItem: (url: string) => invoke<boolean>("is_wallpaper_workshop_item", { url }),
+  workshopItemDetails: (url: string) => invoke<WorkshopLookup>("workshop_item_details", { url }),
   openWorkshopItem: (url: string) => invoke<void>("open_workshop_item", { url }),
-  chooseSteamcmd: () => invoke<boolean>("choose_steamcmd"),
-  downloadWallpaper: (url: string, account: string) =>
-    invoke<string>("download_wallpaper", { url, account }),
+  chooseSteamcmd: () => invoke<string | null>("choose_steamcmd"),
+  signInSteamcmd: (account: string) => invoke<void>("sign_in_steamcmd", { account }),
+  findWallpaperInLibrary: (url: string) => invoke<LibraryStatus>("find_wallpaper_in_library", { url }),
+  downloadWallpaper: (url: string, source: WorkshopSource, account: string | null) =>
+    invoke<WallpaperOutcome>("download_wallpaper", { url, source, account }),
+  cancelWallpaperDownload: () => invoke<void>("cancel_wallpaper_download"),
   resolveSpotify: (url: string) => invoke<SpotifyResolution>("resolve_spotify_track", { url }),
   searchSpotify: (track: SpotifyTrack, query: string) => invoke<YouTubeCandidate[]>("search_spotify_matches", { track, query }),
   bootstrap: () => invoke<Bootstrap>("bootstrap"),

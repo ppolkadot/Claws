@@ -5,6 +5,7 @@ import "./styles/views.css";
 
 import { ProgressBarStatus, getCurrentWindow } from "@tauri-apps/api/window";
 
+import type { WorkshopProgress } from "./workshop-session";
 import { api, onEvent, errorMessage, type Job, type JobEvent, type JobRemoved, type JobsAdded, type ToolProgress } from "./api";
 import { store } from "./store";
 import { StartupEvents, StatusTransitions } from "./queue-events";
@@ -77,6 +78,7 @@ async function start() {
   });
 
   await onEvent<ToolProgress>("tool-progress", (progress) => store.setToolProgress(progress));
+  await onEvent<WorkshopProgress>("workshop-progress", (progress) => store.workshop?.progress(progress));
   await onEvent<string>("notice", (message) => toast(message, { tone: "error" }));
   notices.forEach((message) => toast(message, { tone: "error" }));
 

@@ -288,6 +288,60 @@ function buildSettings(container: HTMLElement): () => void {
     cookieDetail,
   );
 
+  // Wallpaper Engine: what the SteamCMD source uses (the Steam library source needs nothing).
+  const steamcmdPath = h("span", { class: "path", text: s().steamcmdPath || "Not chosen", attrs: { title: s().steamcmdPath } });
+  const clearSteamcmd = button({
+    label: "Clear",
+    variant: "plain",
+    size: "small",
+    onClick: () => {
+      update({ steamcmdPath: "" });
+      paintSteam();
+    },
+  });
+  const paintSteam = () => {
+    steamcmdPath.textContent = s().steamcmdPath || "Not chosen";
+    steamcmdPath.title = s().steamcmdPath;
+    clearSteamcmd.hidden = !s().steamcmdPath;
+  };
+  const steamAccount = h("input", {
+    class: "text-input",
+    attrs: { id: "settings-steam-account", type: "text", maxlength: 64, spellcheck: false, autocomplete: "username", value: s().steamAccount },
+  });
+  steamAccount.addEventListener("change", () => update({ steamAccount: steamAccount.value.trim() }));
+  const wallpaper = group(
+    row(
+      "SteamCMD",
+      h(
+        "div",
+        { class: "inline" },
+        steamcmdPath,
+        button({
+          label: "Choose…",
+          variant: "secondary",
+          size: "small",
+          onClick: () =>
+            void api.chooseSteamcmd().then(
+              (path) => {
+                if (path) update({ steamcmdPath: path });
+                paintSteam();
+              },
+              (e) => onError(errorMessage(e)),
+            ),
+        }),
+        clearSteamcmd,
+      ),
+      "Only needed for wallpapers you haven't subscribed to in Steam.",
+    ),
+    row("Steam account", steamAccount, "The account that owns Wallpaper Engine.", steamAccount.id),
+    row(
+      "Remove SteamCMD's copy",
+      toggle("Remove SteamCMD's copy after saving", s().removeSteamcmdCopy, (v) => update({ removeSteamcmdCopy: v })),
+      "Deletes the wallpaper from SteamCMD's folder once the ZIP is saved.",
+    ),
+  );
+  paintSteam();
+
   const toolsGroup = h("div", { class: "tools" });
   const paintTools = () => {
     const { ytdlp, ffmpeg, deno, jsRuntime } = store.tools;
@@ -389,6 +443,7 @@ function buildSettings(container: HTMLElement): () => void {
       sectionTitle("Quick access"), quickAccess,
       sectionTitle("Appearance"), appearance,
       sectionTitle("Sign-in"), cookies,
+      sectionTitle("Wallpaper Engine"), wallpaper,
       sectionTitle("Tools"), toolsGroup,
       h("p", { class: "footnote", text: "Only download content you have the right to save." }),
     ),

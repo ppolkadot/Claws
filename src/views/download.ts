@@ -36,12 +36,33 @@ import type { MountView } from "./shell";
 import { SpotifyMatchController, isSpotifyInput } from "../spotify-match";
 import { mountSpotifyMatch, type SpotifyMatchView } from "./spotify-match";
 import { isWorkshopLink } from "../workshop-link";
-import { mountWorkshop } from "./workshop";
+import { mountWorkshop, type WorkshopView } from "./workshop";
+import { WorkshopSession, lookupProblem } from "../workshop-session";
 
 export { looksLikeLinkList, looksLikeUrl } from "./download-shared";
 
 type Phase = "idle" | "loading" | "result" | "error" | "batch" | "spotify" | "workshop";
 
+
+/** Sessions that already tell the user how they ended while Download is not showing them. */
+const announced = new WeakSet<WorkshopSession>();
+
+function announceWhenHidden(session: WorkshopSession) {
+  if (announced.has(session)) return;
+  announced.add(session);
+  let was = session.state.phase;
+  session.on(() => {
+    const state = session.state;
+    const finished = was === "running" && state.phase !== "running";
+    was = state.phase;
+    if (!finished || document.querySelector(".workshop-panel")) return;
+    if (state.phase === "saved") {
+      toast(`Saved ${state.filename}.`, { action: { label: "Show", run: () => void api.openOutputDir().catch(() => undefined) } });
+    } else if (state.phase === "failed") {
+      toast(state.message, { tone: "error", action: { label: "Details", run: () => store.go("download") } });
+    }
+  });
+}
 
 export const mountDownload: MountView = (container, ctx) => {
   ctx.setActions([
@@ -98,7 +119,7 @@ export const mountDownload: MountView = (container, ctx) => {
   let reviewHost: HTMLElement | null = null;
   let resultSlot: HTMLElement | null = null;
   let matchingSessionId = "";
-  let workshopPanel: HTMLElement | null = null;
+  let workshopView: WorkshopView | null = null;
 
   /** One link: follows the choices, debounced, latest answer only. */
   let previewLine: EstimateLine | null = null;
@@ -295,6 +316,35 @@ export const mountDownload: MountView = (container, ctx) => {
     if (enqueuing) matchView.el.querySelectorAll<HTMLInputElement | HTMLButtonElement>("input, button").forEach((el) => { el.disabled = true; });
   }
 
+  const workshopDeps = {
+    download: api.downloadWallpaper,
+    cancel: api.cancelWallpaperDownload,
+    findInLibrary: api.findWallpaperInLibrary,
+    describeError: errorMessage,
+  };
+
+  /** Shows a Workshop item; an idle or finished one it replaces is let go. */
+  function showWorkshop(session: WorkshopSession) {
+    if (store.workshop !== session) dropWorkshop();
+    store.workshop = session;
+    announceWhenHidden(session);
+    workshopView?.dispose();
+    workshopView = mountWorkshop(session);
+    phase = "workshop";
+    render();
+  }
+
+  /** Lets go of the Workshop item, unless its export is still running (it is shown again on return). */
+  function dropWorkshop() {
+    workshopView?.dispose();
+    workshopView = null;
+    const session = store.workshop;
+    if (session && !session.running) {
+      session.dispose();
+      store.workshop = null;
+    }
+  }
+
   /** Makes the stage hold exactly these nodes, without moving (and so unfocusing) any that stay. */
   function syncStage(wanted: (HTMLElement | null)[]) {
     const nodes = wanted.filter((node): node is HTMLElement => node !== null);
@@ -361,19 +411,31 @@ export const mountDownload: MountView = (container, ctx) => {
     skipped = issues;
     if (isWorkshopLink(url)) {
       lastUrl = url;
+      result = null;
+      store.previews.clear();
       phase = "loading";
       render();
-      const wallpaper = await api.isWallpaperWorkshopItem(url).catch(() => false);
-      if (mine !== ticket) return;
-      if (wallpaper) {
-        result = null;
-        store.previews.clear();
-        workshopPanel = mountWorkshop(url);
-        phase = "workshop";
-        render();
-        return;
+      let problem: string | null;
+      const current = store.workshop;
+      if (current?.running) {
+        if (current.url === url) return showWorkshop(current);
+        return showError("Couldn't open this Workshop link", "A wallpaper download is already running. Open this link again when it finishes.");
       }
+      try {
+        const found = await api.workshopItemDetails(url);
+        if (mine !== ticket) return;
+        problem = lookupProblem(found);
+        if (found.kind === "wallpaper") {
+          showWorkshop(new WorkshopSession(url, found.item, workshopDeps, Boolean(store.settings.steamcmdPath)));
+          return;
+        }
+      } catch (error) {
+        if (mine !== ticket) return;
+        return showError("Couldn't check this Workshop item", errorMessage(error));
+      }
+      return showError("Couldn't open this Workshop link", problem ?? "", false);
     }
+    dropWorkshop();
     if (isSpotifyInput(url)) {
       lastUrl = url;
       result = null;
@@ -450,6 +512,7 @@ export const mountDownload: MountView = (container, ctx) => {
     activeEnqueue = null;
     enqueuing = false;
     clearSpotify();
+    dropWorkshop();
     lastUrl = "";
     skipped = null;
     if (parsed.overLimit) {
@@ -790,7 +853,13 @@ export const mountDownload: MountView = (container, ctx) => {
 
   /** What the stage shows; a change of it (not a refresh of the same) animates in. */
   const stageKey = () =>
-    phase === "result" ? `result:${lastUrl}` : phase === "batch" ? `batch:${store.links.rows[0]?.id ?? ""}` : phase;
+    phase === "result"
+      ? `result:${lastUrl}`
+      : phase === "batch"
+        ? `batch:${store.links.rows[0]?.id ?? ""}`
+        : phase === "workshop"
+          ? `workshop:${store.workshop?.url ?? ""}`
+          : phase;
   let shownKey = "";
 
   function render() {
@@ -866,7 +935,8 @@ export const mountDownload: MountView = (container, ctx) => {
         paintMatching();
         break;
       case "workshop":
-        syncStage([back, issues, workshopPanel]);
+        syncStage([back, issues, workshopView?.el ?? null]);
+        if (changed && workshopView) stageAnimation = settleIn(workshopView.el);
         break;
       case "batch":
         if (!store.batch) {
@@ -972,6 +1042,12 @@ export const mountDownload: MountView = (container, ctx) => {
     if (returning.list) listRun.restore(returning.list);
     phase = "result";
   }
+  if (!matchingReturn && !returning && store.workshop && store.workshopShown) {
+    lastUrl = store.workshop.url;
+    input.value = lastUrl;
+    fitInput();
+    showWorkshop(store.workshop);
+  }
   // The batch's own sizes, only when its list is what opens (a link's details drawn over a kept
   // batch forget its run, as they always did).
   if (phase === "batch" && store.batch?.estimate) {
@@ -981,6 +1057,7 @@ export const mountDownload: MountView = (container, ctx) => {
 
   /** Leaving the view: keeps what a return needs, as plain data, and stops what is running. */
   function saveSession() {
+    store.workshopShown = phase === "workshop" && store.workshop !== null;
     if (spotify) {
       store.spotifyMatch = enqueuedResult !== null && result === enqueuedResult ? null : { snapshot: spotify.snapshot(), audioFormat: choice.audioFormat, fastSave: choice.fastSave, sessionId: matchingSessionId, enqueuePending: enqueuing };
       store.previews.clear();
@@ -1030,6 +1107,8 @@ export const mountDownload: MountView = (container, ctx) => {
   return () => {
     saveSession();
     clearSpotifyView();
+    workshopView?.dispose();
+    workshopView = null;
     offPaste();
     offFocus();
     offSetup();
