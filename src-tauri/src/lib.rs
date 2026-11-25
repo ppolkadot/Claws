@@ -83,6 +83,9 @@ pub fn run() {
                     .to_string_lossy()
                     .into_owned();
             }
+            // Wallpaper exports a crash left half-written.
+            let output = std::path::PathBuf::from(&settings.output_dir);
+            std::thread::spawn(move || workshop::sweep_partials(&output));
             // An exit in the middle of a tool install can leave a half-swapped tool.
             tools::recover_bin(&data_dir.join("bin"));
             let history: Vec<HistoryItem> = store::load_or_recover(&data_dir.join("history.json"), "library", &mut notices);
@@ -177,9 +180,12 @@ pub fn run() {
             commands::default_output_dir,
             commands::open_font_page,
             workshop::open_workshop_item,
-            workshop::is_wallpaper_workshop_item,
+            workshop::workshop_item_details,
             workshop::choose_steamcmd,
+            workshop::sign_in_steamcmd,
+            workshop::find_wallpaper_in_library,
             workshop::download_wallpaper,
+            workshop::cancel_wallpaper_download,
         ])
         .build(tauri::generate_context!())
         .expect("error while starting Claws");

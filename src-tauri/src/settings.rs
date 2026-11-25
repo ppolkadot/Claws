@@ -61,6 +61,12 @@ pub struct Settings {
     /// Which audio stream to fetch for audio-only downloads.
     #[serde(default)]
     pub audio_selection: AudioSelection,
+    /// Valve's steamcmd.exe for Wallpaper Engine downloads; empty when none was chosen.
+    pub steamcmd_path: String,
+    /// The Steam account SteamCMD signs in with (never a password).
+    pub steam_account: String,
+    /// Remove SteamCMD's copy of a wallpaper once its ZIP is saved.
+    pub remove_steamcmd_copy: bool,
 }
 
 impl Default for Settings {
@@ -86,6 +92,9 @@ impl Default for Settings {
             open_at_login: false,
             // New installations prefer audio that can be copied rather than converted.
             audio_selection: AudioSelection::PreferMatching,
+            steamcmd_path: String::new(),
+            steam_account: String::new(),
+            remove_steamcmd_copy: false,
         }
     }
 }
@@ -124,6 +133,15 @@ impl Settings {
             ));
         }
         self.filename_template = template.to_string();
+
+        self.steam_account = match self.steam_account.trim() {
+            "" => String::new(),
+            account => crate::workshop::check_account(account)?,
+        };
+        self.steamcmd_path = self.steamcmd_path.trim().to_string();
+        if !self.steamcmd_path.is_empty() {
+            crate::workshop::validate_steamcmd(std::path::Path::new(&self.steamcmd_path))?;
+        }
 
         match self.cookie_source.kind.as_str() {
             "none" => self.cookie_source.value.clear(),
@@ -172,6 +190,12 @@ impl Settings {
             } else if message.contains("cookie") || message.contains("browser") {
                 self.cookie_source = defaults.cookie_source.clone();
                 reset.push("the cookie source");
+            } else if message.contains("Steam account") {
+                self.steam_account.clear();
+                reset.push("the Steam account name");
+            } else if message.contains("SteamCMD") || message.contains("steamcmd") {
+                self.steamcmd_path.clear();
+                reset.push("the SteamCMD location");
             } else {
                 break;
             }
@@ -268,6 +292,19 @@ mod tests {
         s.max_processing = 200;
         s.validate().unwrap();
         assert_eq!(s.max_processing, 8);
+    }
+
+    #[test]
+    fn repair_clears_unusable_steam_settings() {
+        let mut s = valid();
+        s.steam_account = "not a name".into();
+        s.steamcmd_path = r"Z:\definitely\missing\steamcmd.exe".into();
+        let notice = s.repair().unwrap();
+        assert!(notice.contains("Steam account") && notice.contains("SteamCMD"), "{notice}");
+        assert!(s.steam_account.is_empty() && s.steamcmd_path.is_empty());
+        s.steam_account = " owner_1 ".into();
+        assert!(s.validate().is_ok());
+        assert_eq!(s.steam_account, "owner_1");
     }
 
     #[test]

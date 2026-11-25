@@ -37,8 +37,10 @@ pub struct AppState {
     /// share staging or race over the live tools. Only ever taken with `try_lock`, before
     /// the engine's write lock is tried, so nothing waits on it.
     pub tool_install: tokio::sync::Mutex<()>,
-    /// Selected through the native file picker for this app session.
-    pub steamcmd: Mutex<Option<PathBuf>>,
+    /// Valve's public Workshop API only, with automatic redirects disabled.
+    pub steam_http: reqwest::Client,
+    /// The Wallpaper Engine export that may be running. Leaf lock.
+    pub workshop: Mutex<crate::workshop::Run>,
     /// Problems found at startup (damaged files, no desktop blur) that the UI shows once.
     pub notices: Mutex<Vec<String>>,
     /// Set as the app exits. Checked under the `running` and `probes` locks before any
@@ -96,7 +98,8 @@ impl AppState {
             spotify_http: crate::spotify::http_client(),
             engine: tokio::sync::RwLock::new(()),
             tool_install: tokio::sync::Mutex::new(()),
-            steamcmd: Mutex::new(None),
+            steam_http: crate::workshop::http_client(),
+            workshop: Mutex::new(crate::workshop::Run::default()),
             notices: Mutex::new(Vec::new()),
             shutting_down: AtomicBool::new(false),
             workers: AtomicUsize::new(0),

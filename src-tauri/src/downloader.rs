@@ -1131,7 +1131,8 @@ pub fn shutdown(app: &AppHandle) {
             .collect()
     };
     let lookups: Vec<u32> = state.probes.lock().unwrap().values().copied().collect();
-    for pid in stopping.iter().filter_map(|s| s.1).chain(lookups) {
+    let steamcmd = crate::workshop::stop_for_shutdown(&state);
+    for pid in stopping.iter().filter_map(|s| s.1).chain(lookups).chain(steamcmd) {
         kill_tree(pid, true);
     }
 
