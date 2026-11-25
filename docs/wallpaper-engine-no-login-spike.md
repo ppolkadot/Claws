@@ -54,4 +54,6 @@ On 2026-11-25, fetched the Workshop browse page with `browsesort=totaluniquesubs
 
 Keep SteamCMD and implement the detected local Steam library as an additional source with fixture coverage, pending an owning-account live test and a subscribed local-library test. Neither public-URL sample gives a basis to implement that source; the library path is plausible but unproven on this machine. Do not use third-party Workshop mirrors, shared accounts, or content the user's account is not entitled to.
 
-Outstanding: fixture parsing and failure tests, and the local library live check. The generic SteamCMD failure must not be treated as a specific access-denied signal.
+## Outcome (2026-11-25)
+
+Implemented on `t3/wallpaper-engine-unslop`: the Steam library source (registry `SteamPath`, `libraryfolders.vdf`, `steamapps\workshop\content\431960\<id>` with `project.json`, read only) with fixture tests for the VDF parser and a multi-library tree; SteamCMD stays as the second source. The anonymous `failed (Failure)` line is classified as a generic failure (tested). Still owed: a live check of the library source on a PC with Steam signed in, and an owning-account SteamCMD download.

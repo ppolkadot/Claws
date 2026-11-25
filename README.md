@@ -71,9 +71,14 @@ Claws runs on [yt-dlp](https://github.com/yt-dlp/yt-dlp), so it handles any site
 
 ### Wallpaper Engine
 
-Paste one Wallpaper Engine Steam Workshop item link into **Download**. Use **Choose SteamCMD** to select Valve’s `steamcmd.exe`, enter your Steam account name, and press **Download ZIP**. Claws saves the full project as `Wallpaper Engine <item ID>.zip` in the download folder. Use **Open folder** to find the ZIP. Workshop exports run separately from the media queue.
+Paste one Wallpaper Engine Steam Workshop item link into **Download**. Claws shows the wallpaper's preview, title, type and size, then saves the whole project as `<title> (<item ID>).zip` in the download folder. Workshop collections and other games' items are refused with a message; open each wallpaper on its own. Exports run separately from the media queue, keep running if you switch tabs, and can be cancelled.
 
-Extract [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD) to a writable folder outside OneDrive or other sync folders, such as `C:\SteamCMD`. Run SteamCMD and enter `login YOUR_ACCOUNT_NAME` using the account that owns Wallpaper Engine. Complete any password and Steam Guard prompts there, then type `quit`. Claws uses the saved SteamCMD sign-in. SteamCMD keeps a copy of the project in its Workshop folder, so allow space for both that copy and the ZIP. **View in Steam** opens the original item page.
+There are two sources:
+
+- **Steam library (no sign-in in Claws).** If Steam is installed and signed in with the account that owns Wallpaper Engine, press **Subscribe in Steam**, subscribe on the page that opens, and wait. Claws watches your Steam libraries for up to ten minutes and enables **Save ZIP** when Steam has downloaded the wallpaper. Claws only reads Steam's folders.
+- **SteamCMD.** Extract [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD) to a writable folder outside OneDrive, such as `C:\SteamCMD`, then choose it (Claws checks that `steamcmd.exe` is signed by Valve). Enter the Steam account name that owns Wallpaper Engine and press **Sign in to Steam…** once: SteamCMD opens in its own window for the password and any Steam Guard code; type `quit` when it says it is logged in. Claws remembers the SteamCMD location and account name (never a password). SteamCMD keeps its own copy of each wallpaper unless **Remove SteamCMD's copy** is on.
+
+Anonymous SteamCMD sign-ins cannot download Wallpaper Engine items, and Valve's public item details carry no download link, so one of these two sources is needed (see the [spike notes](docs/wallpaper-engine-no-login-spike.md)). A wallpaper that needs other Workshop items says so; download those as well. **View in Steam** opens the item page, in the browser when Steam is not installed.
 
 ### Managing
 

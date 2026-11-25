@@ -416,3 +416,26 @@ All surface changes below preserve Claws's color palette, typography family/size
    git diff --check
    ```
 3. Visually inspect the rendered app (`npm run dev` / headless Edge benches) at standard and narrow widths (`<= 1000px`), in both light and dark themes, with Transparency at `0`, `70`, and `100`, and with Backdrop set to `Solid` (`none`), confirming no holes, broken alignment, or clipped labels remain.
+
+
+---
+
+## 2026-11-25 second pass
+
+Applied with `unslop-ui` v1.0.2 (`--surface`) after a review of every screen in the dev mock, cross-checked against an independent Gemini review. Before and after screenshots: [performance/2026-11-25-unslop](performance/2026-11-25-unslop/).
+
+Fixed:
+
+- **Bugs shown on screen:** yt-dlp extractor keys shown as site names ("Youtube") now map to the site's own name; older Library dates use English month names to match "Today" and "Yesterday"; counts say "audio files" when Audio only is chosen.
+- **Copy (U3, U4, U5, U7, unslop 11/13/14/28):** one lookup verb (Look up); the link preview shows one status at a time; tooltips that repeated their buttons or described internals removed or shortened (Estimate sizes, Stop, Retry failed, bulk Queue actions); shorter Settings, setup, Fast Save and Spotify text; "Processing alongside" renamed "Simultaneous conversions"; the subtitle limit hint appears only near the limit; the empty Download title no longer repeats the link field; the start-up error screen names a next step.
+- **Charts and chips (U14):** quality chips name a size once (8K, 1440p, 1080p portrait); the exact size moved to the chip's hint.
+- **Edges (U25):** Queue rows end their text and bars on one line (except a finished row's wider Drag file control); the size line and Saves to sit on the section-title line; the Spotify track is a card; speed limits fit one line.
+- **Library:** size and date share one line on tiles; Clear all moved below the grid, away from Search.
+- **Dead code:** `spinner()`, `.spinner`, `.loading`, `.banner` removed.
+
+Left for the owner:
+
+- [ ] Traffic lights centre about 8px below the toolbar buttons (`.chrome { top: 20px }` is recorded in DESIGN.md). Decide whether to move the chrome or the toolbar line.
+- [ ] Queue summary still lists every count (`1 downloading · 1 processing · …`); trim to the counts that need action if wanted.
+- [ ] Toasts and the alert sheet keep the bouncy spring DESIGN.md asks for (U20).
+- [ ] `document.title` keeps its em dash (window title, not prose).

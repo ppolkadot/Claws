@@ -13,7 +13,7 @@ Claws is a Windows Tauri 2 desktop app with plain TypeScript/CSS. Rust invokes y
 | Space accounting and previews | `disk_budget.rs`, `estimate.rs` |
 | Probing, saved links and transcripts | `probe.rs`, `links.rs`, `transcript.rs` |
 | Spotify identity and YouTube search/ranking | `spotify.rs`, `spotify_match.rs`; frontend `spotify-match.ts` and its view |
-| Wallpaper Engine Workshop lookup and ZIP export | `workshop.rs`; frontend `workshop-link.ts` and `views/workshop.ts` |
+| Wallpaper Engine Workshop lookup, Steam library and SteamCMD sources, ZIP export | `workshop.rs`; frontend `workshop-link.ts`, `workshop-session.ts` and `views/workshop.ts` |
 | Tools and desktop integration | `tools.rs`, `desktop.rs`, `file_drag.rs`, `window.rs`, `commands.rs` |
 | Frontend state and navigation | `store.ts`, `api.ts`, `views/`, pure helpers and `ui/` |
 

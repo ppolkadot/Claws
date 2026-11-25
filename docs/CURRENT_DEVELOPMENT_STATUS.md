@@ -11,6 +11,13 @@ The earlier [1.0.9 GitHub release](https://github.com/ppolkadot/Claws/releases/t
 - Wallpaper Engine Steam Workshop downloads via SteamCMD. Claws saves the project and its assets as a ZIP. The [user guide](../README.md#wallpaper-engine) covers setup and sign-in.
 - [UI cleanup](UNSLOP_UI_REVIEW.md) for copy, icons and spacing, plus a visible filename label and simpler Library hover behavior.
 
+## On branch `t3/wallpaper-engine-unslop` (not released)
+
+Follows [the 2026-11-25 plan](superpowers/plans/2026-11-25-unslop-and-wallpaper-engine-plan.md).
+
+- Wallpaper Engine: a preview card, the Steam library source (no sign-in in Claws), SteamCMD with a saved, Valve-signature-checked location and account, Sign in to Steam, progress and Cancel, classified SteamCMD errors with the full output, title-based ZIP names, free-space checks, collections refused, required items flagged, a Settings section, and a full dev mock. See the [no-sign-in spike](wallpaper-engine-no-login-spike.md).
+- Second unslop pass ([review log](UNSLOP_UI_REVIEW.md#2026-11-25-second-pass)): site names, English dates, audio counts, shorter copy, and edge alignment. Before and after screenshots of the dev mock are in [performance/2026-11-25-unslop](performance/2026-11-25-unslop/).
+
 ## What 1.0.9 added
 
 The improvement plan on top of 1.0.8. The installer was installed and launched by the owner; the features below have not been exercised against real downloads.
@@ -41,7 +48,7 @@ Settings schema stays 2 and queue schema stays 3; every new field is defaulted.
 | Real slow source | No affected source/format was supplied. Controlled benchmarks do not establish an Internet throughput improvement. Follow [speed diagnosis](performance/speed-diagnosis.md). |
 | Native drag | Explorer/editor import, a stalled receiver, swapped buttons, long/UNC paths and Windows 10 acceptance need disposable-environment checks. See [manual acceptance](HANDOFF.md#manual-acceptance). |
 | Installed application | Fresh installation/upgrade and manual real-WebView2 checks remain unverified. |
-| Wallpaper Engine | Live Valve metadata and the refusal of an anonymous request were verified. A successful download with an owning account still needs a live check. |
+| Wallpaper Engine | Live Valve metadata, collection detection and Valve's signature on a downloaded `steamcmd.exe` are covered by opt-in live tests (`CLAWS_TEST_NETWORK`, `CLAWS_TEST_STEAMCMD`). Still to check live: a SteamCMD download with an owning account, the Steam library source on a PC with Steam, and both in the native app. |
 | Spotify | Real share-link redirect smoke, OS-level IME composition, listening-based playback and live outage/removal behavior remain unverified. Historical native saves and synthetic UI checks are recorded separately. |
 | Disk behavior | Real peak space across all postprocessors and constrained-volume behavior need controlled measurements; no strict pre-FFmpeg launch gate is claimed. |
 | Optional permission cleanup | `core:window:allow-destroy` is still used by `onCloseRequested`. Replace that close path before considering removal. |
