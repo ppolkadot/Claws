@@ -37,17 +37,10 @@ test("an 8K source offers every size it has, with no 2160p ceiling", () => {
   const probe = video(res(7680, 4320), res(5760, 3240), res(5120, 2880), res(3840, 2160), res(2560, 1440), res(1920, 1080), res(1280, 720), res(256, 144));
   const choices = qualityChoices(probe, false);
   assert.deepEqual(values(choices), [4320, 3240, 2880, 2160, 1440, 1080, 720, 144]);
-  assert.deepEqual(labels(choices), [
-    "4320p · 7680×4320 · 8K",
-    "3240p · 5760×3240 · 6K",
-    "2880p · 5120×2880 · 5K",
-    "2160p · 3840×2160 · 4K",
-    "1440p · 2560×1440",
-    "1080p · 1920×1080",
-    "720p · 1280×720",
-    "144p · 256×144",
-  ]);
-  for (const choice of choices) assert.equal(choice.hint, `Up to ${choice.value}p`);
+  assert.deepEqual(labels(choices), ["8K", "6K", "5K", "4K", "1440p", "1080p", "720p", "144p"]);
+  // The exact size is named once, in the hint.
+  assert.equal(choices[0].hint, "Up to 4320p (4320p · 7680×4320 · 8K)");
+  for (const choice of choices) assert.ok(choice.hint.startsWith(`Up to ${choice.value}p (`), choice.hint);
 });
 
 test("only the sizes the source offers appear: no 6K or 8K for a 4K source", () => {
@@ -82,14 +75,14 @@ test("class labels follow the dimensions: every class needs both sides", () => {
 test("portrait sizes are named by their shorter side and marked portrait", () => {
   const choices = qualityChoices(video(res(2160, 3840), res(1080, 1920), res(720, 1280)), false);
   assert.deepEqual(values(choices), [2160, 1080, 720], "the value is what yt-dlp's res caps");
-  assert.deepEqual(labels(choices), ["2160p · 2160×3840 portrait · 4K", "1080p · 1080×1920 portrait", "720p · 720×1280 portrait"]);
+  assert.deepEqual(labels(choices), ["4K portrait", "1080p portrait", "720p portrait"]);
   assert.equal(describeResolution(res(1080, 1080)), "1080p · 1080×1080", "square is not portrait");
 });
 
 test("a size given without its width shows the height alone", () => {
   assert.equal(describeResolution(res(null, 2160)), "2160p");
   assert.equal(describeResolution(res(null, 4320)), "4320p", "no 8K claim without a width");
-  assert.deepEqual(labels(qualityChoices(video(res(3840, 2160), res(null, 1440)), false)), ["2160p · 3840×2160 · 4K", "1440p"]);
+  assert.deepEqual(labels(qualityChoices(video(res(3840, 2160), res(null, 1440)), false)), ["4K", "1440p"]);
 });
 
 test("a link saved before resolutions existed offers its heights only as caps", () => {

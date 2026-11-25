@@ -27,7 +27,6 @@ const SHORTCUTS: { value: QuickOpenShortcut; label: string }[] = [
 
 const SPEED_LIMITS: { value: number; label: string }[] = [
   { value: 0, label: "No limit" },
-  { value: 512, label: "512 KB/s" },
   { value: 1024, label: "1 MB/s" },
   { value: 2048, label: "2 MB/s" },
   { value: 5120, label: "5 MB/s" },

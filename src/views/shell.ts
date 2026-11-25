@@ -72,7 +72,7 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
     nav.appendChild(button);
   }
 
-  const toolDot = h("span", { class: "tool-dot" });
+  const toolDot = h("span", { class: "tool-dot", attrs: { "aria-hidden": "true" } });
   const toolText = h("span", { class: "tool-text" });
   const toolBar = progressBar(0);
   const toolChip = h(

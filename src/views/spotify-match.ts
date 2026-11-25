@@ -51,7 +51,7 @@ export function mountSpotifyMatch(actions: SpotifyMatchActions): SpotifyMatchVie
   let candidatesKey = "";
   let focusQueryAfterResolution = false;
 
-  const identity = h("div", { class: "spotify-identity group" });
+  const identity = h("div", { class: "spotify-identity group glass" });
   // The controller validates 300 Unicode code points; native maxlength counts UTF-16 units.
   const query = h("input", { class: "text-input spotify-query", attrs: { id: "spotify-query", type: "text", "aria-label": "Search YouTube", placeholder: "Artist and song title" } });
   const search = button({ label: "Find on YouTube", onClick: () => actions.search() });

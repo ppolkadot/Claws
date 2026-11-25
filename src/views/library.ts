@@ -117,8 +117,7 @@ function buildTile(item: HistoryItem): HTMLElement {
       h("span", { class: "tile-title", text: item.title, attrs: { title: item.title } }),
       item.uploader ? h("span", { class: "tile-sub", text: item.uploader }) : null,
       item.matchOrigin ? h("span", { class: "tile-sub", text: "Source: YouTube match", attrs: { title: [item.matchOrigin.spotifyTitle, ...item.matchOrigin.spotifyArtists].filter(Boolean).join(" · ") } }) : null,
-      h("span", { class: "tile-sub", text: meta }),
-      h("span", { class: "tile-date", text: formatDate(item.finishedAt) }),
+      h("div", { class: "tile-foot" }, h("span", { class: "tile-sub", text: meta }), h("span", { class: "tile-date", text: formatDate(item.finishedAt) })),
       // Always visible (the hover actions are not): a kept file must stay findable.
       kept ? h("div", { class: "tile-kept" }, button({ icon: "captions", label: kept, title: "Show kept files", variant: "secondary", size: "small", onClick: () => void showKept(item.id) })) : null,
     ),
@@ -149,7 +148,7 @@ export const mountLibrary: MountView = (container, ctx) => {
       }
     },
   });
-  ctx.setActions([searchBox, clearAll]);
+  ctx.setActions([searchBox]);
 
   const keptNote = h("div", { class: "kept-note glass", attrs: { role: "status" } });
   keptNote.hidden = true;
@@ -196,9 +195,11 @@ export const mountLibrary: MountView = (container, ctx) => {
   });
   const toolbar = h("div", { class: "library-toolbar" }, kindSeg.el, orderSelect);
 
-  const grid = h("ul", { class: "tiles", attrs: { "aria-label": "Downloaded videos" } });
+  const grid = h("ul", { class: "tiles", attrs: { "aria-label": "Downloads" } });
   const note = h("div", { class: "empty" });
-  container.append(keptNote, toolbar, grid, note);
+  // Away from Search: clearing the whole library is not a toolbar action.
+  const foot = h("div", { class: "library-foot" }, clearAll);
+  container.append(keptNote, toolbar, grid, note, foot);
 
   // Reused by id so a search keystroke moves cards instead of rebuilding them. A tile is rebuilt
   // once when a value it shows or acts on changed (library-cache.ts), and never for anything else.
@@ -215,6 +216,7 @@ export const mountLibrary: MountView = (container, ctx) => {
     toolbar.hidden = store.history.length === 0;
     tiles.prune(new Set(store.history.map((i) => i.id)));
     clearAll.disabled = store.history.length === 0;
+    foot.hidden = store.history.length === 0;
     searchBox.hidden = store.history.length === 0;
     // Where each card is now, read together before anything moves (a card already gliding
     // is read where it is seen), for the cards that stay.

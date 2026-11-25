@@ -67,6 +67,12 @@ export function describeResolution(r: Resolution): string {
 
 const capHint = (value: number) => `Up to ${value}p`;
 
+/** A chip's label: one name for the size ("4K", "1440p", "1080p portrait"); the exact size is its hint. */
+export function resolutionLabel(r: Resolution): string {
+  const portrait = r.width && r.height && r.height > r.width ? " portrait" : "";
+  return `${resolutionClass(r.width, r.height) ?? `${r.shortSide}p`}${portrait}`;
+}
+
 /** The generic caps, for choices that apply to items whose sizes are not known. */
 export function capChoices(): QualityChoice[] {
   return GENERIC_CAPS.map((value) => ({ value, label: capHint(value), hint: `The largest size each video has, up to ${value}p on its shorter side` }));
@@ -90,7 +96,7 @@ export function qualityChoices(probe: { heights: number[]; resolutions?: Resolut
   if (hasExactSizes(probe)) {
     return (probe.resolutions ?? [])
       .filter((r) => r.shortSide >= MIN_SHORT_SIDE)
-      .map((r) => ({ value: r.shortSide, label: describeResolution(r), hint: capHint(r.shortSide) }));
+      .map((r) => ({ value: r.shortSide, label: resolutionLabel(r), hint: `${capHint(r.shortSide)} (${describeResolution(r)})` }));
   }
   const heights = probe.heights.filter((h) => h >= MIN_SHORT_SIDE);
   if (heights.length > 0) {

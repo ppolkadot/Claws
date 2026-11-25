@@ -336,32 +336,6 @@ html[data-backdrop="none"][data-theme="dark"] .glass {
   }
 }
 
-.spinner {
-  position: relative;
-  display: inline-block;
-  width: 18px;
-  height: 18px;
-}
-.spinner i {
-  position: absolute;
-  left: 8px;
-  top: 0;
-  width: 2px;
-  height: 5px;
-  border-radius: 1px;
-  background: currentColor;
-  transform-origin: 1px 9px;
-  animation: spoke 0.8s linear infinite;
-}
-@keyframes spoke {
-  from {
-    opacity: 0.9;
-  }
-  to {
-    opacity: 0.15;
-  }
-}
-
 .toasts {
   position: fixed;
   left: 50%;

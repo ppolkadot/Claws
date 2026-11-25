@@ -26,16 +26,6 @@ export function sectionTitle(text: string): HTMLElement {
   return h("h2", { class: "section-title", text });
 }
 
-export function spinner(): HTMLElement {
-  const el = h("span", { class: "spinner", attrs: { role: "progressbar", "aria-label": "Loading" } });
-  for (let i = 0; i < 8; i++) {
-    el.appendChild(
-      h("i", { style: { transform: `rotate(${i * 45}deg)`, "animation-delay": `${(i - 8) * 0.1}s` } }),
-    );
-  }
-  return el;
-}
-
 export function progressBar(fraction: number | null): HTMLElement {
   const bar = h("div", { class: "bar" }, h("span", { class: "bar-fill" }));
   setProgress(bar, fraction);
