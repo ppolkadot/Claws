@@ -21,6 +21,7 @@ import type { RunSnapshot } from "./download-estimates";
 import { LinkBatch, type ParsedInput } from "./download-input";
 import { PreviewMemory } from "./preview-session";
 import { isSpotifyInput, type SpotifyMatchSnapshot } from "./spotify-match";
+import { isWorkshopLink } from "./workshop-link";
 import { JobTable } from "./queue-events";
 import type { LibraryKind, LibraryOrder } from "./library-search";
 
@@ -166,9 +167,15 @@ class Store {
    * lookups still running from a replaced batch count towards its limit of three.
    */
   batch: BatchSession | null = null;
-  readonly links = new LinkBatch<ProbeResult>((url) => isSpotifyInput(url)
-    ? Promise.reject(new Error("Open this Spotify track individually to choose and review a YouTube match. Spotify albums and playlists aren't supported yet."))
-    : api.probe(url), {
+  readonly links = new LinkBatch<ProbeResult>(async (url) => {
+    if (isSpotifyInput(url)) {
+      throw new Error("Open this Spotify track individually to choose and review a YouTube match. Spotify albums and playlists aren't supported yet.");
+    }
+    if (isWorkshopLink(url) && await api.isWallpaperWorkshopItem(url).catch(() => false)) {
+      throw new Error("Open this Wallpaper Engine link on its own to download the project.");
+    }
+    return api.probe(url);
+  }, {
     onRow: (row) => this.emit("batchRow", row),
     describe: errorMessage,
   });

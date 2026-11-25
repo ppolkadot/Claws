@@ -269,7 +269,6 @@ Depth is material thickness first, shadow second. The desktop blur happens once,
 
 ### Shadow Vocabulary
 - **Panel** (`box-shadow: 0 1px 2px rgba(0,0,20,0.06), 0 8px 24px rgba(0,0,20,0.07)`): every glass panel at rest.
-- **Panel lifted** (`box-shadow: 0 2px 4px rgba(0,0,20,0.08), 0 14px 34px rgba(0,0,20,0.14)`): library tile on hover, with a 2px rise.
 - **Sidebar** (`box-shadow: 0 6px 22px rgba(0,0,20,0.1)` plus 0.5px rim insets): the floating pane.
 - **Float** (`box-shadow: 0 12px 36px rgba(0,0,20,0.14), 0 2px 6px rgba(0,0,20,0.08)`; dark `0 16px 44px rgba(0,0,0,0.42), 0 2px 8px rgba(0,0,0,0.26)`): toasts.
 - **Sheet** (`box-shadow: 0 26px 70px rgba(0,0,12,0.36), 0 4px 12px rgba(0,0,12,0.18)`): the alert sheet.
@@ -338,7 +337,7 @@ Download rows only show a number they can stand behind:
 - **Sheet:** a 300px chrome alert, 20px radius, centred title and message, full-width stacked 30px buttons, springing in from 0.88 scale over a 20% dim scrim with a 6px blur.
 
 ### Rows, entries, tiles
-Grouped rows follow Layout. Playlist entries and recent items use 64x36 thumbnails at 6px; queue jobs use 88px 16:9 thumbnails at 7px with 600-weight titles and 12px tabular status lines coloured by status. Entry checks are 20px circles that compress while pressed and fill blue-fill when checked. Library tiles are glass panels with a 16:9 artwork that scales to 1.03 on hover, a blurred dark duration badge at top-right, and a gradient action bar of small translucent white buttons revealed on hover or focus. Small additions of queue rows expand in from zero height and removed rows collapse out in place; new stage content settles in from 0.985 scale and 6px below (see Motion).
+Grouped rows follow Layout. Playlist entries and recent items use 64x36 thumbnails at 6px; queue jobs use 88px 16:9 thumbnails at 7px with 600-weight titles and 12px tabular status lines coloured by status. Entry checks are 20px circles that compress while pressed and fill blue-fill when checked. Library tiles are glass panels with 16:9 artwork, a blurred dark duration badge at top-right, and a gradient action bar of small translucent white buttons revealed on hover or focus. Small additions of queue rows expand in from zero height and removed rows collapse out in place; new stage content settles in from 0.985 scale and 6px below (see Motion).
 
 ### Empty states
 Apple's content-unavailable layout: one 46px symbol in secondary ink, a 19px / 700 title, a line of 13px secondary help (max 44ch), and optionally one action. No tile, card or illustration behind the symbol.

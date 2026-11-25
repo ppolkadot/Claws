@@ -464,6 +464,12 @@ export function installMock() {
           throw new Error("Native file dragging requires the Windows app.");
         case "bootstrap":
           return { settings, jobs, history, notices: [] };
+        case "is_wallpaper_workshop_item":
+          return new URL(String(payload.url)).searchParams.get("id") === "2250845956";
+        case "choose_steamcmd":
+        case "download_wallpaper":
+        case "open_workshop_item":
+          throw new Error("Steam Workshop downloads require the Windows app.");
         case "tools_status":
           return { ...mockTools };
         case "install_ytdlp":

@@ -35,10 +35,12 @@ import { mountSetupPanel } from "./setup-panel";
 import type { MountView } from "./shell";
 import { SpotifyMatchController, isSpotifyInput } from "../spotify-match";
 import { mountSpotifyMatch, type SpotifyMatchView } from "./spotify-match";
+import { isWorkshopLink } from "../workshop-link";
+import { mountWorkshop } from "./workshop";
 
 export { looksLikeLinkList, looksLikeUrl } from "./download-shared";
 
-type Phase = "idle" | "loading" | "result" | "error" | "batch" | "spotify";
+type Phase = "idle" | "loading" | "result" | "error" | "batch" | "spotify" | "workshop";
 
 
 export const mountDownload: MountView = (container, ctx) => {
@@ -96,6 +98,7 @@ export const mountDownload: MountView = (container, ctx) => {
   let reviewHost: HTMLElement | null = null;
   let resultSlot: HTMLElement | null = null;
   let matchingSessionId = "";
+  let workshopPanel: HTMLElement | null = null;
 
   /** One link: follows the choices, debounced, latest answer only. */
   let previewLine: EstimateLine | null = null;
@@ -130,8 +133,8 @@ export const mountDownload: MountView = (container, ctx) => {
     attrs: {
       rows: 1,
       wrap: "off",
-      placeholder: "Paste a video link, or several on separate lines",
-      "aria-label": "Video link, or several links on separate lines",
+      placeholder: "Paste a link, or several on separate lines",
+      "aria-label": "Link, or several links on separate lines",
       "aria-keyshortcuts": "Control+Enter",
       autocomplete: "off",
       spellcheck: false,
@@ -356,6 +359,21 @@ export const mountDownload: MountView = (container, ctx) => {
     enqueuing = false;
     clearSpotify();
     skipped = issues;
+    if (isWorkshopLink(url)) {
+      lastUrl = url;
+      phase = "loading";
+      render();
+      const wallpaper = await api.isWallpaperWorkshopItem(url).catch(() => false);
+      if (mine !== ticket) return;
+      if (wallpaper) {
+        result = null;
+        store.previews.clear();
+        workshopPanel = mountWorkshop(url);
+        phase = "workshop";
+        render();
+        return;
+      }
+    }
     if (isSpotifyInput(url)) {
       lastUrl = url;
       result = null;
@@ -847,6 +865,9 @@ export const mountDownload: MountView = (container, ctx) => {
         syncStage([back, issues, reviewHost]);
         paintMatching();
         break;
+      case "workshop":
+        syncStage([back, issues, workshopPanel]);
+        break;
       case "batch":
         if (!store.batch) {
           phase = "idle";
@@ -868,7 +889,7 @@ export const mountDownload: MountView = (container, ctx) => {
             h("h2", { class: "empty-title", text: "Paste a link" }),
             h("p", {
               class: "empty-text",
-              text: "Claws saves video and audio from over a thousand sites. Copy a link, then press Ctrl+V anywhere in this window.",
+              text: "Press Ctrl+V anywhere in this window to look up a copied link.",
             }),
           ),
           renderRecent(),

@@ -96,7 +96,7 @@ function buildSettings(container: HTMLElement): () => void {
 
   const template = h("input", {
     class: "text-input mono",
-    attrs: { type: "text", value: s().filenameTemplate, "aria-label": "Filename template", spellcheck: false },
+    attrs: { id: "settings-filename", type: "text", value: s().filenameTemplate, spellcheck: false },
   });
   template.addEventListener("change", () => update({ filenameTemplate: template.value }));
 
@@ -111,7 +111,7 @@ function buildSettings(container: HTMLElement): () => void {
         button({ label: "Show", variant: "plain", size: "small", onClick: () => void api.openOutputDir().catch((e) => onError(errorMessage(e))) }),
       ),
     ),
-    row("Filename", template, h("span", {}, "yt-dlp output template. ", h("code", { text: "%(title)s" }), " and ", h("code", { text: "%(id)s" }), " are the usual parts.")),
+    row("Filename template", template, h("span", {}, "Use ", h("code", { text: "%(title)s" }), " for the title and ", h("code", { text: "%(id)s" }), " for the source ID."), template.id),
     row("Simultaneous downloads", stepper("Simultaneous downloads", s().maxConcurrent, 1, 8, (v) => update({ maxConcurrent: v }))),
     row(
       "Processing alongside",

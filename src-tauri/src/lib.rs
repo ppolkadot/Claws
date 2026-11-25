@@ -29,6 +29,7 @@ mod tools;
 mod transcript;
 mod transfer_progress;
 mod window;
+mod workshop;
 
 #[cfg(not(test))]
 pub(crate) type Runtime = tauri::Wry;
@@ -175,6 +176,10 @@ pub fn run() {
             commands::install_deno,
             commands::default_output_dir,
             commands::open_font_page,
+            workshop::open_workshop_item,
+            workshop::is_wallpaper_workshop_item,
+            workshop::choose_steamcmd,
+            workshop::download_wallpaper,
         ])
         .build(tauri::generate_context!())
         .expect("error while starting Claws");

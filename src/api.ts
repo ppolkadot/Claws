@@ -308,6 +308,11 @@ export interface MatchOrigin {
 }
 
 export const api = {
+  isWallpaperWorkshopItem: (url: string) => invoke<boolean>("is_wallpaper_workshop_item", { url }),
+  openWorkshopItem: (url: string) => invoke<void>("open_workshop_item", { url }),
+  chooseSteamcmd: () => invoke<boolean>("choose_steamcmd"),
+  downloadWallpaper: (url: string, account: string) =>
+    invoke<string>("download_wallpaper", { url, account }),
   resolveSpotify: (url: string) => invoke<SpotifyResolution>("resolve_spotify_track", { url }),
   searchSpotify: (track: SpotifyTrack, query: string) => invoke<YouTubeCandidate[]>("search_spotify_matches", { track, query }),
   bootstrap: () => invoke<Bootstrap>("bootstrap"),

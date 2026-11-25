@@ -2,14 +2,16 @@ import { h } from "./dom.js";
 
 type Control = Node | string;
 
-export function row(label: string, control: Control | null, hint?: string | Node): HTMLElement {
+export function row(label: string, control: Control | null, hint?: string | Node, controlId?: string): HTMLElement {
   return h(
     "div",
     { class: "row" },
     h(
       "div",
       { class: "row-label" },
-      h("span", { class: "row-title", text: label }),
+      controlId
+        ? h("label", { class: "row-title", text: label, attrs: { for: controlId } })
+        : h("span", { class: "row-title", text: label }),
       hint ? h("span", { class: "row-hint" }, hint) : null,
     ),
     control ? h("div", { class: "row-control" }, control) : null,
