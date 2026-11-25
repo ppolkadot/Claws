@@ -103,7 +103,9 @@ export function canSelectSubtitle(selected: ReadonlySet<string>, code: string): 
 export function subtitleLimitHint(count: number): string {
   return count >= MAX_SUBTITLE_LANGS
     ? `Limit reached: ${MAX_SUBTITLE_LANGS} of ${MAX_SUBTITLE_LANGS} languages. Clear one to choose another.`
-    : `Choose up to ${MAX_SUBTITLE_LANGS} languages per download.`;
+    : count >= MAX_SUBTITLE_LANGS - 2
+      ? `Up to ${MAX_SUBTITLE_LANGS} languages per download.`
+      : "";
 }
 
 /** What a lookup shows; when two lookups' signatures are equal a refresh redraws nothing. */

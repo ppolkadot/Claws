@@ -1,7 +1,7 @@
 import { api, type ProbeResult } from "../api";
 import type { EstimateRun } from "../download-estimates";
 import { describeEnqueue, remainingItems, selectable, type BatchRow } from "../download-input";
-import { folderName } from "../format";
+import { folderName, itemNoun } from "../format";
 import { capChoices } from "../resolution";
 import { store, type BatchSession, type EstimateItem } from "../store";
 import { button, chipRadio, segmented, toast } from "../ui/components";
@@ -60,7 +60,7 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
     deps.refreshCurrent();
     if (!summary) return;
     if (summary.added > 0 && store.batch === session) session.estimate = null;
-    toast(describeEnqueue(summary), {
+    toast(describeEnqueue(summary, [itemNoun(session.choices.mode, 1), itemNoun(session.choices.mode, 2)]), {
       tone: summary.added === 0 && summary.failed > 0 ? "error" : "info",
       action: summary.added > 0 ? { label: "View queue", run: () => store.go("queue") } : undefined,
     });
@@ -92,7 +92,7 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
     if (!next().hidden) next().focus();
   };
   const stopBtn: HTMLButtonElement = button({ label: "Stop", variant: "plain", size: "small", onClick: swap(() => links.cancel(), () => retryBtn) });
-  stopBtn.title = "Stops reading the links not read yet. A lookup already running finishes in the background; its answer is ignored.";
+  stopBtn.title = "Stop reading the remaining links";
   const retryBtn: HTMLButtonElement = button({ label: "Retry", variant: "plain", size: "small", onClick: swap(() => links.retryAll(), () => stopBtn) });
   const allSelected = () => rows.some(selectable) && rows.every((r) => !selectable(r) || r.selected);
   // Select All and Download are marked unavailable (aria-disabled), never disabled: a
@@ -116,7 +116,7 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
     },
   });
   const selectedNote = h("span", { class: "save-to" });
-  const batchLine = estimateLine(() => void batchRun.retryFailed(batchKey()), "Retry failed", "Asks again only for the videos whose size could not be estimated. Sizes already read stay. Download is not affected.");
+  const batchLine = estimateLine(() => void batchRun.retryFailed(batchKey()), "Retry failed", "Estimate the failed sizes again");
   // The items a download would send now: a row partly queued already counts only the rest.
   const batchItems = (): EstimateItem[] => {
     const options = batchOptions(session.choices);
@@ -175,11 +175,11 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
     if ((focused === stopBtn || focused === retryBtn) && (focused as HTMLElement).hidden) {
       (focused === stopBtn && !retryBtn.hidden ? retryBtn : focused === retryBtn && !stopBtn.hidden ? stopBtn : toggleAll).focus();
     }
-    retryBtn.querySelector("span")!.textContent = c.cancelled === 0 ? `Retry ${c.failed} failed` : `Read ${again} again`;
+    retryBtn.querySelector("span")!.textContent = c.cancelled === 0 ? `Retry ${c.failed} failed` : `Look up ${again} again`;
     toggleAll.querySelector("span")!.textContent = allSelected() ? "Select none" : "Select all";
     toggleAll.setAttribute("aria-disabled", String(!rows.some(selectable)));
     const n = c.selectedItems;
-    addLabel.textContent = n === 0 ? "Download" : n === 1 ? "Download 1 video" : `Download ${n} videos`;
+    addLabel.textContent = n === 0 ? "Download" : `Download ${n} ${itemNoun(session.choices.mode, n)}`;
     addBtn.setAttribute("aria-disabled", String(n === 0 || links.submitting));
     selectedNote.textContent = `${c.selectedRows} of ${rows.length} links selected  ·  Saves to ${folderName(store.settings.outputDir)}`;
     paintEstimate();
@@ -219,7 +219,7 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
         side
           ? button({
               icon: "retry",
-              title: "Read this link again",
+              title: "Look up this link again",
               variant: "plain",
               size: "small",
               onClick: () => {
@@ -270,7 +270,7 @@ export function mountBatch(session: BatchSession, deps: BatchDeps): BatchView {
       choices.maxHeight = value;
       scheduleCounts();
     }),
-    "Saves each video at its largest size up to this limit, without upscaling.",
+    "Without upscaling.",
   );
   const presetChoice = presetRow(choices.videoPreset, (next) => {
     choices.videoPreset = next;

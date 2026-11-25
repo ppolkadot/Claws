@@ -84,8 +84,8 @@ export function mountSetupPanel(slot: HTMLElement): () => void {
           h("strong", { text: failed ? "Setup could not finish" : "Set up Claws" }),
           h("span", {
             text: missing.includes("ytdlp")
-              ? "Claws needs these tools to download. They are fetched once from their projects' GitHub releases and checked before use."
-              : "Some sites and formats need these tools. They are fetched once from their projects' GitHub releases and checked before use.",
+              ? "Claws needs these tools to download. They come from each project's GitHub releases."
+              : "Some sites and formats need these tools. They come from each project's GitHub releases.",
           }),
         ),
         h("ul", { class: "setup-steps" }, ...rows),

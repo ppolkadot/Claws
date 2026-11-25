@@ -3,7 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { api, errorMessage, type DownloadOptions, type ProbeResult } from "../api";
 import { EstimateRun, PreviewEstimator, describeSingle } from "../download-estimates";
 import { MAX_LINKS, isBatchInput, itemKey, parseLinks, type BatchRow, type ParsedInput } from "../download-input";
-import { formatDate, formatDuration, folderName } from "../format";
+import { formatDate, formatDuration, folderName, itemNoun, siteName } from "../format";
 import { applyLastChoices, loadLastChoices, saveLastChoices } from "../last-choices";
 import { keptQuality, qualityChoices } from "../resolution";
 import { captionChoices, defaultCaption, refreshSignature, refreshTrackChoices, transcriptOptions } from "../transcript-options";
@@ -161,7 +161,7 @@ export const mountDownload: MountView = (container, ctx) => {
       spellcheck: false,
     },
   });
-  const goButton = button({ label: "Get info", variant: "primary", onClick: () => void submit() });
+  const goButton = button({ label: "Look up", variant: "primary", onClick: () => void submit() });
   const goLabel = goButton.querySelector("span")!;
   const pasteButton = button({
     icon: "paste",
@@ -194,7 +194,7 @@ export const mountDownload: MountView = (container, ctx) => {
     input.rows = Math.min(Math.max(lines, 1), 6);
     urlBar.classList.toggle("multiline", lines > 1);
     const count = lines > 1 ? parseLinks(input.value).links.length : 0;
-    goLabel.textContent = count > 1 ? `Look up ${count} links` : "Get info";
+    goLabel.textContent = count > 1 ? `Look up ${count} links` : "Look up";
   }
   input.addEventListener("input", fitInput);
   // Enter looks up a single link. With several lines, Enter adds a line and Ctrl+Enter
@@ -518,7 +518,7 @@ export const mountDownload: MountView = (container, ctx) => {
     if (parsed.overLimit) {
       return showError(
         "Too many links",
-        `That is ${parsed.links.length} different links. Claws looks up at most ${MAX_LINKS} at once: paste the first ${MAX_LINKS}, add them to the queue, then paste the rest.`,
+        `That is ${parsed.links.length} different links. Claws looks up at most ${MAX_LINKS} at once. Paste the first ${MAX_LINKS}, add them to the queue, then paste the rest.`,
         false,
       );
     }
@@ -673,7 +673,7 @@ export const mountDownload: MountView = (container, ctx) => {
         replace(trigger, icon("check", 16), h("span", { text: jobs.length === 1 ? "Added" : `${jobs.length} added` }));
         await new Promise((resolve) => setTimeout(resolve, 650));
       }
-      toast(jobs.length === 1 ? "Added to the queue." : `${jobs.length} videos added to the queue.`, {
+      toast(jobs.length === 1 ? "Added to the queue." : `${jobs.length} ${itemNoun(jobs[0].job.options.mode, jobs.length)} added to the queue.`, {
         action: { label: "View queue", run: () => store.go("queue") },
       });
       if (mine !== ticket) return; // another link was submitted meanwhile
@@ -703,7 +703,7 @@ export const mountDownload: MountView = (container, ctx) => {
     const meta = [
       r.kind === "playlist" ? `${r.entries.length} videos` : formatDuration(r.duration),
       r.uploader,
-      r.site,
+      siteName(r.site),
     ].filter(Boolean) as string[];
     freshnessEl = h("p", { class: "preview-note", attrs: { "aria-live": "polite" } });
     const section = h(
@@ -735,13 +735,16 @@ export const mountDownload: MountView = (container, ctx) => {
     const same = store.history.filter((item) => item.url === r.url || item.url === lastUrl);
     // A saved transcript is not a downloaded video: say which it was, preferring the media.
     const previous = same.find((item) => item.mode !== "transcript") ?? same[0];
-    const parts = [
-      previous ? `${previous.mode === "transcript" ? "Transcript saved" : "Downloaded"} ${formatDate(previous.finishedAt)}` : null,
+    // One thing at a time: a warning or a check in progress, otherwise when it was saved.
+    const warnings = [
       freshness === "checking" ? "Checking for changes…" : null,
       freshness === "stale" ? (staleReason === CHECK_INTERRUPTED ? staleReason : `Couldn't check for changes: ${staleReason}`) : null,
       ...refreshNotices,
     ].filter(Boolean) as string[];
-    freshnessEl.textContent = parts.join("  ·  ");
+    const parts = warnings.length > 0
+      ? warnings
+      : previous ? [`${previous.mode === "transcript" ? "Transcript saved" : "Downloaded"} ${formatDate(previous.finishedAt)}`] : [];
+    freshnessEl.textContent = parts.join(" ");
     freshnessEl.hidden = parts.length === 0;
     freshnessEl.dataset.tone = freshness === "stale" || refreshNotices.length > 0 ? "warn" : "";
   }
@@ -956,7 +959,7 @@ export const mountDownload: MountView = (container, ctx) => {
             "div",
             { class: "empty" },
             h("div", { class: "empty-symbol" }, icon("download", 46)),
-            h("h2", { class: "empty-title", text: "Paste a link" }),
+            h("h2", { class: "empty-title", text: "No link yet" }),
             h("p", {
               class: "empty-text",
               text: "Press Ctrl+V anywhere in this window to look up a copied link.",

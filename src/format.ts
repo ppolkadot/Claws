@@ -43,10 +43,42 @@ export function formatDate(timestamp: number): string {
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
   if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
-  return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+  // Month names in the interface's language, like "Today" and "Yesterday" above.
+  return date.toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" });
 }
 
 export function folderName(path: string): string {
   const parts = path.split(/[\\/]+/).filter(Boolean);
   return parts.slice(-2).join("\\") || path;
+}
+
+/** Display names for yt-dlp's extractor keys ("Youtube", "TwitchVod") where the key is not the brand. */
+const SITE_NAMES: [string, string][] = [
+  ["youtube", "YouTube"],
+  ["soundcloud", "SoundCloud"],
+  ["tiktok", "TikTok"],
+  ["twitch", "Twitch"],
+  ["twitter", "X"],
+  ["vimeo", "Vimeo"],
+  ["instagram", "Instagram"],
+  ["facebook", "Facebook"],
+  ["reddit", "Reddit"],
+  ["dailymotion", "Dailymotion"],
+  ["bandcamp", "Bandcamp"],
+  ["bilibili", "Bilibili"],
+  ["niconico", "Niconico"],
+];
+
+export function siteName(key: string | null | undefined): string | null {
+  if (!key) return null;
+  const lower = key.toLowerCase();
+  if (lower === "generic") return null;
+  return SITE_NAMES.find(([prefix]) => lower.startsWith(prefix))?.[1] ?? key;
+}
+
+/** "video" or "audio file", for counts of downloads in a given mode. */
+export function itemNoun(mode: string, count: number): string {
+  const audio = mode === "audio";
+  if (count === 1) return audio ? "audio file" : "video";
+  return audio ? "audio files" : "videos";
 }

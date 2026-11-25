@@ -24,7 +24,7 @@ export function skippedByFastSave(c: FastSaveChoices): string[] {
     c.metadata ? "writing title, uploader, date and chapters into the file" : null,
     c.embeddedSubs ? "embedding subtitles (they are saved as .srt files instead)" : null,
     embedsCoverArt(c.mode, c.audioFormat) ? "embedding cover art (MP3 and M4A files are saved without it)" : null,
-    c.sponsorBlock ? "SponsorBlock (nothing is marked or removed)" : null,
+    c.sponsorBlock ? "SponsorBlock" : null,
   ].filter((item): item is string => item !== null);
 }
 
@@ -34,9 +34,9 @@ function joined(items: string[]): string {
 
 export function fastSaveHint(c: FastSaveChoices): string {
   const skipped = skippedByFastSave(c);
-  if (skipped.length === 0) return "Nothing optional to skip with these choices. Conversion and merging, where the format needs them, still happen.";
+  if (skipped.length === 0) return "Nothing optional to skip with these choices.";
   const list = joined(skipped);
   return c.fastSave
-    ? `Skips ${list}. The same video and audio are downloaded, and any conversion, merge or container repair the format needs still happens.`
-    : `Turn on to skip ${list}. Each can rewrite the whole file after it downloads; conversion, merging and any container repair the format needs still happen.`;
+    ? `Skips ${list}. Merging and conversion still run when the format needs them.`
+    : `Turn on to skip ${list}. Each can rewrite the whole file.`;
 }

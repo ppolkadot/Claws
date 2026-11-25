@@ -30,10 +30,10 @@ test("the skipped passes match the Rust policy for every audio format", () => {
 test("the hint names the cover-art tradeoff and what stays", () => {
   const on = fastSaveHint(choices({ fastSave: true }));
   assert.match(on, /Skips embedding cover art \(MP3 and M4A files are saved without it\)\./);
-  assert.match(on, /conversion, merge or container repair/);
+  assert.match(on, /Merging and conversion still run/);
   const off = fastSaveHint(choices({ fastSave: false }));
   assert.match(off, /^Turn on to skip embedding cover art/);
-  assert.match(off, /conversion, merging and any container repair/);
+  assert.match(off, /Each can rewrite the whole file./);
 });
 
 test("the hint lists every skipped pass, and nothing when there is none", () => {
@@ -51,7 +51,7 @@ test("the hint lists every skipped pass, and nothing when there is none", () => 
 
 test("Fast Save names SponsorBlock among what it skips, only when it was chosen", () => {
   const base = { mode: "video", audioFormat: "mp3", metadata: false, embeddedSubs: false, fastSave: true };
-  assert.deepEqual(skippedByFastSave({ ...base, sponsorBlock: true }), ["SponsorBlock (nothing is marked or removed)"]);
+  assert.deepEqual(skippedByFastSave({ ...base, sponsorBlock: true }), ["SponsorBlock"]);
   assert.deepEqual(skippedByFastSave({ ...base, sponsorBlock: false }), []);
   assert.deepEqual(skippedByFastSave(base), []);
   assert.match(fastSaveHint({ ...base, sponsorBlock: true }), /^Skips SponsorBlock/);

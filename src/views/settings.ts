@@ -114,14 +114,14 @@ function buildSettings(container: HTMLElement): () => void {
     row("Filename template", template, h("span", {}, "Use ", h("code", { text: "%(title)s" }), " for the title and ", h("code", { text: "%(id)s" }), " for the source ID."), template.id),
     row("Simultaneous downloads", stepper("Simultaneous downloads", s().maxConcurrent, 1, 8, (v) => update({ maxConcurrent: v }))),
     row(
-      "Processing alongside",
-      stepper("Processing alongside", s().maxProcessing, 1, 8, (v) => update({ maxProcessing: v })),
-      "How many downloads may be merging or converting without holding up the next transfer. Beyond this number, the next download waits.",
+      "Simultaneous conversions",
+      stepper("Simultaneous conversions", s().maxProcessing, 1, 8, (v) => update({ maxProcessing: v })),
+      "Downloads wait when this many are merging or converting.",
     ),
     row(
       "Speed limit",
       chipRadio<number>("Speed limit", speedLimits(s().speedLimitKib), s().speedLimitKib, (v) => update({ speedLimitKib: v })),
-      "Applies per download, so concurrent downloads can add up to more. Takes effect on the next start or resume. A limited download fetches one segment at a time.",
+      "Applies to each download. Takes effect on the next start or resume.",
     ),
     row(
       "Embed metadata",
@@ -131,7 +131,7 @@ function buildSettings(container: HTMLElement): () => void {
     row(
       "Prefer matching source audio",
       toggle("Prefer matching source audio", s().audioSelection === "preferMatching", (v) => update({ audioSelection: v ? "preferMatching" : "best" })),
-      "For audio downloads, picks a stream already in the chosen format when available and saves it without conversion. Bitrate may differ from the site's best stream. Applies to downloads that have not started yet.",
+      "Saves audio already in the chosen format without converting it. Bitrate may differ from the site's best stream.",
     ),
   );
 
@@ -144,7 +144,7 @@ function buildSettings(container: HTMLElement): () => void {
     row(
       "Notify when a download finishes",
       toggle("Notify when a download finishes", s().notifyWhenDone, (value) => update({ notifyWhenDone: value })),
-      "Notifies on finish or failure while Claws is hidden, minimized or unfocused.",
+      "When a download finishes or fails while Claws is in the background.",
     ),
     row(
       "Keep running when closed",
@@ -154,7 +154,7 @@ function buildSettings(container: HTMLElement): () => void {
     row(
       "Open at login",
       toggle("Open at login", s().openAtLogin, (value) => update({ openAtLogin: value })),
-      "Starts Claws in the notification area when you sign in to Windows, ready for Quick Open.",
+      "Starts in the notification area.",
     ),
   );
 
@@ -283,7 +283,7 @@ function buildSettings(container: HTMLElement): () => void {
     row(
       "Use cookies from",
       cookieSegment.el,
-      "Lets Claws download videos that need you to be signed in. While a source is set, yt-dlp reads the cookies each time it looks up or downloads a link, and sends each one only to the site it belongs to.",
+      "For videos that need you to be signed in. yt-dlp sends each cookie only to the site it belongs to.",
     ),
     cookieDetail,
   );
@@ -411,7 +411,7 @@ function buildSettings(container: HTMLElement): () => void {
           ffmpegHint,
         ),
         row(
-          `JavaScript runtime${deno ? `  Deno ${deno.version}` : jsRuntime ? `  ${jsRuntime}` : ""}`,
+          deno ? `Deno ${deno.version}` : jsRuntime ? jsRuntime : "JavaScript runtime",
           !store.toolsKnown || jsRuntime
             ? null
             : h(
@@ -428,7 +428,7 @@ function buildSettings(container: HTMLElement): () => void {
                 ? "Installed by Claws. yt-dlp uses Deno to read sites such as YouTube."
                 : jsRuntime
                   ? `Found on your PATH. yt-dlp uses ${jsRuntime} to read sites such as YouTube.`
-                  : "YouTube and some other sites need a JavaScript runtime. Install Deno here; it is checked against its published checksum.",
+                  : "YouTube and some other sites need a JavaScript runtime.",
         ),
       ),
     );

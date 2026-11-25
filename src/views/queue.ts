@@ -159,14 +159,13 @@ function paintError(refs: RowRefs, job: Job) {
     h("pre", { class: "job-error-text", text }),
     button({
       label: "Copy",
-      icon: "copy",
       variant: "plain",
       size: "small",
       title: "Copy the message",
       onClick: () =>
         void navigator.clipboard.writeText(text).then(
           () => toast("Copied the message."),
-          () => toast("The message could not be copied. Select it and press Ctrl+C.", { tone: "error" }),
+          () => toast("Couldn't copy the message. Select it and press Ctrl+C.", { tone: "error" }),
         ),
     }),
   );
@@ -268,11 +267,11 @@ export const mountQueue: MountView = (container, ctx) => {
     size: "small",
     onClick: () => void api.clearFinished().catch(fail),
   });
-  const bulk = (label: string, title: string, run: () => Promise<number>) =>
-    button({ label, title, variant: "secondary", size: "small", onClick: () => void run().catch(fail) });
-  const pauseAll = bulk("Pause all", "Pauses every download that is waiting or running", api.pauseAll);
-  const resumeAll = bulk("Resume all", "Resumes every paused download", api.resumeAll);
-  const retryFailed = bulk("Retry failed", "Tries every failed download again", api.retryFailed);
+  const bulk = (label: string, run: () => Promise<number>) =>
+    button({ label, variant: "secondary", size: "small", onClick: () => void run().catch(fail) });
+  const pauseAll = bulk("Pause all", api.pauseAll);
+  const resumeAll = bulk("Resume all", api.resumeAll);
+  const retryFailed = bulk("Retry failed", api.retryFailed);
   const bulkButtons = [pauseAll, resumeAll, retryFailed];
   ctx.setActions([...bulkButtons, clearBtn]);
 
@@ -285,7 +284,7 @@ export const mountQueue: MountView = (container, ctx) => {
     { class: "empty" },
     h("div", { class: "empty-symbol" }, icon("list", 46)),
     h("h2", { class: "empty-title", text: "Nothing is downloading" }),
-    h("p", { class: "empty-text", text: "Links you download appear here with live progress. Finished files go to your Library." }),
+    h("p", { class: "empty-text", text: "Finished files go to your Library." }),
     button({ label: "Paste a link", variant: "primary", onClick: () => store.go("download") }),
   );
   container.append(summaryLine, list, empty);

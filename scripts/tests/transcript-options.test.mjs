@@ -160,8 +160,8 @@ test("the picker stops at the limit but never blocks removing a choice", () => {
   assert.equal(canSelectSubtitle(upTo(MAX_SUBTITLE_LANGS - 1), "x"), true, "the twelfth is allowed");
   assert.equal(canSelectSubtitle(upTo(MAX_SUBTITLE_LANGS), "x"), false, "the thirteenth is not");
   assert.equal(canSelectSubtitle(upTo(MAX_SUBTITLE_LANGS), "l3"), true, "a chosen language can always be unchosen");
-  // The hint always states the limit and says when it has been reached.
-  assert.match(subtitleLimitHint(0), /12/);
+  // The hint states the limit near it and says when it has been reached.
+  assert.equal(subtitleLimitHint(0), "");
   assert.match(subtitleLimitHint(MAX_SUBTITLE_LANGS - 1), /12/);
   assert.doesNotMatch(subtitleLimitHint(MAX_SUBTITLE_LANGS - 1), /limit reached/i);
   assert.match(subtitleLimitHint(MAX_SUBTITLE_LANGS), /limit reached/i);

@@ -95,7 +95,7 @@ export function mountOptions(r: ProbeResult, choice: LinkChoices, deps: OptionsD
           qualities.length === 0
             ? "Quality options appear once the site reports them."
             : playlist
-              ? "Saves each video at its largest size up to this limit, without upscaling."
+              ? "Without upscaling."
               : hasExactSizes(r)
                 ? "Measured by the shorter side, without upscaling."
                 : "Saves the largest size available up to this limit on the shorter side, without upscaling.",

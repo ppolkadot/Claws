@@ -1,7 +1,7 @@
 import type { DownloadMode, DownloadOptions, ProbeResult, SponsorBlockMode, TranscriptFormat, VideoPreset } from "../api";
 import { CallLimit, EstimateRun, aggregate, describeRun } from "../download-estimates";
 import { parseLinks, type BatchRow, type ParsedInput } from "../download-input";
-import { formatDuration } from "../format";
+import { formatDuration, siteName } from "../format";
 import { VIDEO_PRESETS } from "../resolution";
 import { captionKey, type CaptionChoices } from "../transcript-options";
 import { store, type BatchChoices, type EstimateItem } from "../store";
@@ -140,7 +140,7 @@ export type EstimateLine = {
   busy: boolean;
 };
 
-export function estimateLine(onRetry: () => void, retryLabel = "Retry", retryTitle = "Asks again for this size. Download is not affected."): EstimateLine {
+export function estimateLine(onRetry: () => void, retryLabel = "Retry", retryTitle = "Estimate this size again"): EstimateLine {
   const size = h("span", { class: "estimate-size" });
   const detail = h("span", { class: "estimate-detail" });
   const retry = button({
@@ -164,7 +164,7 @@ export function estimateLine(onRetry: () => void, retryLabel = "Retry", retryTit
     {
       class: "estimate",
       attrs: {
-        title: "Estimated from what the site reports. Claws checks the actual free space again when each download starts.",
+        title: "Estimated from what the site reports.",
         tabindex: "-1",
       },
     },
@@ -253,8 +253,8 @@ export function paintRun(run: EstimateRun<EstimateItem>, line: EstimateLine, btn
   paintLine(line, describeRun(run), finished ? (aggregate(s.results).tempText ?? "") : "", s.running, true, run.canRetry);
   setText(btn.querySelector("span")!, s.running ? "Stop estimating" : "Estimate sizes");
   const title = s.running
-    ? "Stops estimating. Sizes already read stay; estimates already running finish in the background and are ignored."
-    : `Reads the size of each selected video, up to ${run.maxItems}, three at a time. Nothing is read until you ask.`;
+    ? ""
+    : `Reads the size of each selected video, up to ${run.maxItems}.`;
   if (btn.title !== title) btn.title = title;
   btn.setAttribute("aria-disabled", String(!s.running && count === 0));
 }
@@ -289,7 +289,7 @@ export function rowNote(r: BatchRow<ProbeResult>): [string, string] {
             ? "Playlist · no downloadable videos"
             : `Playlist · ${count} ${count === 1 ? "item" : "items"}`
           : formatDuration(res.duration);
-      return [[lead, res.uploader, res.site].filter(Boolean).join("  ·  "), ""];
+      return [[lead, res.uploader, siteName(res.site)].filter(Boolean).join("  ·  "), ""];
     }
   }
 }

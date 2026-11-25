@@ -254,12 +254,12 @@ export function planChunks(rows: { id: number; items: BatchItem[] }[], max = MAX
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-export function describeEnqueue(summary: EnqueueSummary): string {
+export function describeEnqueue(summary: EnqueueSummary, nouns: [string, string] = ["video", "videos"]): string {
   const parts: string[] = [];
-  if (summary.added > 0) parts.push(`Added ${plural(summary.added, "video", "videos")} to the queue.`);
+  if (summary.added > 0) parts.push(`Added ${plural(summary.added, nouns[0], nouns[1])} to the queue.`);
   if (summary.skipped > 0) parts.push(`${summary.skipped} ${summary.skipped === 1 ? "was" : "were"} already queued or listed twice.`);
   if (summary.failed > 0) {
-    const what = summary.added > 0 ? String(summary.failed) : plural(summary.failed, "video", "videos");
+    const what = summary.added > 0 ? String(summary.failed) : plural(summary.failed, nouns[0], nouns[1]);
     parts.push(`${what} could not be added: ${summary.errors.join(" ")}`);
   }
   return parts.join(" ") || "Nothing was added.";

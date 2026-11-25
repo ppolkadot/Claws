@@ -84,7 +84,7 @@ export function mountSpotifyMatch(actions: SpotifyMatchActions): SpotifyMatchVie
 
   const el = h("div", { class: "spotify-match" },
     identity,
-    h("p", { class: "row-hint", text: "Find a recording on YouTube, then choose a match. Audio is downloaded from YouTube. The recording may differ from the Spotify version." }),
+    h("p", { class: "row-hint", text: "Audio comes from a YouTube recording you choose. It may differ from the Spotify version." }),
     h("div", { class: "spotify-search" }, query, search),
     notices, status, retryHost, candidatesHost, confirmHost, confirmedHost,
   );
@@ -111,7 +111,7 @@ export function mountSpotifyMatch(actions: SpotifyMatchActions): SpotifyMatchVie
       if (state.candidates.length > 0) {
         const list = h("fieldset", { class: "spotify-candidates", attrs: { "aria-label": "YouTube matches" } }, h("legend", { text: "Choose a recording" }));
         for (const candidate of state.candidates) {
-          const radio = h("input", { attrs: { type: "radio", name: "spotify-match", value: candidate.videoId, "aria-label": `${candidate.title} — ${candidate.uploader ?? "Unknown channel"}` } });
+          const radio = h("input", { attrs: { type: "radio", name: "spotify-match", value: candidate.videoId, "aria-label": `${candidate.title}, ${candidate.uploader ?? "Unknown channel"}` } });
           radio.addEventListener("change", () => actions.select(candidate.videoId));
           radios.push(radio);
           const info = h("span", { class: "spotify-candidate-text" },

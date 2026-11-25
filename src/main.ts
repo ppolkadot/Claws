@@ -51,7 +51,7 @@ async function start() {
     startup.flush();
   } catch (error) {
     root.replaceChildren(
-      h("div", { class: "fatal glass" }, h("h1", { text: "Claws could not start" }), h("p", { text: errorMessage(error) })),
+      h("div", { class: "fatal glass" }, h("h1", { text: "Claws could not start" }), h("p", { text: errorMessage(error) }), h("p", { text: "Restart Claws. If this keeps happening, reinstall it." })),
     );
     void api.appReady().catch(() => undefined);
     return;
