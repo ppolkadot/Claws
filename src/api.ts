@@ -7,7 +7,7 @@ import type { JobEvent, JobRemoved, JobsAdded } from "./queue-events.js";
 import type { Resolution, VideoPreset } from "./resolution.js";
 import type { KeptRecord, KeptRepairReport, KeptRevealResult } from "./kept-files.js";
 import type { TranscriptFormat } from "./transcript-options.js";
-import type { LibraryStatus, WallpaperOutcome, WorkshopLookup, WorkshopSource } from "./workshop-session.js";
+import type { ExportFormat, LibraryStatus, WallpaperOutcome, WorkshopLookup, WorkshopSource } from "./workshop-session.js";
 
 export type { DownloadEstimate, DragOutcome, JobEvent, JobRemoved, JobsAdded, KeptRecord, KeptRepairReport, KeptRevealResult, Resolution, TranscriptFormat, VideoPreset };
 
@@ -325,8 +325,8 @@ export const api = {
   installSteamcmd: () => invoke<ToolsStatus>("install_steamcmd"),
   detectSteamAccounts: () => invoke<string[]>("detect_steam_accounts"),
   findWallpaperInLibrary: (url: string) => invoke<LibraryStatus>("find_wallpaper_in_library", { url }),
-  downloadWallpaper: (url: string, source: WorkshopSource, account: string | null) =>
-    invoke<WallpaperOutcome>("download_wallpaper", { url, source, account }),
+  downloadWallpaper: (url: string, source: WorkshopSource, account: string | null, format: ExportFormat) =>
+    invoke<WallpaperOutcome>("download_wallpaper", { url, source, account, format }),
   cancelWallpaperDownload: () => invoke<void>("cancel_wallpaper_download"),
   resolveSpotify: (url: string) => invoke<SpotifyResolution>("resolve_spotify_track", { url }),
   searchSpotify: (track: SpotifyTrack, query: string) => invoke<YouTubeCandidate[]>("search_spotify_matches", { track, query }),

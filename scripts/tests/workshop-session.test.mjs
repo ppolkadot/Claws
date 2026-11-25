@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { WorkshopSession, lookupProblem, missingForStart, stageText } from "../../.test-build/workshop-session.js";
+import { WorkshopSession, lookupProblem, missingForStart, offersVideo, stageText } from "../../.test-build/workshop-session.js";
 import { isWorkshopLink } from "../../.test-build/workshop-link.js";
 
 const URL_A = "https://steamcommunity.com/sharedfiles/filedetails/?id=123";
@@ -57,24 +57,54 @@ test("the export says what is missing before it can start", () => {
   assert.equal(missingForStart("steamcmd", null, "C:\\SteamCMD\\steamcmd.exe", " owner_1 "), null);
 });
 
-test("stage text names the step and its percentage", () => {
+test("stage text names the step, the format and its percentage", () => {
   assert.equal(stageText("updating", 45.4), "Updating SteamCMD… 45%");
   assert.equal(stageText("downloading", null), "Downloading from Steam…");
+  assert.equal(stageText("converting", null, "mp4"), "Converting the video with FFmpeg…");
   assert.equal(stageText("saving", 100), "Saving the ZIP… 100%");
+  assert.equal(stageText("saving", 42.6, "mp4"), "Saving the MP4… 43%");
+  assert.equal(stageText("saving", 5, "gif"), "Saving the GIF… 5%");
 });
 
-test("a SteamCMD export sends the account; a library export does not", async () => {
+test("a SteamCMD export sends the account and format; a library export sends no account", async () => {
   const { calls, deps: d } = deps();
   const steam = new WorkshopSession(URL_A, item, d, true);
   assert.equal(steam.source, "steamcmd");
   await steam.start("  owner_1 ");
-  assert.deepEqual(calls[0], ["download", URL_A, "steamcmd", "owner_1"]);
+  assert.deepEqual(calls[0], ["download", URL_A, "steamcmd", "owner_1", "zip"]);
   assert.deepEqual(steam.state, { phase: "saved", filename: "Ocean (123).zip", path: "C:\\out\\Ocean (123).zip" });
 
   const library = new WorkshopSession(URL_A, item, d, false);
   assert.equal(library.source, "library");
+  library.setFormat("mp4");
+  assert.equal(library.format, "mp4");
   await library.start("owner_1");
-  assert.deepEqual(calls[1], ["download", URL_A, "library", null]);
+  assert.deepEqual(calls[1], ["download", URL_A, "library", null, "mp4"]);
+});
+
+test("only video wallpapers offer a video format", () => {
+  assert.equal(offersVideo(item), false);
+  assert.equal(offersVideo({ ...item, wallpaperType: "Video" }), true);
+  assert.equal(offersVideo({ ...item, wallpaperType: "VIDEO" }), true);
+  assert.equal(offersVideo({ ...item, wallpaperType: "Scene" }), false);
+  assert.equal(offersVideo({ ...item, wallpaperType: null }), false);
+});
+
+test("an unsupported video export offers the ZIP fallback and clears it on a format change", async () => {
+  const { calls, deps: d } = deps({
+    download: async (...args) => {
+      calls.push(["download", ...args]);
+      return { status: "unsupported", message: "No video here." };
+    },
+  });
+  const session = new WorkshopSession(URL_A, { ...item, wallpaperType: "Video" }, d, true);
+  session.setFormat("gif");
+  await session.start("owner");
+  assert.deepEqual(session.state, { phase: "unsupported", message: "No video here." });
+  assert.deepEqual(calls[0], ["download", URL_A, "steamcmd", "owner", "gif"]);
+  session.setFormat("zip");
+  assert.deepEqual(session.state, { phase: "ready" });
+  assert.equal(session.format, "zip");
 });
 
 test("progress applies only to its own running export", async () => {

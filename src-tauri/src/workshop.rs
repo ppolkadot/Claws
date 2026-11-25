@@ -1,8 +1,9 @@
 //! Wallpaper Engine Workshop items. Details come from Valve's public API; the project comes
 //! either from the user's own Steam library (an item they subscribed to in Steam) or from
-//! Valve's SteamCMD signed in with the account that owns Wallpaper Engine. Either way the
-//! project is exported as a ZIP. Claws never writes into Steam's folders, except to remove
-//! SteamCMD's own copy when the user asked for that.
+//! Valve's SteamCMD signed in with the account that owns Wallpaper Engine. A project is
+//! saved as a ZIP, or — for a video project — converted with FFmpeg to MP4 or GIF. Claws
+//! never writes into Steam's folders, except to remove SteamCMD's own copy when the user
+//! asked for that.
 use std::{
     collections::VecDeque,
     fs::{self, File, OpenOptions},
@@ -13,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
@@ -30,6 +31,7 @@ use crate::{
     downloader::kill_tree,
     error::{AppError, Result},
     state::AppState,
+    workshop_media::{self, MediaError, MediaFormat},
     AppHandle,
 };
 
@@ -67,7 +69,7 @@ pub fn http_client() -> reqwest::Client {
 pub struct Run {
     pub active: bool,
     pub cancelled: bool,
-    /// SteamCMD's process id while it runs.
+    /// The process id while SteamCMD or FFmpeg runs.
     pub pid: Option<u32>,
 }
 
@@ -304,9 +306,22 @@ pub fn validate_steamcmd(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Authenticode: a valid signature whose signer's organisation is Valve.
+/// The publisher names Valve's own SteamCMD builds carry: the bootstrap ZIP signs as
+/// `Valve`, and an updated copy as `Valve Corp.`. Anything else is not Valve's.
+fn valve_publisher(organization: &str) -> bool {
+    matches!(organization, "Valve" | "Valve Corp.")
+}
+
+/// Authenticode: a valid signature whose signer's organisation is one Valve uses.
 #[cfg(windows)]
 pub(crate) fn signed_by_valve(path: &Path) -> bool {
+    signer_organization(path).is_some_and(|organization| valve_publisher(&organization))
+}
+
+/// The organisation named by the file's Authenticode signer, or `None` when Windows does
+/// not verify the signature.
+#[cfg(windows)]
+pub(crate) fn signer_organization(path: &Path) -> Option<String> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::HWND;
@@ -336,9 +351,8 @@ pub(crate) fn signed_by_valve(path: &Path) -> bool {
     let verify = |data: &mut WINTRUST_DATA, action: &mut windows::core::GUID| unsafe {
         WinVerifyTrust(HWND(std::ptr::null_mut()), action, data as *mut WINTRUST_DATA as *mut _)
     };
-    let valid = verify(&mut data, &mut action) == 0;
-    let mut organisation = String::new();
-    if valid {
+    let mut organisation = None;
+    if verify(&mut data, &mut action) == 0 {
         unsafe {
             let provider = WTHelperProvDataFromStateData(data.hWVTStateData);
             let signer = WTHelperGetProvSignerFromChain(provider, 0, false, 0);
@@ -349,14 +363,14 @@ pub(crate) fn signed_by_valve(path: &Path) -> bool {
                 let mut buf = [0u16; 256];
                 let len = CertGetNameStringW(cert, CERT_NAME_ATTR_TYPE, 0, Some(oid.as_ptr() as *const _), Some(&mut buf));
                 if len > 1 {
-                    organisation = String::from_utf16_lossy(&buf[..len as usize - 1]);
+                    organisation = Some(String::from_utf16_lossy(&buf[..len as usize - 1]));
                 }
             }
         }
     }
     data.dwStateAction = WTD_STATEACTION_CLOSE;
     verify(&mut data, &mut action);
-    valid && organisation == "Valve"
+    organisation
 }
 
 #[cfg(not(windows))]
@@ -699,6 +713,26 @@ pub async fn find_wallpaper_in_library(url: String) -> Result<LibraryStatus> {
 // ---------------------------------------------------------------------------------------
 // Download
 
+/// What the user asked for. ZIP works for every item and stays the default; MP4 and GIF are
+/// offered only for video wallpapers.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ExportFormat {
+    Zip,
+    Mp4,
+    Gif,
+}
+
+impl ExportFormat {
+    fn media(self) -> Option<MediaFormat> {
+        match self {
+            Self::Zip => None,
+            Self::Mp4 => Some(MediaFormat::Mp4),
+            Self::Gif => Some(MediaFormat::Gif),
+        }
+    }
+}
+
 #[derive(Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum Stage {
@@ -706,6 +740,7 @@ pub enum Stage {
     Updating,
     SigningIn,
     Downloading,
+    Converting,
     Saving,
 }
 
@@ -722,6 +757,8 @@ struct Progress {
 pub enum WallpaperOutcome {
     Saved { filename: String, path: String },
     Failed { message: String, detail: Option<String> },
+    /// A video format was asked for, but the project has no video Claws can convert.
+    Unsupported { message: String },
     Cancelled,
 }
 
@@ -767,7 +804,7 @@ pub fn cancel_wallpaper_download(state: State<'_, AppState>) {
     }
 }
 
-/// For shutdown: the SteamCMD process to stop, if one runs.
+/// For shutdown: the SteamCMD or FFmpeg process to stop, if one runs.
 pub fn stop_for_shutdown(state: &AppState) -> Option<u32> {
     let mut run = state.workshop.lock().unwrap();
     run.cancelled = true;
@@ -781,6 +818,7 @@ pub async fn download_wallpaper(
     url: String,
     source: String,
     account: Option<String>,
+    format: ExportFormat,
 ) -> Result<WallpaperOutcome> {
     let id = item_id(&url)?;
     let from_library = match source.as_str() {
@@ -797,6 +835,15 @@ pub async fn download_wallpaper(
 
     let found = lookup(&state.steam_http, id).await.map_err(|_| AppError::msg(STEAM_UNREACHABLE))?;
     let WorkshopLookup::Wallpaper { item } = found else { return Err(not_a_wallpaper(&found)) };
+    let media = format.media();
+    // The Workshop tags are the only video confirmation available before the download; the
+    // project itself is checked again once it is here.
+    if media.is_some() && !item.wallpaper_type.as_deref().is_some_and(|kind| kind.eq_ignore_ascii_case("Video")) {
+        return Ok(WallpaperOutcome::Unsupported {
+            message: "This Workshop item isn't a video wallpaper, so Claws can only save the project as a ZIP. Choose ZIP and try again."
+                .into(),
+        });
+    }
 
     let output = PathBuf::from(state.settings.lock().unwrap().output_dir.clone());
     if !output.is_absolute() {
@@ -849,44 +896,175 @@ pub async fn download_wallpaper(
         (project, true)
     };
 
-    let measured = project.clone();
-    let needed = tauri::async_runtime::spawn_blocking(move || disk_budget::bytes_in(&measured)).await.unwrap_or(0);
-    if let Some(message) = space_shortfall(&state, &output, needed, "the download folder's drive") {
-        return Ok(WallpaperOutcome::Failed { message, detail: None });
-    }
-
-    progress(Stage::Saving, Some(0.0));
     let title = item.title.clone();
-    let export_project = project.clone();
-    let export_output = output.clone();
-    let cancel_state = app.clone();
-    let progress_app = app.clone();
-    let progress_url = url.clone();
-    let saved = tauri::async_runtime::spawn_blocking(move || {
-        use tauri::Manager;
-        let state = cancel_state.state::<AppState>();
-        let cancelled = || state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst);
-        let mut last = -1.0;
-        let report = |fraction: f64| {
-            let percent = (fraction * 100.0).floor();
-            if percent > last {
-                last = percent;
-                let _ = progress_app.emit("workshop-progress", Progress { url: progress_url.clone(), stage: Stage::Saving, percent: Some(percent) });
-            }
-        };
-        save_project(&export_project, &export_output, id, &title, report, cancelled)
-    })
-    .await?;
-    let filename = match saved {
-        Ok(Some(filename)) => filename,
-        Ok(None) => return Ok(WallpaperOutcome::Cancelled),
-        Err(error) => return Err(error),
+    let filename = if let Some(media_format) = media {
+        match convert_media(&app, &state, &project, &output, (id, &title), media_format, &progress).await? {
+            SaveResult::Done(filename) => filename,
+            SaveResult::Cancelled => return Ok(WallpaperOutcome::Cancelled),
+            SaveResult::Unsupported(message) => return Ok(WallpaperOutcome::Unsupported { message }),
+            SaveResult::Failed { message, detail } => return Ok(WallpaperOutcome::Failed { message, detail }),
+        }
+    } else {
+        let measured = project.clone();
+        let needed = tauri::async_runtime::spawn_blocking(move || disk_budget::bytes_in(&measured)).await.unwrap_or(0);
+        if let Some(message) = space_shortfall(&state, &output, needed, "the download folder's drive") {
+            return Ok(WallpaperOutcome::Failed { message, detail: None });
+        }
+
+        progress(Stage::Saving, Some(0.0));
+        let export_project = project.clone();
+        let export_output = output.clone();
+        let cancel_state = app.clone();
+        let progress_app = app.clone();
+        let progress_url = url.clone();
+        let saved = tauri::async_runtime::spawn_blocking(move || {
+            use tauri::Manager;
+            let state = cancel_state.state::<AppState>();
+            let cancelled = || state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst);
+            let mut last = -1.0;
+            let report = |fraction: f64| {
+                let percent = (fraction * 100.0).floor();
+                if percent > last {
+                    last = percent;
+                    let _ = progress_app.emit(
+                        "workshop-progress",
+                        Progress { url: progress_url.clone(), stage: Stage::Saving, percent: Some(percent) },
+                    );
+                }
+            };
+            save_project(&export_project, &export_output, id, &title, report, cancelled)
+        })
+        .await?;
+        match saved {
+            Ok(Some(filename)) => filename,
+            Ok(None) => return Ok(WallpaperOutcome::Cancelled),
+            Err(error) => return Err(error),
+        }
     };
     if steamcmd_copy && state.settings.lock().unwrap().remove_steamcmd_copy {
         let _ = tauri::async_runtime::spawn_blocking(move || fs::remove_dir_all(project)).await;
     }
     drop(run);
     Ok(WallpaperOutcome::Saved { path: output.join(&filename).to_string_lossy().into_owned(), filename })
+}
+
+/// How a ZIP or media save ended.
+enum SaveResult {
+    Done(String),
+    Cancelled,
+    /// The project is not a video Claws can convert.
+    Unsupported(String),
+    Failed { message: String, detail: Option<String> },
+}
+
+/// Converts the project's declared video with the managed FFmpeg and publishes the result.
+/// The project is only read; nothing in it is run. `item` is its Workshop id and title.
+async fn convert_media(
+    app: &AppHandle,
+    state: &AppState,
+    project: &Path,
+    output: &Path,
+    item: (u64, &str),
+    format: MediaFormat,
+    progress: &(dyn Fn(Stage, Option<f64>) + Sync),
+) -> Result<SaveResult> {
+    const NO_VIDEO: &str = "This wallpaper's project has no video that Claws can convert. Save it as a ZIP instead.";
+    const UNSAFE: &str = "This wallpaper's project points to a file outside the downloaded item. Claws won't convert it; save it as a ZIP instead.";
+    const NO_FFMPEG: &str = "Converting a wallpaper needs FFmpeg. Install it in Settings, then try again.";
+
+    let (id, title) = item;
+    let measured = project.to_path_buf();
+    let checked = tauri::async_runtime::spawn_blocking(move || workshop_media::video_file(&measured)).await?;
+    let video = match checked {
+        Ok(video) => video,
+        Err(MediaError::Unsupported) => return Ok(SaveResult::Unsupported(NO_VIDEO.to_string())),
+        Err(MediaError::Unsafe) => return Ok(SaveResult::Failed { message: UNSAFE.to_string(), detail: None }),
+    };
+    let Some(ffmpeg) = crate::tools::find_ffmpeg(app) else {
+        return Ok(SaveResult::Failed { message: NO_FFMPEG.to_string(), detail: None });
+    };
+    let needed = video.bytes.saturating_mul(format.space_factor());
+    if let Some(message) = space_shortfall(state, output, needed, "the download folder's drive") {
+        return Ok(SaveResult::Failed { message, detail: None });
+    }
+
+    progress(Stage::Converting, None);
+    // Holds the engine so an install cannot replace FFmpeg while it runs.
+    let _engine = state.engine.read().await;
+    let partial = output.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
+    let cancelled = || state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst);
+    let output_for_task = output.to_path_buf();
+    let title = title.to_string();
+    let converted = workshop_media::convert(
+        &ffmpeg,
+        &video.path,
+        &partial,
+        format,
+        |pid| {
+            let mut current = state.workshop.lock().unwrap();
+            if current.cancelled || state.shutting_down.load(Ordering::SeqCst) {
+                false
+            } else {
+                current.pid = pid;
+                true
+            }
+        },
+        &cancelled,
+    )
+    .await;
+    state.workshop.lock().unwrap().pid = None;
+    match converted {
+        Ok(workshop_media::Outcome::Cancelled) => {
+            let _ = fs::remove_file(&partial);
+            return Ok(SaveResult::Cancelled);
+        }
+        Ok(workshop_media::Outcome::Done) => {}
+        Err(failure) => {
+            let _ = fs::remove_file(&partial);
+            if cancelled() {
+                return Ok(SaveResult::Cancelled);
+            }
+            let detail = redact(&failure.detail, "");
+            return Ok(SaveResult::Failed { message: failure.message, detail: (!detail.trim().is_empty()).then_some(detail) });
+        }
+    }
+
+    let partial_for_task = partial.clone();
+    progress(Stage::Saving, Some(0.0));
+    let published = tauri::async_runtime::spawn_blocking(move || {
+        publish_media(&partial_for_task, &output_for_task, id, &title, format)
+    })
+    .await?;
+    match published {
+        Ok(filename) => Ok(SaveResult::Done(filename)),
+        Err(_) if cancelled() => Ok(SaveResult::Cancelled),
+        Err(error) => Err(error),
+    }
+}
+
+/// Moves a finished conversion into the output folder under the next free name. A missing,
+/// linked or empty file is refused, and a failed publish removes the partial copy.
+fn publish_media(partial: &Path, output: &Path, id: u64, title: &str, format: MediaFormat) -> Result<String> {
+    let result = (|| -> Result<String> {
+        let meta = fs::symlink_metadata(partial)?;
+        if !meta.is_file() || is_link(&meta) || meta.len() == 0 {
+            return Err(AppError::msg("The converted video is empty, so it was not saved."));
+        }
+        OpenOptions::new().write(true).open(partial)?.sync_all()?;
+        for copy in 0..1000 {
+            let name = export_name(title, id, copy, format.extension());
+            match move_no_replace(partial, &output.join(&name)) {
+                Ok(()) => return Ok(name),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(AppError::msg("Too many copies of this wallpaper in the download folder."))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(partial);
+    }
+    result
 }
 
 fn space_shortfall(state: &AppState, folder: &Path, bytes: u64, place: &str) -> Option<String> {
@@ -1172,8 +1350,8 @@ fn matches_reported_path(reported: &[u8], expected: &Path) -> bool {
 // ---------------------------------------------------------------------------------------
 // ZIP export
 
-/// A file name made from the item title: `<title> (<id>).zip`.
-fn export_name(title: &str, id: u64, copy: u32) -> String {
+/// A file name made from the item title: `<title> (<id>).<extension>`.
+fn export_name(title: &str, id: u64, copy: u32, extension: &str) -> String {
     let mut clean = String::new();
     for c in title.chars() {
         let c = if c.is_control() || r#"<>:"/\|?*"#.contains(c) { ' ' } else { c };
@@ -1189,9 +1367,9 @@ fn export_name(title: &str, id: u64, copy: u32) -> String {
         || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.as_bytes()[3].is_ascii_digit());
     let base = if clean.is_empty() || reserved { format!("Wallpaper Engine {id}") } else { format!("{clean} ({id})") };
     if copy == 0 {
-        format!("{base}.zip")
+        format!("{base}.{extension}")
     } else {
-        format!("{base} ({copy}).zip")
+        format!("{base} ({copy}).{extension}")
     }
 }
 
@@ -1201,7 +1379,7 @@ fn compresses(name: &str) -> bool {
 }
 
 /// Opens a file without following a link that replaced it after it was checked.
-fn open_plain(path: &Path) -> io::Result<File> {
+pub(crate) fn open_plain(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(windows)]
@@ -1280,7 +1458,7 @@ fn save_project(
         let writer = zip.finish()?;
         writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
         for copy in 0..1000 {
-            let name = export_name(title, id, copy);
+            let name = export_name(title, id, copy, "zip");
             match move_no_replace(&partial, &output.join(&name)) {
                 Ok(()) => return Ok(Some(name)),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -1399,6 +1577,12 @@ mod tests {
         assert_eq!(json, serde_json::json!({"kind":"otherApp","appId":480}));
         let json = serde_json::to_value(WallpaperOutcome::Failed { message: "m".into(), detail: None }).unwrap();
         assert_eq!(json, serde_json::json!({"status":"failed","message":"m","detail":null}));
+        let json = serde_json::to_value(WallpaperOutcome::Unsupported { message: "u".into() }).unwrap();
+        assert_eq!(json, serde_json::json!({"status":"unsupported","message":"u"}));
+        assert_eq!(serde_json::to_value(ExportFormat::Zip).unwrap(), "zip");
+        assert_eq!(serde_json::to_value(ExportFormat::Mp4).unwrap(), "mp4");
+        assert_eq!(serde_json::to_value(ExportFormat::Gif).unwrap(), "gif");
+        assert_eq!(serde_json::to_value(Stage::Converting).unwrap(), "converting");
     }
 
     #[test]
@@ -1469,14 +1653,16 @@ mod tests {
 
     #[test]
     fn names_exports_after_the_title() {
-        assert_eq!(export_name("Ocean: dusk / 4K", 7, 0), "Ocean dusk 4K (7).zip");
-        assert_eq!(export_name("Ocean", 7, 2), "Ocean (7) (2).zip");
-        assert_eq!(export_name("  ...  ", 7, 0), "Wallpaper Engine 7.zip");
-        assert_eq!(export_name("con", 7, 0), "Wallpaper Engine 7.zip");
-        assert_eq!(export_name("COM3.scene", 7, 0), "Wallpaper Engine 7.zip");
-        assert_eq!(export_name("Trailing dots...", 7, 0), "Trailing dots (7).zip");
+        assert_eq!(export_name("Ocean: dusk / 4K", 7, 0, "zip"), "Ocean dusk 4K (7).zip");
+        assert_eq!(export_name("Ocean", 7, 2, "zip"), "Ocean (7) (2).zip");
+        assert_eq!(export_name("  ...  ", 7, 0, "zip"), "Wallpaper Engine 7.zip");
+        assert_eq!(export_name("con", 7, 0, "zip"), "Wallpaper Engine 7.zip");
+        assert_eq!(export_name("COM3.scene", 7, 0, "zip"), "Wallpaper Engine 7.zip");
+        assert_eq!(export_name("Trailing dots...", 7, 0, "zip"), "Trailing dots (7).zip");
         let long = "é".repeat(200);
-        assert_eq!(export_name(&long, 7, 0).chars().count(), 80 + " (7).zip".len());
+        assert_eq!(export_name(&long, 7, 0, "zip").chars().count(), 80 + " (7).zip".len());
+        assert_eq!(export_name("Ocean", 7, 0, "mp4"), "Ocean (7).mp4");
+        assert_eq!(export_name("Ocean", 7, 1, "gif"), "Ocean (7) (1).gif");
     }
 
     #[test]
@@ -1588,6 +1774,71 @@ mod tests {
     }
 
     #[test]
+    fn publishes_only_a_complete_media_file_and_never_replaces_one() {
+        let dir = crate::download_tests::temp_dir("workshop-media-publish");
+        let output = dir.join("output");
+        fs::create_dir_all(&output).unwrap();
+        let partial = dir.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
+
+        // Empty: refused, the partial removed, nothing published.
+        fs::write(&partial, b"").unwrap();
+        assert!(publish_media(&partial, &output, 5, "Loop", MediaFormat::Gif).is_err());
+        assert!(!partial.exists());
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
+
+        // Complete: the next free name, and the existing export stays untouched.
+        fs::write(output.join("Loop (5).mp4"), b"existing").unwrap();
+        fs::write(&partial, b"video").unwrap();
+        let name = publish_media(&partial, &output, 5, "Loop", MediaFormat::Mp4).unwrap();
+        assert_eq!(name, "Loop (5) (1).mp4");
+        assert_eq!(fs::read(output.join("Loop (5).mp4")).unwrap(), b"existing");
+        assert_eq!(fs::read(output.join(&name)).unwrap(), b"video");
+        assert!(!partial.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Live: needs ffmpeg. The real path end to end: the project's declared video found by
+    /// `video_file` (a canonical `\\?\` path on Windows), converted into a partial file in the
+    /// canonical download folder, then published beside an existing export without touching it.
+    #[tokio::test]
+    async fn converts_a_declared_video_through_canonical_paths_and_publishes_it() {
+        let Some(tools) = crate::download_tests::ffmpeg_dir() else {
+            eprintln!("skipped: needs ffmpeg");
+            return;
+        };
+        let ffmpeg = tools.join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX));
+        let dir = crate::download_tests::temp_dir("workshop-media-e2e");
+        let project = dir.join("project");
+        fs::create_dir_all(project.join("media")).unwrap();
+        let made = std::process::Command::new(&ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=r=10:d=1:s=48x64"])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(project.join("media").join("clip.mp4"))
+            .status()
+            .unwrap();
+        assert!(made.success());
+        fs::write(project.join("project.json"), r#"{"type":"video","file":"media\\clip.mp4"}"#).unwrap();
+        let output = dir.join("output");
+        fs::create_dir_all(&output).unwrap();
+        let output = output.canonicalize().unwrap();
+        fs::write(output.join("Loop (9).mp4"), b"existing").unwrap();
+
+        let video = workshop_media::video_file(&project).unwrap();
+        for (format, expected) in [(MediaFormat::Mp4, "Loop (9) (1).mp4"), (MediaFormat::Gif, "Loop (9).gif")] {
+            let partial = output.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
+            let done = workshop_media::convert(&ffmpeg, &video.path, &partial, format, |_| true, &|| false).await;
+            assert_eq!(done, Ok(workshop_media::Outcome::Done), "{format:?}");
+            let name = publish_media(&partial, &output, 9, "Loop", format).unwrap();
+            assert_eq!(name, expected);
+            assert!(fs::metadata(output.join(&name)).unwrap().len() > 0);
+        }
+        assert_eq!(fs::read(output.join("Loop (9).mp4")).unwrap(), b"existing");
+        let leftovers = fs::read_dir(&output).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with(PARTIAL_PREFIX)).count();
+        assert_eq!(leftovers, 0, "no partial file may remain");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn sweeps_only_its_own_partial_files() {
         let dir = crate::download_tests::temp_dir("workshop-sweep");
         let ours = dir.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
@@ -1602,13 +1853,48 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    /// Live: set CLAWS_TEST_STEAMCMD to a steamcmd.exe downloaded from Valve.
+    #[test]
+    fn accepts_only_the_publisher_names_valve_uses() {
+        for name in ["Valve", "Valve Corp."] {
+            assert!(valve_publisher(name), "{name}");
+        }
+        for name in [
+            "",
+            "Valve Corp",
+            "Valve Corporation",
+            "Valve Corp. ",
+            " Valve Corp.",
+            "valve",
+            "valve corp.",
+            "Valve Corp..",
+            "Valve Inc.",
+            "Valve Corp. Ltd",
+            "Not Valve Corp.",
+            "Valve Corp. (fake)",
+        ] {
+            assert!(!valve_publisher(name), "{name:?} must not pass as Valve");
+        }
+    }
+
+    /// Live: set CLAWS_TEST_STEAMCMD to one or more steamcmd.exe paths, separated by ';' on
+    /// Windows. Each must carry a valid Valve signature under one of the accepted names.
     #[cfg(windows)]
     #[test]
     fn accepts_valves_signed_steamcmd_when_given() {
-        let Some(path) = std::env::var_os("CLAWS_TEST_STEAMCMD") else { return };
-        assert!(signed_by_valve(Path::new(&path)));
-        assert!(validate_steamcmd(Path::new(&path)).is_ok());
+        let Some(paths) = std::env::var_os("CLAWS_TEST_STEAMCMD") else { return };
+        let mut checked = 0;
+        for path in std::env::split_paths(&paths) {
+            if path.as_os_str().is_empty() {
+                continue;
+            }
+            let organization = signer_organization(&path)
+                .unwrap_or_else(|| panic!("Windows does not verify the signature on {}", path.display()));
+            assert!(valve_publisher(&organization), "{} is signed by {organization:?}", path.display());
+            assert!(signed_by_valve(&path));
+            assert!(validate_steamcmd(&path).is_ok(), "{}", path.display());
+            checked += 1;
+        }
+        assert!(checked > 0, "CLAWS_TEST_STEAMCMD named no path");
     }
 
     /// Live: set CLAWS_TEST_NETWORK=1 to ask Valve's API about a known wallpaper and collection.
@@ -1629,6 +1915,8 @@ mod tests {
         // The test binary itself is not signed by Valve.
         let me = std::env::current_exe().unwrap();
         assert!(!signed_by_valve(&me));
+        assert!(signer_organization(&me).is_none(), "an unsigned file has no verified signer");
+        assert!(!signed_by_valve(Path::new(r"C:\no such folder\steamcmd.exe")));
     }
 
     #[cfg(windows)]

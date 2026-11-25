@@ -398,7 +398,7 @@ fn yt_dlp_picks_the_matching_audio_stream() {
 // CLAWS_TEST_FFMPEG_DIR); without them they skip.
 
 /// The folder holding ffmpeg and ffprobe: CLAWS_TEST_FFMPEG_DIR, or the one Claws manages.
-fn ffmpeg_dir() -> Option<PathBuf> {
+pub(crate) fn ffmpeg_dir() -> Option<PathBuf> {
     let dir = match std::env::var_os("CLAWS_TEST_FFMPEG_DIR") {
         Some(dir) => PathBuf::from(dir),
         None => Path::new(&std::env::var_os("APPDATA")?).join("dev.claws.downloader").join("bin"),

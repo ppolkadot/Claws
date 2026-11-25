@@ -474,10 +474,17 @@ async function sampleInstall(tool: ToolName): Promise<ToolsStatus> {
 }
 
 // Sample Wallpaper Engine items: 2250845956 is a scene wallpaper, an id ending in 2 a
-// collection, in 3 another game's item, in 0 missing. Account names starting with "fail_" show
-// each SteamCMD failure ("fail_guard", "fail_password", "fail_access"); others succeed.
+// collection, in 3 another game's item, in 0 missing, in 5 a video wallpaper, and in 8 a
+// video wallpaper whose project has no usable video (the ZIP fallback sample). Account
+// names starting with "fail_" show each SteamCMD failure ("fail_guard", "fail_password",
+// "fail_access"); others succeed.
 const mockSubscribed = new Set<string>();
 let mockWallpaperCancelled = false;
+
+/** The sample item type: video for ids ending in 5 or 8, scene otherwise. */
+function mockWallpaperType(id: string): string {
+  return id.endsWith("5") || id.endsWith("8") ? "Video" : "Scene";
+}
 
 function mockWorkshopDetails(url: string) {
   const id = new URL(url).searchParams.get("id") ?? "";
@@ -488,22 +495,47 @@ function mockWorkshopDetails(url: string) {
     kind: "wallpaper",
     item: {
       id,
-      title: id === "2250845956" ? "Sample: Hooded cat in neon" : `Sample: Wallpaper ${id}`,
+      title: id === "2250845956" ? "Sample: Hooded cat in neon" : id.endsWith("5") ? "Sample: Looping waves" : `Sample: Wallpaper ${id}`,
       previewUrl: art(300, 200),
       fileSize: 31_224_037,
       timeUpdated: Math.floor(now / 1000),
-      wallpaperType: "Scene",
+      wallpaperType: mockWallpaperType(id),
       requiredItems: id.endsWith("7") ? ["1111111111"] : [],
     },
   };
 }
 
-async function mockWallpaperDownload(url: string, source: string, account: string | null) {
+async function mockWallpaperDownload(url: string, source: string, account: string | null, format: string) {
   mockWallpaperCancelled = false;
+  const id = new URL(url).searchParams.get("id") ?? "";
+  const media = format === "mp4" || format === "gif";
+  if (media && mockWallpaperType(id) !== "Video") {
+    return {
+      status: "unsupported",
+      message: "This Workshop item isn't a video wallpaper, so Claws can only save the project as a ZIP. Choose ZIP and try again.",
+    };
+  }
+  if (media && id.endsWith("8")) {
+    return {
+      status: "unsupported",
+      message: "This wallpaper's project has no video that Claws can convert. Save it as a ZIP instead.",
+    };
+  }
   const steps: [string, number | null][] =
     source === "library"
-      ? [["saving", 0], ["saving", 35], ["saving", 70], ["saving", 100]]
-      : [["updating", 40], ["updating", 100], ["signingIn", null], ["downloading", null], ["downloading", null], ["saving", 50], ["saving", 100]];
+      ? media
+        ? [["converting", null], ["saving", 50], ["saving", 100]]
+        : [["saving", 0], ["saving", 35], ["saving", 70], ["saving", 100]]
+      : [
+          ["updating", 40],
+          ["updating", 100],
+          ["signingIn", null],
+          ["downloading", null],
+          ["downloading", null],
+          ...(media ? [["converting", null] as [string, number | null]] : []),
+          ["saving", 50],
+          ["saving", 100],
+        ];
   for (const [stage, percent] of steps) {
     if (mockWallpaperCancelled) return { status: "cancelled" };
     void emit("workshop-progress", { url, stage, percent });
@@ -524,8 +556,8 @@ async function mockWallpaperDownload(url: string, source: string, account: strin
     }
   }
   if (mockWallpaperCancelled) return { status: "cancelled" };
-  const id = new URL(url).searchParams.get("id");
-  const filename = `Sample Wallpaper (${id}).zip`;
+  const extension = media ? format : "zip";
+  const filename = `Sample Wallpaper (${id}).${extension}`;
   return { status: "saved", filename, path: `${settings.outputDir}\\${filename}` };
 }
 
@@ -557,7 +589,12 @@ export function installMock() {
         case "sign_in_steamcmd":
           return null;
         case "download_wallpaper":
-          return mockWallpaperDownload(String(payload.url), String(payload.source), (payload.account as string | null) ?? null);
+          return mockWallpaperDownload(
+            String(payload.url),
+            String(payload.source),
+            (payload.account as string | null) ?? null,
+            String(payload.format ?? "zip"),
+          );
         case "cancel_wallpaper_download":
           mockWallpaperCancelled = true;
           return null;

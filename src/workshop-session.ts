@@ -22,7 +22,10 @@ export type WorkshopLookup =
   | { kind: "otherApp"; appId: number }
   | { kind: "notFound" };
 
-export type WorkshopStage = "starting" | "updating" | "signingIn" | "downloading" | "saving";
+/** ZIP saves the whole project; MP4 and GIF are converted from a video wallpaper. */
+export type ExportFormat = "zip" | "mp4" | "gif";
+
+export type WorkshopStage = "starting" | "updating" | "signingIn" | "downloading" | "converting" | "saving";
 
 export interface WorkshopProgress {
   url: string;
@@ -33,6 +36,7 @@ export interface WorkshopProgress {
 export type WallpaperOutcome =
   | { status: "saved"; filename: string; path: string }
   | { status: "failed"; message: string; detail: string | null }
+  | { status: "unsupported"; message: string }
   | { status: "cancelled" };
 
 export type WorkshopSource = "library" | "steamcmd";
@@ -49,10 +53,12 @@ export type WorkshopState =
   | { phase: "running"; stage: WorkshopStage; percent: number | null }
   | { phase: "saved"; filename: string; path: string }
   | { phase: "failed"; message: string; detail: string | null }
+  /** The chosen video format does not fit this project; saving the ZIP still works. */
+  | { phase: "unsupported"; message: string }
   | { phase: "cancelled" };
 
 export interface WorkshopDeps {
-  download(url: string, source: WorkshopSource, account: string | null): Promise<WallpaperOutcome>;
+  download(url: string, source: WorkshopSource, account: string | null, format: ExportFormat): Promise<WallpaperOutcome>;
   cancel(): Promise<void>;
   findInLibrary(url: string): Promise<LibraryStatus>;
   describeError(error: unknown): string;
@@ -73,7 +79,7 @@ export function lookupProblem(found: WorkshopLookup): string | null {
 }
 
 /** The status line while an export runs. */
-export function stageText(stage: WorkshopStage, percent: number | null): string {
+export function stageText(stage: WorkshopStage, percent: number | null, format: ExportFormat = "zip"): string {
   const pct = percent === null ? "" : ` ${Math.round(percent)}%`;
   switch (stage) {
     case "starting":
@@ -84,9 +90,16 @@ export function stageText(stage: WorkshopStage, percent: number | null): string 
       return "Signing in to Steam…";
     case "downloading":
       return "Downloading from Steam…";
+    case "converting":
+      return "Converting the video with FFmpeg…";
     case "saving":
-      return `Saving the ZIP…${pct}`;
+      return format === "zip" ? `Saving the ZIP…${pct}` : `Saving the ${format.toUpperCase()}…${pct}`;
   }
+}
+
+/** Video projects can be saved as MP4 or GIF; every other project only as its ZIP. */
+export function offersVideo(item: WorkshopItem): boolean {
+  return item.wallpaperType?.toLowerCase() === "video";
 }
 
 /** Why the export can't start yet, or null when it can. */
@@ -111,6 +124,8 @@ export class WorkshopSession {
   source: WorkshopSource;
   library: LibraryStatus | null = null;
   state: WorkshopState = { phase: "ready" };
+  /** What Save writes. ZIP stays the default so every item can be saved. */
+  format: ExportFormat = "zip";
   /** Polling the Steam library after the user went to subscribe. */
   watching = false;
   private watchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -158,6 +173,14 @@ export class WorkshopSession {
     this.changed();
   }
 
+  /** Switches the export format, clearing an old outcome so the panel starts fresh. */
+  setFormat(format: ExportFormat) {
+    if (this.running || this.format === format) return;
+    this.format = format;
+    if (this.state.phase !== "ready") this.state = { phase: "ready" };
+    this.changed();
+  }
+
   /** After "Subscribe in Steam": checks the library until the project appears. */
   watchLibrary(now = Date.now()) {
     this.stopWatching();
@@ -194,7 +217,7 @@ export class WorkshopSession {
     this.changed();
     let outcome: WallpaperOutcome;
     try {
-      outcome = await this.deps.download(this.url, this.source, this.source === "steamcmd" ? account.trim() : null);
+      outcome = await this.deps.download(this.url, this.source, this.source === "steamcmd" ? account.trim() : null, this.format);
     } catch (error) {
       outcome = { status: "failed", message: this.deps.describeError(error), detail: null };
     }
@@ -203,7 +226,9 @@ export class WorkshopSession {
         ? { phase: "saved", filename: outcome.filename, path: outcome.path }
         : outcome.status === "failed"
           ? { phase: "failed", message: outcome.message, detail: outcome.detail }
-          : { phase: "cancelled" };
+          : outcome.status === "unsupported"
+            ? { phase: "unsupported", message: outcome.message }
+            : { phase: "cancelled" };
     this.changed();
   }
 

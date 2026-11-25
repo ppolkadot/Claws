@@ -30,6 +30,7 @@ mod transcript;
 mod transfer_progress;
 mod window;
 mod workshop;
+mod workshop_media;
 
 #[cfg(not(test))]
 pub(crate) type Runtime = tauri::Wry;

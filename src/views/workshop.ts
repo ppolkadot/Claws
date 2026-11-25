@@ -4,7 +4,7 @@ import { store } from "../store";
 import { button, segmented, toast, toggle } from "../ui/components";
 import { h, replace } from "../ui/dom";
 import { group, progressBar, row, sectionTitle, setProgress } from "../ui/layout";
-import { missingForStart, stageText, type WorkshopSession, type WorkshopSource } from "../workshop-session";
+import { missingForStart, offersVideo, stageText, type ExportFormat, type WorkshopSession, type WorkshopSource } from "../workshop-session";
 import { thumbnailEl } from "./download-shared";
 
 export interface WorkshopView {
@@ -150,10 +150,26 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
   const cleanupRow = row(
     "Remove SteamCMD's copy",
     toggle("Remove SteamCMD's copy after saving", store.settings.removeSteamcmdCopy, (value) => store.updateSettings({ removeSteamcmdCopy: value }, onSaveError)),
-    "Deletes the wallpaper from SteamCMD's folder once the ZIP is saved.",
+    "Deletes the wallpaper from SteamCMD's folder once it is saved.",
   );
 
-  const options = group(row("Source", sourceSeg.el, sourceHint), libraryRow, steamcmdRow, accountRow, cleanupRow);
+  // Format. ZIP keeps the project and works for every item; a video project can also be
+  // converted with FFmpeg to a playable MP4 or a GIF.
+  const video = offersVideo(item);
+  const formatSeg = segmented<ExportFormat>(
+    "Save as",
+    [
+      { value: "zip", label: "ZIP", title: "The whole project, as Steam downloaded it" },
+      { value: "mp4", label: "MP4", title: "H.264 video with its audio, playable anywhere" },
+      { value: "gif", label: "GIF", title: "A silent looping GIF" },
+    ],
+    session.format,
+    (next) => session.setFormat(next),
+  );
+  const formatHint = h("span", { class: "row-note" });
+  const formatRow = row("Save as", formatSeg.el, formatHint);
+
+  const options = group(row("Source", sourceSeg.el, sourceHint), formatRow, libraryRow, steamcmdRow, accountRow, cleanupRow);
 
   // Actions and status
   const reason = h("span", { class: "row-hint workshop-reason" });
@@ -213,6 +229,24 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
       );
     } else if (state.phase === "cancelled") {
       replace(outcome, h("p", { class: "footnote", attrs: { role: "status" }, text: "Cancelled." }));
+    } else if (state.phase === "unsupported") {
+      replace(
+        outcome,
+        h(
+          "div",
+          { class: "notice", attrs: { role: "status" } },
+          h("span", { class: "notice-text", text: state.message }),
+          button({
+            label: "Save as ZIP",
+            variant: "secondary",
+            size: "small",
+            onClick: () => {
+              session.setFormat("zip");
+              start();
+            },
+          }),
+        ),
+      );
     } else {
       replace(outcome);
     }
@@ -227,6 +261,14 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
     sourceHint.textContent = fromLibrary
       ? "Uses the copy Steam downloads when you subscribe. No sign-in in Claws."
       : "Downloads with SteamCMD, signed in with your Steam account.";
+
+    formatRow.hidden = !video;
+    formatSeg.set(session.format);
+    formatSeg.el.querySelectorAll("button").forEach((b) => ((b as HTMLButtonElement).disabled = busy));
+    formatHint.textContent =
+      session.format === "zip"
+        ? "Keeps the whole project, as Steam downloaded it."
+        : "Converts the wallpaper's video with FFmpeg; the project itself isn't kept.";
 
     libraryRow.hidden = !fromLibrary;
     libraryText.textContent = !library
@@ -277,11 +319,13 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
     saveTo.hidden = Boolean(missing) && !busy;
     save.hidden = busy;
     save.disabled = Boolean(missing);
+    const saveLabel = save.querySelector("span");
+    if (saveLabel) saveLabel.textContent = `Save ${session.format.toUpperCase()}`;
     cancel.hidden = !busy;
 
     running.hidden = !busy;
     if (session.state.phase === "running") {
-      stageLine.textContent = stageText(session.state.stage, session.state.percent);
+      stageLine.textContent = stageText(session.state.stage, session.state.percent, session.format);
       setProgress(bar, session.state.percent === null ? null : session.state.percent / 100);
     }
     paintOutcome();
