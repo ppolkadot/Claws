@@ -242,19 +242,21 @@ async fn run_steamcmd(exe: &Path, directory: &Path, id: u64, account: &str) -> R
                 path = Some(reported.to_vec());
             }
         }
-        child.wait().await?;
-        Ok::<_, io::Error>(path)
+        let status = child.wait().await?;
+        Ok::<_, io::Error>((status, path))
     })
     .await;
-    let path = match result {
+    let (status, path) = match result {
         Ok(result) => result?,
         Err(_) => {
             let _ = child.kill().await;
             return Err(AppError::msg("The Steam download timed out. Try again."));
         }
     };
-    if let Some(path) = path {
-        return Ok(path);
+    if status.success() {
+        if let Some(path) = path {
+            return Ok(path);
+        }
     }
     Err(AppError::msg(
         "SteamCMD couldn't download this wallpaper. Sign in through SteamCMD with the account that owns Wallpaper Engine, then try again.",
@@ -360,8 +362,9 @@ fn add_files(
     if depth > 48 {
         return Err(AppError::msg("This wallpaper has too many nested folders."));
     }
-    for entry in fs::read_dir(folder)? {
-        let entry = entry?;
+    let mut children = fs::read_dir(folder)?.collect::<io::Result<Vec<_>>>()?;
+    children.sort_by_key(|entry| entry.file_name());
+    for entry in children {
         *entries += 1;
         if *entries > 50_000 {
             return Err(AppError::msg("This wallpaper has too many files."));
@@ -386,7 +389,7 @@ fn add_files(
             zip.add_directory(&prefix, options)?;
             add_files(zip, &path, &prefix, depth + 1, entries)?;
         } else if meta.is_file() {
-            zip.start_file(name, options.large_file(true))?;
+            zip.start_file(name, options.large_file(meta.len() >= u32::MAX as u64))?;
             io::copy(&mut File::open(path)?, zip)?;
         } else {
             return Err(AppError::msg("The wallpaper contains an unsupported file."));
@@ -459,6 +462,8 @@ mod tests {
         );
         {
             let mut zip = zip::ZipArchive::new(File::open(output.join(name)).unwrap()).unwrap();
+            let names: Vec<_> = zip.file_names().map(str::to_owned).collect();
+            assert_eq!(names, ["assets/", "assets/index.html", "project.json"]);
             assert!(zip.by_name("project.json").is_ok());
             let mut html = String::new();
             zip.by_name("assets/index.html")
