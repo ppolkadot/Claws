@@ -306,7 +306,7 @@ pub fn validate_steamcmd(path: &Path) -> Result<()> {
 
 /// Authenticode: a valid signature whose signer's organisation is Valve.
 #[cfg(windows)]
-fn signed_by_valve(path: &Path) -> bool {
+pub(crate) fn signed_by_valve(path: &Path) -> bool {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::HWND;
@@ -360,7 +360,7 @@ fn signed_by_valve(path: &Path) -> bool {
 }
 
 #[cfg(not(windows))]
-fn signed_by_valve(_path: &Path) -> bool {
+pub(crate) fn signed_by_valve(_path: &Path) -> bool {
     false
 }
 
@@ -403,12 +403,185 @@ pub async fn sign_in_steamcmd(state: State<'_, AppState>, account: String) -> Re
     Ok(())
 }
 
+/// The SteamCMD to use: the one chosen in Settings, else the copy Claws installed.
 fn steamcmd_path(state: &AppState) -> Result<PathBuf> {
-    let path = state.settings.lock().unwrap().steamcmd_path.clone();
-    if path.trim().is_empty() {
-        return Err(AppError::msg("Choose SteamCMD first."));
+    crate::tools::find_steamcmd(state).ok_or_else(|| AppError::msg("Install SteamCMD first, or choose your own copy."))
+}
+
+// ---------------------------------------------------------------------------------------
+// The Steam account name, found on this PC
+
+/// One value of a Valve KeyValues (VDF) file: text, or a block of named values.
+#[derive(Debug, PartialEq)]
+enum Vdf {
+    Text(String),
+    Block(Vec<(String, Vdf)>),
+}
+
+/// Parses VDF text: quoted strings (with backslash escapes), braces and `//` comments.
+/// Malformed input yields whatever parsed before the problem.
+fn parse_vdf(text: &str) -> Vec<(String, Vdf)> {
+    enum Token {
+        Text(String),
+        Open,
+        Close,
     }
-    Ok(PathBuf::from(path))
+    let mut tokens = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' => tokens.push(Token::Open),
+            '}' => tokens.push(Token::Close),
+            '/' if chars.peek() == Some(&'/') => {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
+            }
+            '"' => {
+                let mut token = String::new();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => match chars.next() {
+                            Some('n') => token.push('\n'),
+                            Some('t') => token.push('\t'),
+                            Some(other) => token.push(other),
+                            None => break,
+                        },
+                        '"' => break,
+                        other => token.push(other),
+                    }
+                }
+                tokens.push(Token::Text(token));
+            }
+            _ => {}
+        }
+    }
+    fn block(tokens: &mut std::iter::Peekable<std::vec::IntoIter<Token>>, depth: usize) -> Vec<(String, Vdf)> {
+        let mut out = Vec::new();
+        while let Some(token) = tokens.next() {
+            let key = match token {
+                Token::Text(key) => key,
+                Token::Close => break,
+                Token::Open => continue,
+            };
+            match tokens.next() {
+                Some(Token::Text(value)) => out.push((key, Vdf::Text(value))),
+                Some(Token::Open) if depth < 32 => out.push((key, Vdf::Block(block(tokens, depth + 1)))),
+                _ => break,
+            }
+        }
+        out
+    }
+    block(&mut tokens.into_iter().peekable(), 0)
+}
+
+/// Every block named `name` (case-insensitive), at any depth.
+fn find_blocks<'a>(entries: &'a [(String, Vdf)], name: &str, out: &mut Vec<&'a [(String, Vdf)]>) {
+    for (key, value) in entries {
+        if let Vdf::Block(children) = value {
+            if key.eq_ignore_ascii_case(name) {
+                out.push(children);
+            }
+            find_blocks(children, name, out);
+        }
+    }
+}
+
+/// Accounts SteamCMD itself has signed in with (`config/config.vdf`, `Accounts` block).
+fn steamcmd_accounts(config_vdf: &str) -> Vec<String> {
+    let entries = parse_vdf(config_vdf);
+    let mut blocks = Vec::new();
+    find_blocks(&entries, "Accounts", &mut blocks);
+    blocks.into_iter().flat_map(|accounts| accounts.iter().map(|(name, _)| name.clone())).collect()
+}
+
+/// Accounts the Steam client remembers (`config/loginusers.vdf`), the most recent first.
+fn steam_client_accounts(loginusers_vdf: &str) -> Vec<String> {
+    let entries = parse_vdf(loginusers_vdf);
+    let mut blocks = Vec::new();
+    find_blocks(&entries, "users", &mut blocks);
+    let mut users: Vec<(bool, String)> = blocks
+        .into_iter()
+        .flat_map(|users| users.iter())
+        .filter_map(|(_, user)| match user {
+            Vdf::Block(fields) => {
+                let field = |name: &str| {
+                    fields.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).and_then(|(_, value)| match value {
+                        Vdf::Text(text) => Some(text.as_str()),
+                        Vdf::Block(_) => None,
+                    })
+                };
+                Some((field("MostRecent") == Some("1"), field("AccountName")?.to_string()))
+            }
+            Vdf::Text(_) => None,
+        })
+        .collect();
+    users.sort_by_key(|(recent, _)| !*recent);
+    users.into_iter().map(|(_, name)| name).collect()
+}
+
+/// The Steam client's remembered automatic sign-in.
+#[cfg(windows)]
+fn steam_auto_login_user() -> Option<String> {
+    use windows::core::w;
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+    let mut buf = [0u16; 256];
+    let mut size = (buf.len() * 2) as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!("Software\\Valve\\Steam"),
+            w!("AutoLoginUser"),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut size),
+        )
+    };
+    if status.is_err() {
+        return None;
+    }
+    let len = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len]))
+}
+
+#[cfg(not(windows))]
+fn steam_auto_login_user() -> Option<String> {
+    None
+}
+
+/// Usable account names in order, each once: those SteamCMD already signed in with (they
+/// download without a new sign-in), then the Steam client's most recent, its automatic
+/// sign-in, and the rest it remembers.
+fn merge_accounts(groups: impl IntoIterator<Item = Vec<String>>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in groups.into_iter().flatten() {
+        let Ok(name) = check_account(&name) else { continue };
+        if !out.iter().any(|known| known.eq_ignore_ascii_case(&name)) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// Steam account names found on this PC, best first. Nothing leaves the PC.
+#[tauri::command]
+pub async fn detect_steam_accounts(state: State<'_, AppState>) -> Result<Vec<String>> {
+    let steamcmd = crate::tools::find_steamcmd(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        let read = |path: PathBuf| fs::read_to_string(path).unwrap_or_default();
+        let from_steamcmd = steamcmd
+            .and_then(|exe| exe.parent().map(|dir| dir.join("config").join("config.vdf")))
+            .map(|path| steamcmd_accounts(&read(path)))
+            .unwrap_or_default();
+        let client = steam_root().map(|root| steam_client_accounts(&read(root.join("config").join("loginusers.vdf")))).unwrap_or_default();
+        let (recent, rest) = client.split_first().map(|(first, rest)| (vec![first.clone()], rest.to_vec())).unwrap_or_default();
+        merge_accounts([from_steamcmd, recent, steam_auto_login_user().into_iter().collect(), rest])
+    })
+    .await
+    .map_err(|_| AppError::msg("Couldn't look for Steam accounts."))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -648,6 +821,9 @@ pub async fn download_wallpaper(
         (project, false)
     } else {
         let steamcmd = steamcmd_path(&state)?;
+        if state.tool_install.try_lock().is_err() {
+            return Err(AppError::msg("A tool install is running. Try again when it finishes."));
+        }
         let exe = steamcmd.clone();
         let steam_dir = tauri::async_runtime::spawn_blocking(move || -> Result<PathBuf> {
             validate_steamcmd(&exe)?;
@@ -749,6 +925,14 @@ fn reported_project<'a>(line: &'a [u8], marker: &[u8]) -> Option<&'a [u8]> {
     let after = line.get(start..)?;
     let path = &after[..after.iter().position(|byte| *byte == b'"')?];
     (!path.is_empty()).then_some(path)
+}
+
+/// SteamCMD's own update progress ("[ 45%] Downloading update ..."), for the installer.
+pub(crate) fn update_percent(line: &str) -> Option<f64> {
+    match progress_of(line) {
+        Some((Stage::Updating, percent)) => percent,
+        _ => None,
+    }
 }
 
 /// What a SteamCMD output line says about progress.
@@ -1293,6 +1477,33 @@ mod tests {
         assert_eq!(export_name("Trailing dots...", 7, 0), "Trailing dots (7).zip");
         let long = "é".repeat(200);
         assert_eq!(export_name(&long, 7, 0).chars().count(), 80 + " (7).zip".len());
+    }
+
+    #[test]
+    fn finds_steam_account_names_on_this_pc() {
+        let steamcmd = r#""InstallConfigStore"
+        {
+            "Software" { "Valve" { "Steam" {
+                // comment
+                "Accounts" { "cmd_user" { "SteamID" "7656" } "Second_One" { } }
+                "ConnectCache" { "abc" "def" }
+            } } }
+        }"#;
+        assert_eq!(steamcmd_accounts(steamcmd), ["cmd_user", "Second_One"]);
+        let loginusers = r#""users"
+        {
+            "765611" { "AccountName" "older" "PersonaName" "Old" "MostRecent" "0" }
+            "765612" { "AccountName" "newest" "PersonaName" "New \"one\"" "MostRecent" "1" }
+        }"#;
+        assert_eq!(steam_client_accounts(loginusers), ["newest", "older"]);
+        assert!(steamcmd_accounts("").is_empty() && steam_client_accounts("{{{").is_empty());
+        let merged = merge_accounts([
+            vec!["cmd_user".to_string()],
+            vec!["newest".to_string()],
+            vec!["CMD_USER".to_string(), "bad name".to_string(), "anonymous".to_string()],
+            vec!["older".to_string()],
+        ]);
+        assert_eq!(merged, ["cmd_user", "newest", "older"]);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import type { ToolName } from "./setup";
+import type { ManagedTool } from "./setup";
 import {
   api,
   errorMessage,
@@ -127,14 +127,14 @@ class Store {
   /** The download list, kept in creation order from revisioned events. */
   readonly jobs = new JobTable<Job>();
   history: HistoryItem[] = [];
-  tools: ToolsStatus = { ytdlp: null, ffmpeg: null, deno: null, latestYtdlp: null, jsRuntime: null };
+  tools: ToolsStatus = { ytdlp: null, ffmpeg: null, deno: null, latestYtdlp: null, jsRuntime: null, steamcmd: null };
   /** "Not Now" on the setup panel: optional tools are not offered again until the next launch. */
   setupDismissed = false;
   libraryKind: LibraryKind = "all";
   libraryOrder: LibraryOrder = "date";
-  toolProgress: Partial<Record<ToolName, ToolProgress>> = {};
-  toolBusy: Partial<Record<ToolName, boolean>> = {};
-  toolError: Partial<Record<ToolName, string>> = {};
+  toolProgress: Partial<Record<ManagedTool, ToolProgress>> = {};
+  toolBusy: Partial<Record<ManagedTool, boolean>> = {};
+  toolError: Partial<Record<ManagedTool, string>> = {};
 
   /** False until the first tool check returns; until then "not installed" is unknown. */
   toolsKnown = false;
@@ -372,6 +372,13 @@ class Store {
     this.emit("tools");
   }
 
+  /** Saves the SteamCMD to use ("" for Claws' own copy) and reads which one that now is. */
+  async setSteamcmd(path: string, onError: (message: string) => void) {
+    this.updateSettings({ steamcmdPath: path }, onError);
+    await this.flushSettings().catch(() => undefined);
+    this.setTools(await api.toolsStatus());
+  }
+
   setTools(tools: ToolsStatus) {
     this.tools = tools;
     this.emit("tools");
@@ -383,7 +390,7 @@ class Store {
   }
 
   /** Installs queue (the backend refuses a second one), so none is dropped. */
-  runTool(tool: ToolName, action: () => Promise<ToolsStatus>, options: { quiet?: boolean } = {}): Promise<void> {
+  runTool(tool: ManagedTool, action: () => Promise<ToolsStatus>, options: { quiet?: boolean } = {}): Promise<void> {
     if (this.toolPending.has(tool)) return this.toolChain;
     this.toolPending.add(tool);
     this.toolChain = this.toolChain.then(() => this.runToolNow(tool, action, options));
@@ -391,9 +398,9 @@ class Store {
   }
 
   private toolChain: Promise<void> = Promise.resolve();
-  private toolPending = new Set<ToolName>();
+  private toolPending = new Set<ManagedTool>();
 
-  private async runToolNow(tool: ToolName, action: () => Promise<ToolsStatus>, options: { quiet?: boolean }) {
+  private async runToolNow(tool: ManagedTool, action: () => Promise<ToolsStatus>, options: { quiet?: boolean }) {
     this.toolBusy[tool] = true;
     delete this.toolError[tool];
     delete this.toolProgress[tool];

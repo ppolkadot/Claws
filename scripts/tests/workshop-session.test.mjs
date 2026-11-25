@@ -51,7 +51,7 @@ test("the export says what is missing before it can start", () => {
   assert.equal(missingForStart("library", { steam: false, found: false }, "", ""), "Steam isn't installed for this Windows user.");
   assert.equal(missingForStart("library", { steam: true, found: false }, "", ""), "Subscribe in Steam first.");
   assert.equal(missingForStart("library", { steam: true, found: true }, "", ""), null);
-  assert.equal(missingForStart("steamcmd", null, "", "owner"), "Choose SteamCMD first.");
+  assert.equal(missingForStart("steamcmd", null, "", "owner"), "Install SteamCMD first.");
   assert.equal(missingForStart("steamcmd", null, "C:\\SteamCMD\\steamcmd.exe", "anonymous"), "Enter your Steam account name.");
   assert.equal(missingForStart("steamcmd", null, "C:\\SteamCMD\\steamcmd.exe", "a b"), "Enter your Steam account name.");
   assert.equal(missingForStart("steamcmd", null, "C:\\SteamCMD\\steamcmd.exe", " owner_1 "), null);

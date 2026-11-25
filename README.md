@@ -14,7 +14,7 @@ Paste a link, choose a quality, and the file lands on your disk. Built with nati
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-34C759?logo=opensourceinitiative&logoColor=white)
 
-[**Download 1.0.9b for Windows**](https://github.com/ppolkadot/Claws/raw/refs/heads/main/installers/Claws_1.0.9b_x64-setup.exe) · [Documentation](docs/README.md) · [1.0.9b build notes](docs/releases/1.0.9b.md)
+[**Download 1.0.9c for Windows**](https://github.com/ppolkadot/Claws/raw/refs/heads/main/installers/Claws_1.0.9c_x64-setup.exe) · [Documentation](docs/README.md) · [1.0.9c build notes](docs/releases/1.0.9c.md)
 
 <!--
 Screenshot slot. Add high-DPI captures at docs/assets/screenshot-dark.png and
@@ -49,7 +49,7 @@ docs/assets/screenshot-light.png, then replace this comment with:
 
 ## Quick start
 
-1. Download the [1.0.9b Windows installer](https://github.com/ppolkadot/Claws/raw/refs/heads/main/installers/Claws_1.0.9b_x64-setup.exe) and run it.
+1. Download the [1.0.9c Windows installer](https://github.com/ppolkadot/Claws/raw/refs/heads/main/installers/Claws_1.0.9c_x64-setup.exe) and run it.
 2. Press **Set up everything** on first launch to install yt-dlp, ffmpeg and Deno.
 3. Paste a link with <kbd>Ctrl</kbd>+<kbd>V</kbd>, pick a quality, press **Download**.
 
@@ -76,7 +76,7 @@ Paste one Wallpaper Engine Steam Workshop item link into **Download**. Claws sho
 There are two sources:
 
 - **Steam library (no sign-in in Claws).** If Steam is installed and signed in with the account that owns Wallpaper Engine, press **Subscribe in Steam**, subscribe on the page that opens, and wait. Claws watches your Steam libraries for up to ten minutes and enables **Save ZIP** when Steam has downloaded the wallpaper. Claws only reads Steam's folders.
-- **SteamCMD.** Extract [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD) to a writable folder outside OneDrive, such as `C:\SteamCMD`, then choose it (Claws checks that `steamcmd.exe` is signed by Valve). Enter the Steam account name that owns Wallpaper Engine and press **Sign in to Steam…** once: SteamCMD opens in its own window for the password and any Steam Guard code; type `quit` when it says it is logged in. Claws remembers the SteamCMD location and account name (never a password). SteamCMD keeps its own copy of each wallpaper unless **Remove SteamCMD's copy** is on.
+- **SteamCMD.** Press **Install SteamCMD**: Claws downloads Valve's [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD) into its own tools folder, accepts it only with Valve's signature, and lets it update itself. You can also **Choose…** a copy you already have (outside OneDrive). Claws fills in the Steam account name when it finds one on this PC (from SteamCMD's own sign-ins or the Steam client); check that it is the account that owns Wallpaper Engine, then press **Sign in to Steam…** once: SteamCMD opens in its own window for the password and any Steam Guard code; type `quit` when it says it is logged in. Claws remembers the SteamCMD location and account name (never a password). SteamCMD keeps its own copy of each wallpaper unless **Remove SteamCMD's copy** is on.
 
 Anonymous SteamCMD sign-ins cannot download Wallpaper Engine items, and Valve's public item details carry no download link, so one of these two sources is needed (see the [spike notes](docs/wallpaper-engine-no-login-spike.md)). A wallpaper that needs other Workshop items says so; download those as well. **View in Steam** opens the item page, in the browser when Steam is not installed.
 
@@ -104,8 +104,8 @@ The desktop shows through the window, blurred by the Windows composition API; th
 
 ### Windows installer
 
-1. Download [Claws 1.0.9b for Windows x64](https://github.com/ppolkadot/Claws/raw/refs/heads/main/installers/Claws_1.0.9b_x64-setup.exe) from `main`. See the [SHA-256 checksum](installers/Claws_1.0.9b_x64-setup.exe.sha256) and [build notes](docs/releases/1.0.9b.md).
-2. Verify the checksum and run the installer. The installer is unsigned. Windows reports version `1.0.9` because `1.0.9b` is the build nickname.
+1. Download [Claws 1.0.9c for Windows x64](https://github.com/ppolkadot/Claws/raw/refs/heads/main/installers/Claws_1.0.9c_x64-setup.exe) from `main`. See the [SHA-256 checksum](installers/Claws_1.0.9c_x64-setup.exe.sha256) and [build notes](docs/releases/1.0.9c.md).
+2. Verify the checksum and run the installer. The installer is unsigned. Windows reports version `1.0.9` because `1.0.9c` is the build nickname.
 3. On first launch the Download page lists the tools that are missing: yt-dlp, ffmpeg and a JavaScript runtime (Deno). **Set up everything** downloads each into its own folder from its project's GitHub releases and verifies it against the published SHA-256 before use. Nothing is fetched until you press the button, a tool already on your `PATH` counts as ready, and ffmpeg and Deno can be skipped with **Not now**.
 
 Claws uses the same app data location for this build. The [GitHub Releases page](https://github.com/ppolkadot/Claws/releases) carries the separately published releases.
@@ -146,7 +146,7 @@ Claws uses the same app data location for this build. The [GitHub Releases page]
 | **Quick access** | Quick Open shortcut (Ctrl+Alt+D, Ctrl+Alt+Space, Ctrl+Shift+Space or off), notify when a download finishes, keep running when closed, open at login |
 | **Appearance** | Theme (System, Light, Dark), window material (Glass, Acrylic, Mica, Solid), transparency, font status |
 | **Sign-in** | Cookies from none, a browser (Firefox, Chrome, Edge, Brave, Opera, Vivaldi), or a `cookies.txt` file |
-| **Tools** | yt-dlp version and one-click update, ffmpeg status and install, and the JavaScript runtime (Deno or Node.js) with a Deno install when none is found |
+| **Tools** | The sidebar shows the installed Claws build; yt-dlp version and one-click update, ffmpeg status and install, and the JavaScript runtime (Deno or Node.js) with a Deno install when none is found |
 
 Glass, the default, shows your desktop through the window. Acrylic and Mica are the Windows system materials, which Windows flattens while the window is in the background. Solid turns the material off.
 

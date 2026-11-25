@@ -329,6 +329,12 @@ pub async fn install_deno(app: AppHandle) -> Result<ToolsStatus> {
     Ok(tools::status(&app).await)
 }
 
+#[tauri::command]
+pub async fn install_steamcmd(app: AppHandle) -> Result<ToolsStatus> {
+    tools::install_steamcmd(&app).await?;
+    Ok(tools::status(&app).await)
+}
+
 /// The URL is fixed here rather than taken from the UI, so this can only open the Salted
 /// Flutters Polaris project page.
 #[tauri::command]

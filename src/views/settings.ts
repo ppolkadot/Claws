@@ -288,21 +288,36 @@ function buildSettings(container: HTMLElement): () => void {
   );
 
   // Wallpaper Engine: what the SteamCMD source uses (the Steam library source needs nothing).
-  const steamcmdPath = h("span", { class: "path", text: s().steamcmdPath || "Not chosen", attrs: { title: s().steamcmdPath } });
+  const steamcmdPath = h("span", { class: "path" });
+  const installSteamcmd = button({
+    label: "Install",
+    variant: "secondary",
+    size: "small",
+    onClick: () => void store.runTool("steamcmd", api.installSteamcmd),
+  });
+  // "Clear" goes back to Claws' own copy (or none).
   const clearSteamcmd = button({
     label: "Clear",
     variant: "plain",
     size: "small",
-    onClick: () => {
-      update({ steamcmdPath: "" });
-      paintSteam();
-    },
+    onClick: () => void store.setSteamcmd("", onError),
   });
   const paintSteam = () => {
-    steamcmdPath.textContent = s().steamcmdPath || "Not chosen";
-    steamcmdPath.title = s().steamcmdPath;
+    const tool = store.tools.steamcmd;
+    const busy = Boolean(store.toolBusy.steamcmd);
+    const progress = store.toolProgress.steamcmd;
+    const pct = progress && progress.total > 0 ? ` ${Math.round((progress.received / progress.total) * 100)}%` : "…";
+    steamcmdPath.textContent = busy
+      ? progress?.stage === "update" ? `Updating${pct}` : progress?.stage === "extract" ? "Checking Valve's signature…" : `Downloading${pct}`
+      : tool ? (tool.managed ? "Installed by Claws" : tool.path) : "Not installed";
+    steamcmdPath.title = tool?.path ?? "";
+    installSteamcmd.hidden = Boolean(tool) && !busy;
+    installSteamcmd.disabled = busy;
     clearSteamcmd.hidden = !s().steamcmdPath;
+    const error = store.toolError.steamcmd;
+    steamcmdHint.textContent = error ?? (tool ? "Only needed for wallpapers you haven't subscribed to in Steam." : "Downloads Valve's SteamCMD into Claws' tools folder. Only needed for wallpapers you haven't subscribed to in Steam.");
   };
+  const steamcmdHint = h("span");
   const steamAccount = h("input", {
     class: "text-input",
     attrs: { id: "settings-steam-account", type: "text", maxlength: 64, spellcheck: false, autocomplete: "username", value: s().steamAccount },
@@ -315,22 +330,20 @@ function buildSettings(container: HTMLElement): () => void {
         "div",
         { class: "inline" },
         steamcmdPath,
+        installSteamcmd,
         button({
           label: "Choose…",
-          variant: "secondary",
+          variant: "plain",
           size: "small",
           onClick: () =>
             void api.chooseSteamcmd().then(
-              (path) => {
-                if (path) update({ steamcmdPath: path });
-                paintSteam();
-              },
+              (path) => (path ? store.setSteamcmd(path, onError) : undefined),
               (e) => onError(errorMessage(e)),
             ),
         }),
         clearSteamcmd,
       ),
-      "Only needed for wallpapers you haven't subscribed to in Steam.",
+      steamcmdHint,
     ),
     row("Steam account", steamAccount, "The account that owns Wallpaper Engine.", steamAccount.id),
     row(
@@ -433,7 +446,7 @@ function buildSettings(container: HTMLElement): () => void {
     );
     toolsGroup.querySelectorAll<HTMLButtonElement>("button").forEach((b) => (b.disabled = ytdlpBusy || ffmpegBusy || denoBusy));
   };
-  const offTools = [store.on("tools", paintTools), store.on("toolProgress", paintTools)];
+  const offTools = [store.on("tools", paintTools), store.on("toolProgress", paintTools), store.on("tools", paintSteam), store.on("toolProgress", paintSteam)];
   paintTools();
 
   container.append(

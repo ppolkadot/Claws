@@ -1,4 +1,5 @@
-import type { ToolName } from "../setup";
+import type { ManagedTool } from "../setup";
+import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { api } from "../api";
@@ -77,7 +78,7 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
   const toolBar = progressBar(0);
   const toolChip = h(
     "button",
-    { class: "tool-chip", attrs: { type: "button", title: "Open tool settings" }, on: { click: () => store.go("settings") } },
+    { class: "tool-chip", attrs: { type: "button", title: "Open Settings" }, on: { click: () => store.go("settings") } },
     h("span", { class: "tool-line" }, toolDot, toolText),
     toolBar,
   );
@@ -202,20 +203,32 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
   store.on("jobStatus", paintBadge);
   paintBadge();
 
-  let lastTool: ToolName | null = null;
+  // The installed build: the version the running app reports, named as its build when the
+  // build name belongs to that version ("1.0.9" runs as "1.0.9b").
+  let appVersion = __CLAWS_BUILD__;
+  void getVersion()
+    .then((running) => {
+      appVersion = __CLAWS_BUILD__.startsWith(running) ? __CLAWS_BUILD__ : running;
+      paintTools();
+    })
+    .catch(() => undefined);
+
+  let lastTool: ManagedTool | null = null;
   const paintTools = () => {
-    const busy = store.toolBusy.ytdlp || store.toolBusy.ffmpeg || store.toolBusy.deno;
-    const tool: ToolName = store.toolBusy.ytdlp ? "ytdlp" : store.toolBusy.ffmpeg ? "ffmpeg" : "deno";
+    const busy = store.toolBusy.ytdlp || store.toolBusy.ffmpeg || store.toolBusy.deno || store.toolBusy.steamcmd;
+    const tool: ManagedTool = store.toolBusy.ytdlp ? "ytdlp" : store.toolBusy.ffmpeg ? "ffmpeg" : store.toolBusy.deno ? "deno" : "steamcmd";
     const progress = store.toolProgress[tool];
     toolChip.classList.toggle("busy", Boolean(busy));
     toolDot.dataset.state = !store.toolsKnown ? "" : store.toolError.ytdlp ? "error" : store.tools.ytdlp ? "ok" : "missing";
     if (busy) {
       const pct = progress && progress.total > 0 ? progress.received / progress.total : null;
-      const name = tool === "ytdlp" ? "yt-dlp" : tool === "ffmpeg" ? "ffmpeg" : "Deno";
+      const name = tool === "ytdlp" ? "yt-dlp" : tool === "ffmpeg" ? "ffmpeg" : tool === "deno" ? "Deno" : "SteamCMD";
       toolText.textContent =
         progress?.stage === "extract"
           ? `Unpacking ${name}…`
-          : `Setting up ${name}${pct !== null ? ` ${Math.round(pct * 100)}%` : "…"}`;
+          : progress?.stage === "update"
+            ? `Updating ${name}${pct !== null ? ` ${Math.round(pct * 100)}%` : "…"}`
+            : `Setting up ${name}${pct !== null ? ` ${Math.round(pct * 100)}%` : "…"}`;
       // The next tool's download starts on the same bar: it jumps back to its start.
       setProgress(toolBar, pct, tool !== lastTool ? "snap" : "smooth");
       lastTool = tool;
@@ -224,7 +237,7 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
     } else if (store.toolError.ytdlp) {
       toolText.textContent = "yt-dlp setup failed";
     } else if (store.tools.ytdlp) {
-      toolText.textContent = `yt-dlp ${store.tools.ytdlp.version}`;
+      toolText.textContent = `Claws ${appVersion}`;
     } else {
       toolText.textContent = "yt-dlp not installed";
     }

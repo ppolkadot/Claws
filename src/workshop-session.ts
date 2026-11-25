@@ -96,7 +96,7 @@ export function missingForStart(source: WorkshopSource, library: LibraryStatus |
     if (!library?.found) return "Subscribe in Steam first.";
     return null;
   }
-  if (!steamcmdPath.trim()) return "Choose SteamCMD first.";
+  if (!steamcmdPath.trim()) return "Install SteamCMD first.";
   if (!/^[A-Za-z0-9_]{1,64}$/.test(account.trim()) || account.trim().toLowerCase() === "anonymous") {
     return "Enter your Steam account name.";
   }

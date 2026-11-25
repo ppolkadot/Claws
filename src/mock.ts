@@ -441,8 +441,24 @@ const sampleTools: ToolsStatus = {
   deno: { path: "C:\\sample\\deno.exe", version: "2.9.8", managed: true, fastStart: false },
   latestYtdlp: null,
   jsRuntime: "Deno",
+  steamcmd: null,
 };
-const mockTools: ToolsStatus = freshSetup ? { ytdlp: null, ffmpeg: null, deno: null, latestYtdlp: null, jsRuntime: null } : { ...sampleTools };
+const mockTools: ToolsStatus = freshSetup ? { ytdlp: null, ffmpeg: null, deno: null, latestYtdlp: null, jsRuntime: null, steamcmd: null } : { ...sampleTools };
+const sampleSteamcmd = { path: "C:\\Users\\Sample\\AppData\\Roaming\\dev.claws.downloader\\bin\\steamcmd\\steamcmd.exe", version: "", managed: true, fastStart: false };
+
+async function sampleSteamcmdInstall(): Promise<ToolsStatus> {
+  for (let step = 1; step <= 5; step++) {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    void emit("tool-progress", { tool: "steamcmd", received: step * 200_000, total: 1_000_000, stage: "download" });
+  }
+  void emit("tool-progress", { tool: "steamcmd", received: 0, total: 0, stage: "extract" });
+  for (let step = 1; step <= 5; step++) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    void emit("tool-progress", { tool: "steamcmd", received: step * 200, total: 1000, stage: "update" });
+  }
+  mockTools.steamcmd = sampleSteamcmd;
+  return { ...mockTools };
+}
 
 async function sampleInstall(tool: ToolName): Promise<ToolsStatus> {
   const total = 40 * 1024 * 1024;
@@ -536,6 +552,7 @@ export function installMock() {
           return null;
         }
         case "choose_steamcmd":
+          mockTools.steamcmd = { path: "C:\\SteamCMD\\steamcmd.exe", version: "", managed: false, fastStart: false };
           return "C:\\SteamCMD\\steamcmd.exe";
         case "sign_in_steamcmd":
           return null;
@@ -552,6 +569,12 @@ export function installMock() {
           return sampleInstall("ffmpeg");
         case "install_deno":
           return sampleInstall("deno");
+        case "install_steamcmd":
+          return sampleSteamcmdInstall();
+        case "detect_steam_accounts":
+          return mockTools.steamcmd ? ["sample_owner"] : [];
+        case "plugin:app|version":
+          return "1.0.9";
         case "list_history":
           return history;
         case "kept_files_report":

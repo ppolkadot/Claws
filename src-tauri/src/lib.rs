@@ -125,6 +125,9 @@ pub fn run() {
 
             if let Some(main) = app.get_webview_window("main") {
                 window::apply_theme(&main, &settings.theme);
+                if let Err(e) = window::hide_system_buttons(&main) {
+                    notices.push(e);
+                }
                 if let Err(e) = window::apply_backdrop(&main, &settings.backdrop) {
                     notices.push(e);
                 }
@@ -177,6 +180,7 @@ pub fn run() {
             commands::update_ytdlp,
             commands::install_ffmpeg,
             commands::install_deno,
+            commands::install_steamcmd,
             commands::default_output_dir,
             commands::open_font_page,
             workshop::open_workshop_item,
@@ -184,6 +188,7 @@ pub fn run() {
             workshop::choose_steamcmd,
             workshop::sign_in_steamcmd,
             workshop::find_wallpaper_in_library,
+            workshop::detect_steam_accounts,
             workshop::download_wallpaper,
             workshop::cancel_wallpaper_download,
         ])

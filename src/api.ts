@@ -177,7 +177,7 @@ export interface PublishedFile {
   state: "moving" | "done" | "withheld";
 }
 
-import type { ToolName } from "./setup.js";
+import type { ManagedTool } from "./setup.js";
 
 export interface ToolInfo {
   path: string;
@@ -195,6 +195,8 @@ export interface ToolsStatus {
   latestYtdlp: string | null;
   /** "Deno" or "Node.js", the JavaScript runtime yt-dlp uses for sites like YouTube. */
   jsRuntime: string | null;
+  /** SteamCMD for Wallpaper Engine: the one chosen in Settings, else Claws' own copy. */
+  steamcmd: ToolInfo | null;
 }
 
 export interface SubtitleLang {
@@ -257,10 +259,11 @@ export interface EnqueueItem {
 }
 
 export interface ToolProgress {
-  tool: ToolName;
+  tool: ManagedTool;
   received: number;
   total: number;
-  stage: "download" | "extract";
+  /** "update": SteamCMD's first run, fetching the rest of itself. */
+  stage: "download" | "extract" | "update";
 }
 
 interface Bootstrap {
@@ -319,6 +322,8 @@ export const api = {
   openWorkshopItem: (url: string) => invoke<void>("open_workshop_item", { url }),
   chooseSteamcmd: () => invoke<string | null>("choose_steamcmd"),
   signInSteamcmd: (account: string) => invoke<void>("sign_in_steamcmd", { account }),
+  installSteamcmd: () => invoke<ToolsStatus>("install_steamcmd"),
+  detectSteamAccounts: () => invoke<string[]>("detect_steam_accounts"),
   findWallpaperInLibrary: (url: string) => invoke<LibraryStatus>("find_wallpaper_in_library", { url }),
   downloadWallpaper: (url: string, source: WorkshopSource, account: string | null) =>
     invoke<WallpaperOutcome>("download_wallpaper", { url, source, account }),

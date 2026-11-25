@@ -2,7 +2,7 @@
 
 ## Version and delivery
 
-**1.0.9b** is the Windows build on `main`. The npm, Cargo and Tauri version files stay `1.0.9`, which is also the version Windows reports. See the [1.0.9b build notes](releases/1.0.9b.md) for the installer, checksum and verification evidence.
+**1.0.9c** is the Windows build on `main`. The npm, Cargo and Tauri version files stay `1.0.9`, which is also the version Windows reports. See the [1.0.9c build notes](releases/1.0.9c.md) for the installer, checksum and verification evidence.
 
 The earlier [1.0.9 GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.9) has its own [release notes](releases/1.0.9.md) and installer.
 
@@ -10,6 +10,13 @@ The earlier [1.0.9 GitHub release](https://github.com/ppolkadot/Claws/releases/t
 
 - Wallpaper Engine Steam Workshop downloads via SteamCMD. Claws saves the project and its assets as a ZIP. The [user guide](../README.md#wallpaper-engine) covers setup and sign-in.
 - [UI cleanup](UNSLOP_UI_REVIEW.md) for copy, icons and spacing, plus a visible filename label and simpler Library hover behavior.
+
+## What 1.0.9c adds
+
+- SteamCMD installs from Claws, like yt-dlp and ffmpeg: Valve's download, accepted only with Valve's signature, then one run so it updates itself. A copy you already have can still be chosen.
+- The Steam account name fills in from this PC (SteamCMD's own sign-ins first, then the Steam client's), with the others offered as suggestions.
+- Windows' own minimize, maximize and close buttons no longer exist behind the window's top-right corner (the system menu style is removed; Alt+Space goes with it).
+- The sidebar shows the installed Claws build (for example `Claws 1.0.9c`) beside the tool dot.
 
 ## What 1.0.9b adds
 

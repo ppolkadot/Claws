@@ -72,16 +72,29 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
 
   // SteamCMD
   const steamcmdText = h("span", { class: "path" });
-  const chooseLabel = () => (store.settings.steamcmdPath ? "Change…" : "Choose…");
+  // Installed like yt-dlp and ffmpeg: one press downloads Valve's SteamCMD into Claws' tools
+  // folder, checks Valve's signature and lets it update itself.
+  const install: HTMLButtonElement = button({
+    label: "Install SteamCMD",
+    variant: "secondary",
+    size: "small",
+    onClick: () => {
+      void store.runTool("steamcmd", api.installSteamcmd).then(() => {
+        if (store.toolError.steamcmd) toast(store.toolError.steamcmd, { tone: "error" });
+        void fillAccount();
+      });
+    },
+  });
+  const chooseLabel = () => (store.tools.steamcmd ? "Change…" : "Choose…");
   const choose: HTMLButtonElement = button({
     label: chooseLabel(),
-    variant: "secondary",
+    variant: "plain",
     size: "small",
     onClick: async () => {
       choose.disabled = true;
       try {
         const path = await api.chooseSteamcmd();
-        if (path) store.updateSettings({ steamcmdPath: path }, onSaveError);
+        if (path) await store.setSteamcmd(path, onSaveError);
       } catch (error) {
         toast(errorMessage(error), { tone: "error" });
       } finally {
@@ -90,12 +103,30 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
       }
     },
   });
-  const steamcmdRow = row("SteamCMD", h("div", { class: "inline" }, steamcmdText, choose));
+  const steamcmdHint = h("span");
+  const steamcmdRow = row("SteamCMD", h("div", { class: "inline" }, steamcmdText, install, choose), steamcmdHint);
+  // Accounts found on this PC (SteamCMD's sign-ins, then the Steam client's) are offered as
+  // suggestions, and the best one fills an empty field.
+  const found = h("datalist", { attrs: { id: "workshop-accounts" } });
   const account = h("input", {
     class: "text-input",
-    attrs: { id: "workshop-account", type: "text", maxlength: 64, spellcheck: false, autocomplete: "username", value: store.settings.steamAccount },
+    attrs: { id: "workshop-account", type: "text", maxlength: 64, spellcheck: false, autocomplete: "username", list: "workshop-accounts", value: store.settings.steamAccount },
   });
-  account.addEventListener("input", () => paint());
+  let accountFound = false;
+  async function fillAccount() {
+    const names = await api.detectSteamAccounts().catch(() => [] as string[]);
+    found.replaceChildren(...names.map((name) => h("option", { attrs: { value: name } })));
+    if (!account.value.trim() && names.length > 0 && !session.running) {
+      account.value = names[0];
+      accountFound = true;
+      store.updateSettings({ steamAccount: names[0] }, onSaveError);
+    }
+    paint();
+  }
+  account.addEventListener("input", () => {
+    accountFound = false;
+    paint();
+  });
   account.addEventListener("change", () => store.updateSettings({ steamAccount: account.value.trim() }, onSaveError));
   account.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !save.disabled) {
@@ -114,12 +145,8 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
       );
     },
   });
-  const accountRow = row(
-    "Steam account",
-    h("div", { class: "inline" }, account, signIn),
-    "The account that owns Wallpaper Engine. Sign in once; SteamCMD remembers it.",
-    "workshop-account",
-  );
+  const accountHint = h("span");
+  const accountRow = row("Steam account", h("div", { class: "inline" }, account, found, signIn), accountHint, "workshop-account");
   const cleanupRow = row(
     "Remove SteamCMD's copy",
     toggle("Remove SteamCMD's copy after saving", store.settings.removeSteamcmdCopy, (value) => store.updateSettings({ removeSteamcmdCopy: value }, onSaveError)),
@@ -215,13 +242,33 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
     stopWatching.hidden = !session.watching;
 
     steamcmdRow.hidden = accountRow.hidden = cleanupRow.hidden = fromLibrary;
-    const path = store.settings.steamcmdPath;
-    steamcmdText.textContent = path || "Not chosen";
-    steamcmdText.title = path;
+    const steamcmd = store.tools.steamcmd;
+    const path = steamcmd?.path ?? "";
+    const installing = Boolean(store.toolBusy.steamcmd);
+    const progress = store.toolProgress.steamcmd;
+    const pct = progress && progress.total > 0 ? ` ${Math.round((progress.received / progress.total) * 100)}%` : "…";
+    steamcmdText.textContent = installing
+      ? progress?.stage === "update"
+        ? `Updating${pct}`
+        : progress?.stage === "extract"
+          ? "Checking Valve's signature…"
+          : `Downloading${pct}`
+      : steamcmd
+        ? steamcmd.managed
+          ? "Installed by Claws"
+          : path
+        : "Not installed";
+    steamcmdText.title = installing ? "" : path;
+    steamcmdHint.textContent = steamcmd ? "" : "Downloads Valve's SteamCMD into Claws' tools folder.";
+    install.hidden = Boolean(steamcmd) && !installing;
+    install.disabled = installing || busy;
     choose.querySelector("span")!.textContent = chooseLabel();
-    choose.disabled = busy;
+    choose.disabled = busy || installing;
     account.disabled = busy;
-    signIn.disabled = busy || !path || !account.value.trim();
+    signIn.disabled = busy || installing || !path || !account.value.trim();
+    accountHint.textContent = accountFound
+      ? "Found on this PC. It must own Wallpaper Engine."
+      : "The account that owns Wallpaper Engine. Sign in once; SteamCMD remembers it.";
 
     const missing = missingForStart(session.source, library, path, account.value);
     reason.textContent = busy ? "" : (missing ?? "");
@@ -241,9 +288,10 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
   }
 
   const el = h("section", { class: "workshop-panel" }, preview, required, sectionTitle("Options"), options, running, actions, outcome);
-  const off = [session.on(paint), store.on("settings", paint)];
+  const off = [session.on(paint), store.on("settings", paint), store.on("tools", paint), store.on("toolProgress", paint)];
   paint();
   if (!session.library) void session.checkLibrary(true);
+  void fillAccount();
   return {
     el,
     dispose: () => off.forEach((stop) => stop()),

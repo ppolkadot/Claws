@@ -1,6 +1,6 @@
 # Developer handoff
 
-Start with [current status](CURRENT_DEVELOPMENT_STATUS.md) and the [1.0.9b build notes](releases/1.0.9b.md). The handoff describes how to work on Claws; release chronology is recorded in `releases/` and git history.
+Start with [current status](CURRENT_DEVELOPMENT_STATUS.md) and the [1.0.9c build notes](releases/1.0.9c.md). The handoff describes how to work on Claws; release chronology is recorded in `releases/` and git history.
 
 ## Architecture and scope
 
@@ -13,7 +13,7 @@ Claws is a Windows Tauri 2 desktop app with plain TypeScript/CSS. Rust invokes y
 | Space accounting and previews | `disk_budget.rs`, `estimate.rs` |
 | Probing, saved links and transcripts | `probe.rs`, `links.rs`, `transcript.rs` |
 | Spotify identity and YouTube search/ranking | `spotify.rs`, `spotify_match.rs`; frontend `spotify-match.ts` and its view |
-| Wallpaper Engine Workshop lookup, Steam library and SteamCMD sources, ZIP export | `workshop.rs`; frontend `workshop-link.ts`, `workshop-session.ts` and `views/workshop.ts` |
+| Wallpaper Engine Workshop lookup, Steam library and SteamCMD sources, Steam account detection, ZIP export | `workshop.rs` (SteamCMD install in `tools.rs`, into `bin/steamcmd/`); frontend `workshop-link.ts`, `workshop-session.ts` and `views/workshop.ts` |
 | Tools and desktop integration | `tools.rs`, `desktop.rs`, `file_drag.rs`, `window.rs`, `commands.rs` |
 | Frontend state and navigation | `store.ts`, `api.ts`, `views/`, pure helpers and `ui/` |
 
@@ -33,6 +33,8 @@ Claws is a Windows Tauri 2 desktop app with plain TypeScript/CSS. Rust invokes y
 - A playlist folder is a prefix (`download_policy::playlist_prefix`) stored on the job and put in front of the filename template when the job first starts. It is sanitized to one plain folder name and escaped for the template. Publication is unchanged: the same ownership and no-overwrite rules as any template with a folder.
 - Chapters are embedded by the metadata pass (`--embed-metadata --embed-chapters`), never by a pass of their own.
 - Progress reaches 100% only after publication. Late telemetry cannot undo Processing. Queue event revisions prevent older replies from reverting state.
+- The window is borderless with its own traffic lights. tao still gives it `WS_SYSMENU`, and the glass/Acrylic/Mica frame extension (`window::apply_backdrop`) makes DWM paint Windows' own minimize/restore/close glyphs over the top-right corner when the window is maximized. `window::hide_system_buttons` removes `WS_SYSMENU` through a subclass that edits every `WM_STYLECHANGING`, because tao rewrites the style whenever a window flag changes. Alt+Space and the taskbar's system menu are the cost; snap, Win+Arrow, minimize and maximize still work. Do not extend the frame again without checking a maximized window.
+- The sidebar shows the installed build: `package.json` `buildName` (for example `1.0.9b`) is compiled in by `vite.config.ts` and shown when it starts with the version the running app reports (`1.0.9`). Update `buildName` with each named installer; the version files stay semver.
 - Keep size preview, admission and processing policy consistent. Processing monitoring is best effort; a preview is not a reservation or a strict gate before every FFmpeg launch.
 - yt-dlp calls include `--encoding utf-8`; environment variables alone did not preserve printed Unicode paths on Windows.
 - A Spotify URL identifies a song, not downloadable Spotify audio. Preserve explicit user selection, fresh same-video audio evidence, canonical YouTube sources and separate persistent provenance. Maintain HTTP allowlists, body/redirect/time limits and inert metadata parsing.

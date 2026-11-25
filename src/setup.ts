@@ -1,5 +1,7 @@
 
 export type ToolName = "ytdlp" | "ffmpeg" | "deno";
+/** Every tool Claws can install: the setup tools and SteamCMD for Wallpaper Engine. */
+export type ManagedTool = ToolName | "steamcmd";
 
 export interface SetupTools {
   ytdlp: unknown | null;
