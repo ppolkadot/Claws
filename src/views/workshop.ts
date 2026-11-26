@@ -4,7 +4,7 @@ import { store } from "../store";
 import { button, segmented, toast, toggle } from "../ui/components";
 import { h, replace } from "../ui/dom";
 import { group, progressBar, row, sectionTitle, setProgress } from "../ui/layout";
-import { missingForStart, offersVideo, stageText, type ExportFormat, type WorkshopSession, type WorkshopSource } from "../workshop-session";
+import { missingForStart, stageText, type ExportFormat, type WorkshopSession, type WorkshopSource } from "../workshop-session";
 import { thumbnailEl } from "./download-shared";
 
 export interface WorkshopView {
@@ -105,28 +105,18 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
   });
   const steamcmdHint = h("span");
   const steamcmdRow = row("SteamCMD", h("div", { class: "inline" }, steamcmdText, install, choose), steamcmdHint);
-  // Accounts found on this PC (SteamCMD's sign-ins, then the Steam client's) are offered as
-  // suggestions, and the best one fills an empty field.
+  // A detected account might not own Wallpaper Engine or have a saved SteamCMD session.
   const found = h("datalist", { attrs: { id: "workshop-accounts" } });
   const account = h("input", {
     class: "text-input",
     attrs: { id: "workshop-account", type: "text", maxlength: 64, spellcheck: false, autocomplete: "username", list: "workshop-accounts", value: store.settings.steamAccount },
   });
-  let accountFound = false;
   async function fillAccount() {
     const names = await api.detectSteamAccounts().catch(() => [] as string[]);
     found.replaceChildren(...names.map((name) => h("option", { attrs: { value: name } })));
-    if (!account.value.trim() && names.length > 0 && !session.running) {
-      account.value = names[0];
-      accountFound = true;
-      store.updateSettings({ steamAccount: names[0] }, onSaveError);
-    }
     paint();
   }
-  account.addEventListener("input", () => {
-    accountFound = false;
-    paint();
-  });
+  account.addEventListener("input", paint);
   account.addEventListener("change", () => store.updateSettings({ steamAccount: account.value.trim() }, onSaveError));
   account.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !save.disabled) {
@@ -135,12 +125,12 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
     }
   });
   const signIn: HTMLButtonElement = button({
-    label: "Sign in to Steam…",
+    label: "Sign in to SteamCMD…",
     variant: "secondary",
     size: "small",
     onClick: () => {
       void api.signInSteamcmd(account.value.trim()).then(
-        () => toast("Sign in in the SteamCMD window, then type quit."),
+        () => toast("Finish signing in through SteamCMD, then type quit."),
         (error) => toast(errorMessage(error), { tone: "error" }),
       );
     },
@@ -155,7 +145,6 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
 
   // Format. ZIP keeps the project and works for every item; a video project can also be
   // converted with FFmpeg to a playable MP4 or a GIF.
-  const video = offersVideo(item);
   const formatSeg = segmented<ExportFormat>(
     "Save as",
     [
@@ -262,7 +251,7 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
       ? "Uses the copy Steam downloads when you subscribe. No sign-in in Claws."
       : "Downloads with SteamCMD, signed in with your Steam account.";
 
-    formatRow.hidden = !video;
+    formatRow.hidden = !session.videoAvailable;
     formatSeg.set(session.format);
     formatSeg.el.querySelectorAll("button").forEach((b) => ((b as HTMLButtonElement).disabled = busy));
     formatHint.textContent =
@@ -276,7 +265,9 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
       : !library.steam
         ? "Steam isn't installed for this Windows user."
         : library.found
-          ? "Found in your Steam library."
+          ? library.video
+            ? "Video found in your Steam library."
+            : "Project found. Claws can save a ZIP. MP4 and GIF need a standalone video."
           : session.watching
             ? "Waiting for Steam to download it…"
             : "Not in your library yet.";
@@ -307,10 +298,8 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
     choose.querySelector("span")!.textContent = chooseLabel();
     choose.disabled = busy || installing;
     account.disabled = busy;
-    signIn.disabled = busy || installing || !path || !account.value.trim();
-    accountHint.textContent = accountFound
-      ? "Found on this PC. It must own Wallpaper Engine."
-      : "The account that owns Wallpaper Engine. Sign in once; SteamCMD remembers it.";
+    signIn.disabled = busy || installing || Boolean(missingForStart("steamcmd", null, path, account.value));
+    accountHint.textContent = "Use the login name of the account that owns Wallpaper Engine. SteamCMD needs its own sign-in.";
 
     const missing = missingForStart(session.source, library, path, account.value);
     reason.textContent = busy ? "" : (missing ?? "");

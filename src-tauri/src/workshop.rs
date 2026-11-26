@@ -697,14 +697,21 @@ pub struct LibraryStatus {
     pub steam: bool,
     /// The item's project is in a Steam library.
     pub found: bool,
+    /// True only when the installed project declares a supported video file.
+    pub video: bool,
 }
 
 #[tauri::command]
 pub async fn find_wallpaper_in_library(url: String) -> Result<LibraryStatus> {
     let id = item_id(&url)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(root) = steam_root() else { return LibraryStatus { steam: false, found: false } };
-        LibraryStatus { steam: true, found: library_project(&library_folders(&root), id).is_some() }
+        let Some(root) = steam_root() else { return LibraryStatus { steam: false, found: false, video: false } };
+        let project = library_project(&library_folders(&root), id);
+        LibraryStatus {
+            steam: true,
+            found: project.is_some(),
+            video: project.as_deref().is_some_and(|path| crate::workshop_media::video_file(path).is_ok()),
+        }
     })
     .await
     .map_err(|_| AppError::msg("Couldn't check the Steam library."))
@@ -836,9 +843,9 @@ pub async fn download_wallpaper(
     let found = lookup(&state.steam_http, id).await.map_err(|_| AppError::msg(STEAM_UNREACHABLE))?;
     let WorkshopLookup::Wallpaper { item } = found else { return Err(not_a_wallpaper(&found)) };
     let media = format.media();
-    // The Workshop tags are the only video confirmation available before the download; the
-    // project itself is checked again once it is here.
-    if media.is_some() && !item.wallpaper_type.as_deref().is_some_and(|kind| kind.eq_ignore_ascii_case("Video")) {
+    // The Steam library already has the manifest. For SteamCMD, tags guide the choice
+    // until the project is downloaded. Conversion validates the actual file either way.
+    if !from_library && media.is_some() && !item.wallpaper_type.as_deref().is_some_and(|kind| kind.eq_ignore_ascii_case("Video")) {
         return Ok(WallpaperOutcome::Unsupported {
             message: "This Workshop item isn't a video wallpaper, so Claws can only save the project as a ZIP. Choose ZIP and try again."
                 .into(),
@@ -1135,16 +1142,16 @@ fn progress_of(line: &str) -> Option<(Stage, Option<f64>)> {
     }
 }
 
-const SIGNED_OUT: &str = "SteamCMD isn't signed in with this account. Use Sign in to Steam, then try again.";
+const SIGNED_OUT: &str = "SteamCMD isn't signed in with this account. Sign in to SteamCMD once, then type quit. You can also use the Steam library.";
 
 /// The message for SteamCMD's output when no project was reported.
 fn classify(output: &str) -> &'static str {
     let text = output.to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|needle| text.contains(needle));
     if has(&["invalid password"]) {
-        "Steam rejected the sign-in for this account. Use Sign in to Steam to enter the password again, then try again."
+        "Steam rejected the sign-in. Check the account name and password in Steam, then sign in to SteamCMD again or use the Steam library."
     } else if has(&["account logon denied", "two-factor", "steam guard", "steamguard"]) {
-        "Steam needs a Steam Guard code for this account. Use Sign in to Steam to enter it, then try again."
+        "Steam needs a Steam Guard code for this account. Use Sign in to SteamCMD to enter it, then try again."
     } else if has(&["rate limit"]) {
         "Steam is limiting sign-ins for now. Wait a few minutes, then try again."
     } else if has(&["cached credentials not found", "no cached credentials", "login failure", "failed to log"]) {

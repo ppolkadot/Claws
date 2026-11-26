@@ -17,7 +17,7 @@ function deps(overrides = {}) {
         return { status: "saved", filename: "Ocean (123).zip", path: "C:\\out\\Ocean (123).zip" };
       },
       cancel: async () => void calls.push(["cancel"]),
-      findInLibrary: async () => ({ steam: true, found: false }),
+      findInLibrary: async () => ({ steam: true, found: false, video: false }),
       describeError: (error) => String(error?.message ?? error),
       ...overrides,
     },
@@ -74,7 +74,10 @@ test("a SteamCMD export sends the account and format; a library export sends no 
   assert.deepEqual(calls[0], ["download", URL_A, "steamcmd", "owner_1", "zip"]);
   assert.deepEqual(steam.state, { phase: "saved", filename: "Ocean (123).zip", path: "C:\\out\\Ocean (123).zip" });
 
-  const library = new WorkshopSession(URL_A, item, d, false);
+  const library = new WorkshopSession(URL_A, item, {
+    ...d, findInLibrary: async () => ({ steam: true, found: true, video: true }),
+  }, false);
+  await library.checkLibrary();
   assert.equal(library.source, "library");
   library.setFormat("mp4");
   assert.equal(library.format, "mp4");
@@ -88,6 +91,26 @@ test("only video wallpapers offer a video format", () => {
   assert.equal(offersVideo({ ...item, wallpaperType: "VIDEO" }), true);
   assert.equal(offersVideo({ ...item, wallpaperType: "Scene" }), false);
   assert.equal(offersVideo({ ...item, wallpaperType: null }), false);
+});
+
+test("the installed project controls library export even when Workshop tags are wrong", async () => {
+  let video = true;
+  const { calls, deps: d } = deps({
+    findInLibrary: async () => ({ steam: true, found: true, video }),
+  });
+  const session = new WorkshopSession(URL_A, item, d, true);
+  await session.checkLibrary(true);
+  assert.equal(session.source, "library");
+  assert.equal(session.videoAvailable, true);
+  assert.equal(session.format, "mp4");
+  session.setFormat("gif");
+  await session.start("");
+  assert.deepEqual(calls[0], ["download", URL_A, "library", null, "gif"]);
+
+  video = false;
+  await session.checkLibrary();
+  assert.equal(session.videoAvailable, false);
+  assert.equal(session.format, "zip");
 });
 
 test("an unsupported video export offers the ZIP fallback and clears it on a format change", async () => {
@@ -138,7 +161,7 @@ test("cancel asks the backend only while running; errors become failures", async
 test("the library is checked until Steam has the subscribed item", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   let found = false;
-  const { deps: d } = deps({ findInLibrary: async () => ({ steam: true, found }) });
+  const { deps: d } = deps({ findInLibrary: async () => ({ steam: true, found, video: false }) });
   const session = new WorkshopSession(URL_A, item, d, false);
   await session.checkLibrary();
   session.watchLibrary(Date.now());
@@ -150,6 +173,6 @@ test("the library is checked until Steam has the subscribed item", async (t) => 
   t.mock.timers.tick(3000);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(session.watching, false);
-  assert.deepEqual(session.library, { steam: true, found: true });
+  assert.deepEqual(session.library, { steam: true, found: true, video: false });
   session.dispose();
 });

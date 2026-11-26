@@ -6,7 +6,7 @@ Use these documents for the current project:
 - [Developer handoff](HANDOFF.md): architecture, safety contracts, build/test commands and manual acceptance.
 - [User guide](../README.md): installation, features, settings and troubleshooting.
 - [Product brief](../PRODUCT.md) and [design system](../DESIGN.md): product scope and visual rules.
-- [1.0.9d build notes](releases/1.0.9d.md): SteamCMD signature fix and MP4/GIF export for video wallpapers.
+- [1.0.9e build notes](releases/1.0.9e.md): SteamCMD signature fix and MP4/GIF export for video wallpapers.
 - [1.0.9c build notes](releases/1.0.9c.md): SteamCMD installed by Claws, Steam account detection and the window-button fix.
 - [1.0.9b build notes](releases/1.0.9b.md): Windows installer on `main`, the Steam library and SteamCMD sources, and verification.
 - [1.0.9a build notes](releases/1.0.9a.md): Windows installer on `main`, Workshop downloads and verification.

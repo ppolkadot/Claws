@@ -46,6 +46,8 @@ export interface LibraryStatus {
   steam: boolean;
   /** The item's project is in a Steam library. */
   found: boolean;
+  /** The local manifest names a supported video file. */
+  video: boolean;
 }
 
 export type WorkshopState =
@@ -124,8 +126,7 @@ export class WorkshopSession {
   source: WorkshopSource;
   library: LibraryStatus | null = null;
   state: WorkshopState = { phase: "ready" };
-  /** What Save writes. ZIP stays the default so every item can be saved. */
-  format: ExportFormat = "zip";
+  private chosenFormat: ExportFormat | null = null;
   /** Polling the Steam library after the user went to subscribe. */
   watching = false;
   private watchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -145,6 +146,15 @@ export class WorkshopSession {
     return this.state.phase === "running";
   }
 
+  get videoAvailable(): boolean {
+    return this.source === "library" ? this.library?.video === true : offersVideo(this.item);
+  }
+
+  get format(): ExportFormat {
+    if (!this.videoAvailable) return "zip";
+    return this.chosenFormat ?? (this.source === "library" ? "mp4" : "zip");
+  }
+
   on(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -159,7 +169,7 @@ export class WorkshopSession {
     try {
       this.library = await this.deps.findInLibrary(this.url);
     } catch {
-      this.library = { steam: false, found: false };
+      this.library = { steam: false, found: false, video: false };
     }
     if (preferFound && this.library.found && !this.running) this.source = "library";
     this.changed();
@@ -175,8 +185,9 @@ export class WorkshopSession {
 
   /** Switches the export format, clearing an old outcome so the panel starts fresh. */
   setFormat(format: ExportFormat) {
-    if (this.running || this.format === format) return;
-    this.format = format;
+    if (this.running || (format !== "zip" && !this.videoAvailable)) return;
+    if (this.chosenFormat === format) return;
+    this.chosenFormat = format;
     if (this.state.phase !== "ready") this.state = { phase: "ready" };
     this.changed();
   }

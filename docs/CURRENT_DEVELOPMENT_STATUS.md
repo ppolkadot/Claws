@@ -2,11 +2,11 @@
 
 ## Version and delivery
 
-**1.0.9d** is the Windows build on `main` and [GitHub Releases](https://github.com/ppolkadot/Claws/releases/tag/v1.0.9d). The npm, Cargo and Tauri version files stay `1.0.9`, which is also the version Windows reports. See the [1.0.9d build notes](releases/1.0.9d.md) for the installer, checksum and verification evidence.
+**1.0.9e** is the Windows build on `main` and [GitHub Releases](https://github.com/ppolkadot/Claws/releases/tag/v1.0.9e). The npm, Cargo and Tauri version files stay `1.0.9`, which is also the version Windows reports. See the [1.0.9e build notes](releases/1.0.9e.md) for the installer, checksum and verification evidence.
 
 The earlier [1.0.9 GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.9) has its own [release notes](releases/1.0.9.md) and installer.
 
-## What 1.0.9d adds
+## What 1.0.9e adds
 
 - SteamCMD acceptance recognises both exact publisher names Valve uses: `Valve` (the official bootstrap ZIP) and `Valve Corp.` (an updated copy). Both still need a signature Windows verifies with `WinVerifyTrust`, and lookalike names are refused.
 - A video Wallpaper Engine item can be saved as **MP4** (H.264 with AAC audio when present) or **GIF** (silent, 15 fps, a palette per frame so FFmpeg's memory stays bounded for long clips) beside the default project **ZIP**. Claws offers the video formats only when Valve's Workshop type is Video, then checks the downloaded `project.json` and reads only the video file it declares inside the item. Scene, web and application projects stay ZIP and are never run.

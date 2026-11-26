@@ -575,7 +575,8 @@ export function installMock() {
           return mockWorkshopDetails(String(payload.url));
         case "find_wallpaper_in_library": {
           const id = new URL(String(payload.url)).searchParams.get("id") ?? "";
-          return { steam: true, found: id.endsWith("6") || mockSubscribed.has(id) };
+          const found = id.endsWith("6") || mockSubscribed.has(id);
+          return { steam: true, found, video: found && mockWallpaperType(id) === "Video" };
         }
         case "open_workshop_item": {
           // Sample mode: "subscribing" puts the item in the library a few seconds later.
