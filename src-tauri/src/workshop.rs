@@ -894,7 +894,7 @@ async fn record_media(
 pub fn close_recording_window(state: &AppState) {
     let window = state.workshop.lock().unwrap().window.clone();
     if let Some((engine, title)) = window {
-        workshop_record::close_window(&engine, &title);
+        workshop_record::close_window(&engine, &title, Duration::from_millis(1500));
     }
 }
 
@@ -1708,6 +1708,23 @@ mod tests {
                     assert_eq!(times.iter().map(|t| t.ms).sum::<u64>(), elapsed_ms);
                     let progress: Vec<f64> = events.iter().filter_map(|event| event.done).collect();
                     eprintln!("  {} events, {} with a count", events.len(), progress.len());
+                    if std::env::var_os("CLAWS_TEST_SERIES").is_some() {
+                        for event in events.iter().filter(|event| event.done.is_some()) {
+                            eprintln!("series {} {} {}", event.elapsed_ms, event.done.unwrap_or(0.0), event.total.unwrap_or(0.0));
+                        }
+                    }
+                    // How well did the time left predict the rest of the counted stage?
+                    if let Some(counted) = events.iter().find(|event| event.done.is_some()).map(|event| event.stage) {
+                        let end = events.iter().rev().find(|event| event.stage == counted).map(|event| event.elapsed_ms);
+                        let after = events.iter().find(|event| matches!(event.stage, Stage::Finishing)).map(|event| event.elapsed_ms).or(end);
+                        for share in [0.1, 0.25, 0.5, 0.75, 0.9] {
+                            let at = events.iter().find(|event| event.stage == counted && event.done.zip(event.total).is_some_and(|(done, total)| total > 0.0 && done / total >= share));
+                            if let (Some(event), Some(after)) = (at, after) {
+                                let actual = after.saturating_sub(event.elapsed_ms) as f64 / 1000.0;
+                                eprintln!("  at {:>3.0}%: elapsed {:.1}s, predicted left {:?}{}, actual left {actual:.1}s", share * 100.0, event.elapsed_ms as f64 / 1000.0, event.eta_ms.map(|eta| eta as f64 / 1000.0), if event.approximate { " (about)" } else { "" });
+                            }
+                        }
+                    }
                 }
                 other => panic!("export {run} did not save: {other:?}"),
             }

@@ -8,9 +8,15 @@ The earlier [1.0.9 GitHub release](https://github.com/ppolkadot/Claws/releases/t
 
 ## In development (after 1.0.9e)
 
-Follows [the 2026-11-26 plan](superpowers/plans/2026-11-26-wallpaper-recording-progress-steamcmd-removal.md) and the [Wallpaper Engine study](wallpaper-engine-local-library-study.md). The version files stay `1.0.9`. No installer has been built from this work.
+Follows [the 2026-11-26 plan](superpowers/plans/2026-11-26-wallpaper-recording-progress-steamcmd-removal.md); measurements and the places the work differs from the plan are in the [Wallpaper Engine study](wallpaper-engine-local-library-study.md#implementation-results-2026-11-26). The version files stay `1.0.9`. No installer has been built from this work.
 
 - **SteamCMD is gone.** The Steam library is the only Wallpaper Engine source: no install, sign-in, account name or Steam account detection. Settings files from 1.0.9e that still hold the old fields load, and the fields are dropped on the next save. A leftover SteamCMD folder in Claws' tools folder is offered for removal in Settings → Wallpaper Engine, never deleted without confirmation.
+- **Steam's state is shown.** Installed, still downloading (a real percentage from the bytes on disk against Valve's size) or an update pending, from `appworkshop_431960.acf` and the downloads folder.
+- **MP4 (original) copies.** An 8-bit H.264 MP4 video wallpaper is copied byte for byte with a byte count (the 5.6 GB 4K sample, minutes to re-encode before, copies in under a minute even from a cold disk). Everything else converts (**MP4 (converted)**); above 1440p with a hardware encoder when one works, at the source's resolution. GIF is cut to 30 seconds (60 on request) and capped at 720p.
+- **The export tracker.** Every export reports its stage, a count and a time left only when they can be backed, ends with "took m:ss", feeds the taskbar and sends a notification for exports over 30 seconds while Claws is hidden. A pre-start estimate sits under the format choice; conversion speeds are remembered.
+- **Recording.** Scene and web wallpapers can be recorded to MP4 or saved as a picture through Wallpaper Engine's documented command line (signature verified, window hidden, focus returned, closed on every exit). Sizes follow the authored size, up to 4K, never stretched.
+
+Open items: see the study's list of what remains unverified (fullscreen games, a locked screen, scene sound, a heavy GPU load, AMD and Intel encoders).
 
 ## What 1.0.9e adds
 
@@ -72,7 +78,7 @@ Settings schema stays 2 and queue schema stays 3; every new field is defaulted.
 | Real slow source | No affected source/format was supplied. Controlled benchmarks do not establish an Internet throughput improvement. Follow [speed diagnosis](performance/speed-diagnosis.md). |
 | Native drag | Explorer/editor import, a stalled receiver, swapped buttons, long/UNC paths and Windows 10 acceptance need disposable-environment checks. See [manual acceptance](HANDOFF.md#manual-acceptance). |
 | Installed application | Fresh installation/upgrade and manual real-WebView2 checks remain unverified. |
-| Wallpaper Engine | Live Valve metadata and collection detection are covered by the opt-in live test (`CLAWS_TEST_NETWORK`). MP4/GIF conversion is covered against generated FFmpeg fixtures with ffprobe. Still to check live: a real video wallpaper's conversion, a SteamCMD download with an owning account, the Steam library source on a PC with Steam, and both in the native app. |
+| Wallpaper Engine | Live Valve metadata and collection detection are covered by the opt-in live test (`CLAWS_TEST_NETWORK`). Recording, copy and conversion are covered by opt-in live tests on the owner's PC (see [HANDOFF](HANDOFF.md#development-tools)); the installed native app, a fullscreen game, a locked screen, scene sound and AMD or Intel encoders remain unverified. MP4/GIF conversion is covered against generated FFmpeg fixtures with ffprobe. Still to check live: a real video wallpaper's conversion, a SteamCMD download with an owning account, the Steam library source on a PC with Steam, and both in the native app. |
 | Spotify | Real share-link redirect smoke, OS-level IME composition, listening-based playback and live outage/removal behavior remain unverified. Historical native saves and synthetic UI checks are recorded separately. |
 | Disk behavior | Real peak space across all postprocessors and constrained-volume behavior need controlled measurements; no strict pre-FFmpeg launch gate is claimed. |
 | Optional permission cleanup | `core:window:allow-destroy` is still used by `onCloseRequested`. Replace that close path before considering removal. |

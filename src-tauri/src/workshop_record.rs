@@ -355,9 +355,22 @@ fn engine_command(exe: &Path, args: &[&str]) -> std::io::Result<()> {
 
 /// Closes the window with this title, the way Wallpaper Engine documents (`closeWallpaper`) and
 /// then, if it is still there, the way a close button does. Only a window that exists is asked:
-/// asking Wallpaper Engine when it is not running would start it. Blocking, about a second.
-pub fn close_window(engine: &Path, title: &str) -> bool {
-    let Some(found) = win_window::find_window(title, engine) else { return true };
+/// asking Wallpaper Engine when it is not running would start it. Blocking, about a second (plus
+/// `grace`, which waits for a window that has not appeared yet).
+pub fn close_window(engine: &Path, title: &str, grace: Duration) -> bool {
+    // The window can still be on its way when the order to open it was only just given: wait for
+    // it for `grace`, so a cancel that comes early does not leave it to appear afterwards.
+    let waiting = Instant::now();
+    let found = loop {
+        if let Some(found) = win_window::find_window(title, engine) {
+            break Some(found);
+        }
+        if waiting.elapsed() >= grace {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let Some(found) = found else { return true };
     let gone = |wait_ms: u64| {
         let deadline = Instant::now() + Duration::from_millis(wait_ms);
         while Instant::now() < deadline {
@@ -384,12 +397,20 @@ pub struct WindowGuard<'a> {
     title: String,
     announce: &'a (dyn Fn(Option<&str>) + Sync),
     closed: bool,
+    /// When the order to open the window was given, once it has been.
+    opened: Option<Instant>,
 }
 
 impl<'a> WindowGuard<'a> {
     pub fn new(engine: &Path, title: &str, announce: &'a (dyn Fn(Option<&str>) + Sync)) -> Self {
         announce(Some(title));
-        Self { engine: engine.to_path_buf(), title: title.to_string(), announce, closed: false }
+        Self { engine: engine.to_path_buf(), title: title.to_string(), announce, closed: false, opened: None }
+    }
+
+    /// The order to open the window has been given: from now on, closing waits briefly for a
+    /// window that has not appeared yet.
+    pub fn opened(&mut self) {
+        self.opened = Some(Instant::now());
     }
 
     /// Closes the window now. Returns whether it is gone.
@@ -397,7 +418,9 @@ impl<'a> WindowGuard<'a> {
         if self.closed {
             return true;
         }
-        let gone = close_window(&self.engine, &self.title);
+        // Within three seconds of the order to open it, the window may not exist yet.
+        let grace = self.opened.map_or(Duration::ZERO, |opened| Duration::from_secs(3).saturating_sub(opened.elapsed()));
+        let gone = close_window(&self.engine, &self.title, grace);
         self.closed = true;
         (self.announce)(None);
         gone
@@ -490,6 +513,7 @@ async fn record_inner(request: &RecordRequest<'_>) -> Result<Recorded, RecordFai
         &["-control", "openWallpaper", "-file", &project.to_string_lossy(), "-playInWindow", &title, "-width", &width, "-height", &height],
     )
     .map_err(|_| fail("Claws couldn't start Wallpaper Engine.", ""))?;
+    guard.opened();
 
     // Wait for its window.
     let waiting = Instant::now();
@@ -587,24 +611,28 @@ async fn record_inner(request: &RecordRequest<'_>) -> Result<Recorded, RecordFai
                 status = child.wait() => return Some(status),
                 _ = tokio::time::sleep(POLL) => {}
             }
-            if (request.cancelled)() || last_report.lock().unwrap().elapsed() > STALL || started.elapsed() > Duration::from_secs(u64::from(request.pre_roll) + length.unwrap_or(0.0) as u64 + 180) {
-                return None;
-            }
-            if last_space.elapsed() >= Duration::from_secs(5) {
+            let mut stop = (request.cancelled)()
+                || last_report.lock().unwrap().elapsed() > STALL
+                || started.elapsed() > Duration::from_secs(u64::from(request.pre_roll) + length.unwrap_or(0.0) as u64 + 180);
+            if !stop && last_space.elapsed() >= Duration::from_secs(5) {
                 last_space = Instant::now();
                 if (request.low_space)() {
                     low.store(true, std::sync::atomic::Ordering::SeqCst);
-                    return None;
+                    stop = true;
                 }
+            }
+            if stop {
+                // Stop FFmpeg here, so that its output ends and the reader below can finish.
+                if let Some(pid) = pid {
+                    kill_tree(pid, true);
+                }
+                let _ = child.kill().await;
+                return None;
             }
         }
     };
     let (_, status) = tokio::join!(reading, supervising);
     let Some(status) = status else {
-        if let Some(pid) = pid {
-            kill_tree(pid, true);
-        }
-        let _ = child.kill().await;
         let _ = errors.await;
         guard.close_now();
         if low.load(std::sync::atomic::Ordering::SeqCst) {
@@ -1077,6 +1105,10 @@ mod tests {
 
     /// Records `length` seconds (or one picture) of a library item at `height` and `fps`.
     async fn live_record(item: &str, height: u32, fps: u32, length: u32, picture: bool, encoder_name: Option<Encoder>) -> Result<LiveRun, RecordFailure> {
+        live_record_with(item, height, fps, length, picture, encoder_name, false).await
+    }
+
+    async fn live_record_with(item: &str, height: u32, fps: u32, length: u32, picture: bool, encoder_name: Option<Encoder>, drive_full: bool) -> Result<LiveRun, RecordFailure> {
         let tools = crate::download_tests::ffmpeg_dir().expect("needs Claws' ffmpeg and ffprobe");
         let ffmpeg = tools.join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX));
         let ffprobe = tools.join(format!("ffprobe{}", std::env::consts::EXE_SUFFIX));
@@ -1113,7 +1145,7 @@ mod tests {
         };
         let cancelled = || false;
         let on_spawn = |_pid: Option<u32>| true;
-        let low_space = || false;
+        let low_space = || drive_full;
         let request = RecordRequest {
             ffmpeg: &ffmpeg,
             ffprobe: Some(&ffprobe),
@@ -1132,11 +1164,17 @@ mod tests {
         let started = Instant::now();
         let outcome = record(&request).await?;
         let elapsed = started.elapsed();
-        let probe = crate::workshop_media::probe_file(&ffprobe, &partial).await.expect("ffprobe reads the recording");
-        let bytes = std::fs::metadata(&partial).unwrap().len();
         let title = titles.lock().unwrap().first().cloned();
         let file = dir.join(if picture { "recording.png" } else { "recording.mp4" });
-        std::fs::rename(&partial, &file).unwrap();
+        let (probe, bytes) = if matches!(outcome, Recorded::Done { .. }) {
+            let probe = crate::workshop_media::probe_file(&ffprobe, &partial).await.expect("ffprobe reads the recording");
+            let bytes = std::fs::metadata(&partial).unwrap().len();
+            std::fs::rename(&partial, &file).unwrap();
+            (probe, bytes)
+        } else {
+            let nothing = Probe { video_codec: String::new(), pix_fmt: String::new(), width: 0, height: 0, fps: 0.0, duration: None, audio_codec: None, format_name: String::new(), frames: None };
+            (nothing, 0)
+        };
         let events = events.lock().unwrap().clone();
         Ok(LiveRun { events, probe, title, engine: engine.exe, outcome, elapsed, bytes, dir, file })
     }
@@ -1193,6 +1231,20 @@ mod tests {
         assert_window_gone(&run);
         eprintln!("picture of {item}: {} bytes in {:.1}s", run.bytes, run.elapsed.as_secs_f64());
         std::fs::remove_dir_all(&run.dir).unwrap();
+    }
+
+    /// Live: `CLAWS_TEST_WALLPAPER_ENGINE_LOW_SPACE=<itemId>` starts a 60 s recording on a drive that
+    /// reports itself full: it must stop within seconds, say so, and leave nothing behind.
+    #[tokio::test]
+    async fn a_recording_stops_when_the_drive_fills_when_given() {
+        let Some(item) = std::env::var_os("CLAWS_TEST_WALLPAPER_ENGINE_LOW_SPACE") else { return };
+        let item = item.to_string_lossy().into_owned();
+        let started = Instant::now();
+        let run = live_record_with(&item, 720, 30, 60, false, None, true).await.unwrap_or_else(|f| panic!("{} {}", f.message, f.detail));
+        assert_eq!(run.outcome, Recorded::LowSpace);
+        assert!(started.elapsed() < Duration::from_secs(25), "{:?}", started.elapsed());
+        assert_window_gone(&run);
+        std::fs::remove_dir_all(&run.dir).ok();
     }
 
     /// Live: `CLAWS_TEST_WALLPAPER_ENGINE_4K=<itemId>` records 3 s at 3840×2160. Where the display
@@ -1314,7 +1366,7 @@ mod tests {
                 kill_tree(*pid, true);
             }
             if let Some(title) = titles.lock().unwrap().first() {
-                close_window(&engine_exe, title);
+                close_window(&engine_exe, title, Duration::ZERO);
             }
         } else {
             flag.store(true, std::sync::atomic::Ordering::SeqCst);

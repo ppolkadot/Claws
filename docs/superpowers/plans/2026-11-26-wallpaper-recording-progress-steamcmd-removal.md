@@ -1,6 +1,6 @@
 # Wallpaper Engine: scene recording, export progress, 4K, and SteamCMD removal
 
-**Status:** Prompt for the implementing agent. Not started. Written 2026-11-26.
+**Status:** Implemented on branch `t3/wallpaper-recording-progress` (Phases 1 to 5, no installer built). Written 2026-11-26. Where the work differs from this plan, and why, is recorded in the study's [implementation results](../../wallpaper-engine-local-library-study.md#implementation-results-2026-11-26): borderless windows are not held to the display limit, the copy time left is steadied against stalls, recording seconds are counted from the clock with the measured output lag, and a few small additions (a `bytes` field on the progress event, a `note` on `Saved`).
 
 **You are implementing** the next Wallpaper Engine release of Claws on Windows (Tauri v2, Rust backend, plain TypeScript frontend):
 

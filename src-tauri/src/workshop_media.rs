@@ -565,9 +565,26 @@ pub async fn convert(
     input: &Path,
     output: &Path,
     plan: &ConvertPlan,
+    on_spawn: impl FnMut(Option<u32>) -> bool,
+    cancelled: &(dyn Fn() -> bool + Sync),
+    on_progress: &(dyn Fn(&FfmpegProgress) + Sync),
+) -> Result<Outcome, Failure> {
+    convert_with_limits(ffmpeg, input, output, plan, on_spawn, cancelled, on_progress, STALL_LIMIT, CONVERT_LIMIT).await
+}
+
+/// `convert` with its two safety limits given: how long the output may stand still, and how long
+/// the whole conversion may run.
+#[allow(clippy::too_many_arguments)]
+async fn convert_with_limits(
+    ffmpeg: &Path,
+    input: &Path,
+    output: &Path,
+    plan: &ConvertPlan,
     mut on_spawn: impl FnMut(Option<u32>) -> bool,
     cancelled: &(dyn Fn() -> bool + Sync),
     on_progress: &(dyn Fn(&FfmpegProgress) + Sync),
+    stall_limit: Duration,
+    convert_limit: Duration,
 ) -> Result<Outcome, Failure> {
     let failure = |message: &str, detail: String| Failure { message: message.to_string(), detail };
     if cancelled() {
@@ -605,7 +622,12 @@ pub async fn convert(
             tokio::select! {
                 status = child.wait() => return Ok(status),
                 _ = tokio::time::sleep(Duration::from_secs(2)) => {
-                    if advanced.lock().unwrap().elapsed() > STALL_LIMIT || started.elapsed() > CONVERT_LIMIT {
+                    if advanced.lock().unwrap().elapsed() > stall_limit || started.elapsed() > convert_limit {
+                        // Stop FFmpeg here, so that its output ends and the reader can finish.
+                        if let Some(pid) = pid {
+                            kill_tree(pid, true);
+                        }
+                        let _ = child.kill().await;
                         return Err(());
                     }
                 }
@@ -619,10 +641,6 @@ pub async fn convert(
             failure("FFmpeg couldn't convert this wallpaper's video. Save it as a ZIP instead.", String::new())
         })?,
         Err(()) => {
-            if let Some(pid) = pid {
-                kill_tree(pid, true);
-            }
-            let _ = child.kill().await;
             let _ = errors.await;
             let _ = fs::remove_file(output);
             return Err(failure("The video stopped converting, so it was not saved. Try again, or save it as a ZIP.", String::new()));
@@ -907,6 +925,34 @@ mod tests {
         let video = streams.iter().find(|s| s["codec_type"] == "video").expect("a video stream");
         assert_eq!((video["width"].as_u64(), video["height"].as_u64()), (Some(64), Some(48)));
 
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Live: needs ffmpeg. A conversion whose output stops moving (here: a stall limit of zero)
+    /// is stopped at once and leaves nothing, rather than waiting for FFmpeg to finish by itself.
+    #[tokio::test]
+    async fn a_stalled_conversion_is_stopped_and_leaves_no_file() {
+        let Some(tools) = crate::download_tests::ffmpeg_dir() else {
+            eprintln!("skipped: needs ffmpeg");
+            return;
+        };
+        let ffmpeg = tools.join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX));
+        let dir = crate::download_tests::temp_dir("workshop-media-stall");
+        let source = dir.join("long.mp4");
+        let made = Command::new(&ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=r=10:d=600:s=1280x720", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let output = dir.join("out.partial");
+        let started = Instant::now();
+        let outcome = convert_with_limits(&ffmpeg, &source, &output, &ConvertPlan::basic(MediaFormat::Mp4), |_| true, &|| false, &|_| {}, Duration::ZERO, CONVERT_LIMIT).await;
+        let took = started.elapsed();
+        assert!(outcome.is_err(), "{outcome:?}");
+        assert!(outcome.unwrap_err().message.contains("stopped converting"));
+        assert!(took < Duration::from_secs(20), "stopped by the supervisor, not by FFmpeg ending: {took:?}");
+        assert!(!output.exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

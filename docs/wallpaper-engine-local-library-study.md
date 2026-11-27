@@ -1,6 +1,6 @@
 # Wallpaper Engine local library study
 
-2026-11-26. Study for the version after 1.0.9e. No code changed.
+2026-11-26. Study for the version after 1.0.9e. The study itself changed no code; the [implementation results](#implementation-results-2026-11-26) at the end record what was built from it.
 
 ## Questions
 
@@ -268,3 +268,58 @@ Backend changes: add `done`, `total`, `unit`, `elapsedMs` and `etaMs` to the `wo
 - [FFmpeg gfxcapture filter](https://ayosec.github.io/ffmpeg-filters-docs/8.1/Sources/Video/gfxcapture.html)
 - [linux-wallpaperengine README](https://raw.githubusercontent.com/Almamu/linux-wallpaperengine/main/README.md)
 - [Steam Workshop Downloader notes on app 431960](https://steamdb.com/en/tools/steam-workshop-downloader)
+
+## Implementation results (2026-11-26)
+
+Measured on the owner's PC while implementing [the plan](superpowers/plans/2026-11-26-wallpaper-recording-progress-steamcmd-removal.md): RTX 3060 Ti, two 1920×1080 monitors side by side, Windows 11, Wallpaper Engine 2.8.0.868 running, Claws' managed FFmpeg. Every test wrote to a temporary folder and opened and closed only its own pop-out window. Claws was built in debug mode for the tests, so file speeds are a floor. All are opt-in tests (see HANDOFF → Development tools).
+
+### Phase 0: what the spikes settled
+
+| Question | Result |
+|---|---|
+| Hidden window | Settled before implementation (see section 4): borderless, off-screen, toolwindow, bottom, no-activate, focus handed back. Implemented as designed. |
+| **Can a borderless window reach a size larger than the display?** | **Yes, which the plan assumed it could not.** Display limit from `GetSystemMetrics`: `SM_CXMAXTRACK`×`SM_CYMAXTRACK` = 3860×1106 (virtual screen 3840×1086). A *framed* window asked for 2560×1440 or 3840×2160 came out 2560×1067 and 3840×1067. The same window made borderless came out exactly **2560×1440** and **3840×2160**, and `gfxcapture` captured exactly that, with motion. No display setting was changed. |
+| 4K recording | Verified without DSR: a real 3840×2160 render, 90 frames for 3 s at 30 fps, through the full export (a 10 s 4K recording of the 1.2 GB scene `3488591998`: 13.3 MB, 21.0 s in all). |
+| Encoder bench, real 4K scene, 6 s plus 1 s pre-roll | `h264_nvenc`, `h264_mf` and `libx264 veryfast` all kept up with 4K at 30 and at 60 fps on this scene: 180 and 360 frames, **0 repeated, 0 dropped**, 7.5–7.8 s wall each. Sizes for 6 s: nvenc 32 MB (30 fps) and 57 MB (60 fps), mf 32 and 35 MB, x264 20 and 19 MB. This scene is simple; libx264's 0.84× on a real 4K video still rules it out for 4K and for 60 fps. |
+| Encoder probe order and settings | `h264_nvenc` → `h264_amf` → `h264_qsv` → `h264_mf` → `libx264`, each tried with a 0.4 s test encode; on this PC `h264_nvenc`, `h264_mf` and `libx264` work, AMF and QSV do not. Settings: libx264 `-preset veryfast -crf 20`; nvenc `-preset p5 -tune hq -rc vbr -cq 21 -b:v 0`; mf `-rate_control pc_vbr -b:v <typical>k` (**`-profile:v high` makes `h264_mf` fail**: it rejects the name, so it is left out); AMF `-rc cqp -qp_i 20 -qp_p 22`; QSV `-global_quality 21`. All `yuv420p` (QSV `nv12`) with the H.264 level that fits the size and rate (3840×2160 is 5.1 at 30 fps and 5.2 at 60). AMF and QSV settings are unverified: no such hardware here. Software is limited to 1440p at 30 fps. |
+| Fullscreen (exclusive) game | **Unverified.** No game was run. |
+| Locked screen or sleep | **Unverified.** Locking the owner's session was not safe to test. Wallpaper Engine's `playbacksleep` is `stop`. |
+| Scene sound while recording | **Unverified.** Playing a scene's audio on the owner's speakers at an unknown volume was not safe to test. Claws reports `has audio` from the package and notes that the recording is silent. |
+| GPU contention | Implemented: FFmpeg's `dup_frames` are counted and a recording with over 5% repeats is saved with a note. Not stress-tested under a heavy GPU load. |
+
+### What differs from the plan
+
+1. **Sizes beyond the display's reported limit are flagged, not removed.** The plan disabled 4K unless `SM_*MAXTRACK` allowed it. Because borderless windows are not held to that limit, Claws offers every size up to the authored height and encoder capability, shows "4K may need a display set to 3840×2160 or larger, such as a 4K monitor or NVIDIA DSR / AMD VSR" under the choice when the size is beyond what the display reports, and the existing check (`GetClientRect` after sizing, never scaling) fails with that same advice before anything is recorded if a PC does refuse. This keeps the plan's rules (no upscaling, exact size, a clear message) while not denying a size this PC can do.
+2. **Recording seconds are counted from the clock with a measured offset.** FFmpeg's first output past the pre-roll arrives about 0.52 s after the first kept frame was captured (measured with `h264_nvenc`), so the count starts that much earlier than the first progress block. The time left was then within 0.1 s of the real remaining time at 10, 25, 50, 75 and 90% (30 s recording at 1080p: predicted 26.9, 22.3, 14.8, 7.4 and 2.9 s against 27.0, 22.3, 14.9, 7.4 and 3.0 s).
+3. **The copy time left holds the recent rate between half and twice the stage's average.** A cold copy of the 5.6 GB video stalled during the write: the plain 3 s rate once promised 7,462 s left at 25%. On the recorded series (95 points) holding the rate between 0.5× and 2× of the stage average cut the median error from 0.37 to 0.24 and the worst overestimate from ×3.8 to ×2.1. It is one run's data; the shape of the rule (a bounded rate) is what matters.
+4. **Two small additions to the contracts:** a `bytes` field on `workshop-progress` (the video's size so far while recording; the plan's example line shows it but the contract did not carry it), and a `note` on `Saved` (the repeated-frames message). Both are optional.
+5. **A confirmation for any export estimated at over ten minutes**, not only GIF.
+6. **Sprite-sheet scenes:** 13 of 122 local scenes carry the animation flag in their texture headers (the study's 14 came from a text search; the header flag and a search for `TEXS` agree on all 122 scenes). Moving 119, still 3 (the same three: San Francisco `1173229707`, `2267802482`, `2284727786`), with sound 45 (43 had sound files; 2 more list sounds in `scene.json`).
+
+### Live results
+
+| Check | Result |
+|---|---|
+| Copy of `3283673017` (5.86 GB, 4K 60 fps H.264 + AAC) | Warm file: **9.97 s** (587 MB/s). From a cold disk, through the whole export: **51.8 s** and **66.7 s** in two runs (checking 1.4 s, copying 41.7 s and 57.1 s, finishing the file 8.6 s and 8.2 s: the flush to disk is a step of its own, shown as "Finishing the file…"). The old re-encode took about 5.8 min. |
+| Copy time left | See difference 3. With the plain 3 s rate the time left at 25/50/75/90% was off by up to 7,462 s early on and by a factor of three late; with the held rate the median error is 24%. It is marked "about". |
+| Copy of `1975374442` (782 MB, 720p, 64 min) | 3.4 s. |
+| Conversion `3376465584` (VP9, 2560×1440, 8 min 20 s, 98 MB) | Converted with libx264 (1440p is at the software limit): **184 s**, 2.7× real time, to a 138 MB H.264 MP4. Time left at 10, 25, 50, 75 and 90%: predicted 140, 120, 82, 46 and 18 s against actual 167, 142, 100, 42 and 17 s (early readings optimistic by 15–20%, FFmpeg's speed starts high; marked "about"). The speed (2.7×) is remembered for the next estimate under `mp4-1440`. |
+| 30 s recording, 1080p30, `1272964419` | **36.4 s** in all (checking 2.2 s, opening 0.4 s, loading 3.2 s, recording 29.3 s, finishing 1.3 s), 48.2 MB (12.8 Mbit/s). Time left within 0.1 s at every check. |
+| 10 min recording, 1080p30, `1272964419` | **611.1 s** in all (checking 0.8 s, opening 0.3 s, loading 3.2 s, recording 599.7 s, finishing 7.2 s: flushing 966 MB, probing and the three-window motion check), 966 MB (12.9 Mbit/s). Time left within 0.4 s of the real remaining time at 10, 25, 50, 75 and 90%. A second export of the same wallpaper into the same folder was named `(1)`: nothing was overwritten. |
+| Still scene to PNG, `1173229707`, 1080p | 4.0 s, 2.07 MB, a valid PNG at 1920×1080 (checking 0.8 s, opening 0.3 s, loading 2.8 s, finishing 0.2 s). |
+| 4K recording of a 4K scene | See Phase 0: exactly 3840×2160, 90 frames for 3 s; 10 s through the full export in 21.0 s. |
+| Web wallpaper `3136351729`, 5 s at 720p30, full export | 9.8 s, 433 KB, stages checking, opening, loading, recording, finishing; time left within 0.1 s. (No frozen-capture check for web pages: Claws cannot tell whether a page moves.) |
+| Stopping a recording that cannot go on | A recording on a drive that reports itself full stopped within seconds (the supervisor kills FFmpeg itself, then the window is closed); a conversion whose output stops moving (stall limit forced to zero) was stopped and left no file. An early review of the code found that these two paths waited for FFmpeg to end by itself; fixed, with both tests added. |
+| 3 s recordings, 720p30 | 90 frames at 1280×720 every time (88–92 allowed), 6.4–6.5 s in all; the 1.2 GB scene `3488591998` took 9.9 s (4 s pre-roll). |
+| Cancel | While opening, while loading, while recording, and once the way Claws' shutdown ends a recording (FFmpeg's tree killed and the window closed from outside, mid-recording): each ended `Cancelled` with no Wallpaper Engine window, no FFmpeg process and no partial file. A copy, a conversion and a ZIP stopped by Cancel leave no partial file (unit and live tests). |
+| Closing Claws during a recording | The shutdown steps (`kill_tree` on FFmpeg, `close_recording_window`) were run against a live recording as above; the full application was not closed, because that would have touched the owner's profile. |
+| Signature | The real `wallpaper64.exe` verifies and its signer is exactly `Skutta Software GmbH`; an unsigned executable (the test binary) is refused; lookalikes (`Skutta Software GmbH.`, case changes, a Cyrillic letter, a suffix) are refused by the exact comparison. |
+
+### Still unverified
+
+- A fullscreen exclusive game running, a locked screen or sleep, a scene's sound playing aloud, and a heavy GPU load during a recording.
+- AMD (`h264_amf`) and Intel (`h264_qsv`) encoders, and a display that does refuse a borderless window of the full size (the message exists and is unit-tested; this PC never produced it).
+- The installed native application (the installer was not built), including closing it during a recording.
+- Whether `NeedsUpdate` in the ACF marks a partly updated item reliably (Claws does not use it).
+- HEVC copies play in Windows' default player only with the HEVC extension: Claws copies H.264 only and converts the rest.
+- A web wallpaper's page runs inside Wallpaper Engine's own browser while it is recorded, exactly as when it is applied. Only one of the library's six web wallpapers was recorded.

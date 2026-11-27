@@ -351,7 +351,20 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
   }
 
   const el = h("section", { class: "workshop-panel" }, preview, required, sectionTitle("Options"), options, recordNote, running, actions, outcome);
-  const off = [session.on(paint), store.on("settings", paint)];
+  // While an export runs, almost every change is a progress event: only the tracker is redrawn for
+  // those, never the whole panel.
+  const staticState = () =>
+    JSON.stringify([session.running, session.format, session.estimate, session.library, session.watching, session.size?.height, session.fps, session.recordLength, session.lengthCustom, session.gifSeconds, session.record?.available]);
+  let lastStatic = "";
+  const changed = () => {
+    if (session.running) {
+      const key = staticState();
+      if (key === lastStatic) return paintTracker();
+      lastStatic = key;
+    }
+    paint();
+  };
+  const off = [session.on(changed), store.on("settings", paint)];
   paint();
   if (!session.library) void session.checkLibrary();
   else void session.refreshEstimate();

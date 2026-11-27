@@ -73,7 +73,7 @@ Claws runs on [yt-dlp](https://github.com/yt-dlp/yt-dlp), so it handles any site
 
 Paste one Wallpaper Engine Steam Workshop item link into **Download**. Claws shows the wallpaper's preview, title, type and size, then saves it in the download folder as `<title> (<item ID>).zip` (the whole project, as Steam downloaded it). Workshop collections and other games' items are refused with a message; open each wallpaper on its own. Exports run separately from the media queue, keep running if you switch tabs, and can be cancelled.
 
-A video wallpaper can also be saved as **MP4** or **GIF** (see [formats](#wallpaper-engine-formats) below); every other project is saved as its ZIP.
+A video wallpaper can also be saved as **MP4** or **GIF**, and a scene or web wallpaper can be **recorded** to an MP4 or saved as a **picture** (see [formats](#wallpaper-engine-formats) and [recording](#recording-a-scene-or-web-wallpaper) below). Every other project is saved as its ZIP.
 
 **Steam library only.** Claws needs Steam with Wallpaper Engine installed on this PC, and nothing else: no sign-in in Claws, no extra tool, no account name. Press **Subscribe in Steam**, subscribe on the page that opens, and wait. Claws watches your Steam libraries for up to ten minutes and enables Save when Steam has downloaded the wallpaper. Claws only reads Steam's folders and never writes into them. Without Steam, the wallpaper card says what is needed and **View in Steam** opens the item page (in the browser when Steam is not installed). A wallpaper that needs other Workshop items says so; download those as well.
 
@@ -86,6 +86,25 @@ Earlier versions could install Valve's SteamCMD into Claws' tools folder. Claws 
 - **MP4 (converted)** is used for everything else (HEVC, VP9, 10-bit, another container, unusual audio). Claws converts the video with FFmpeg to H.264 with AAC audio, keeping its resolution. Above 1440p it uses a hardware encoder when the PC has one (NVIDIA, AMD, Intel or Windows' own), so a 4K conversion runs faster than real time. The format row says which of the two you get.
 - **GIF** is a silent, looping animation at 15 frames per second with a colour palette fitted to each frame. A long, large GIF takes very long and is huge, so Claws cuts it to the first 30 seconds (or 60, your choice) and caps it at 720p, keeping the shape and never scaling up.
 - **Steam's state** is shown on the wallpaper card: still downloading (with a real percentage from the bytes on disk), or installed with an update waiting in Steam (Claws saves the version you have).
+
+- **MP4 (recorded)** and **Picture (PNG)** are for scene and web wallpapers, which have no video of their own: Wallpaper Engine plays them and Claws records the result. See below.
+
+#### Recording a scene or web wallpaper
+
+Pick **MP4 (recorded)** and Claws asks Wallpaper Engine, with its documented command line, to play the wallpaper in a window of its own, and captures that one window with its FFmpeg. The window is borderless, placed beyond every monitor, kept out of the taskbar and never activated, and keyboard focus goes straight back to what you were using, so you can keep working, switch Claws pages or hide Claws. It is closed when the recording ends, fails, is cancelled or Claws quits. Claws never minimises it (a minimised window stops being captured), never changes Wallpaper Engine's settings and only reads Steam's and Wallpaper Engine's folders.
+
+- **Trust.** Claws finds Wallpaper Engine the way Steam records it and runs it only after Windows verifies its signature and the signer is exactly `Skutta Software GmbH`. Without Wallpaper Engine, or with one Windows cannot verify, recording is not offered and the card says why in one line. Application wallpapers stay ZIP only: they run their own programs, which Claws never starts.
+- **Length.** 10 seconds, 30 seconds (the default), 60 seconds, or a custom length up to 10 minutes.
+- **Size.** In the scene's own shape, up to the size it was authored at (never stretched), at 720p, 1080p (the default), 1440p or 4K as the scene allows. A scene authored at an unusual size can also be recorded at that size. Sizes need an encoder that keeps up: a hardware encoder (NVIDIA, AMD, Intel or Windows' own, found by a real test encode) is used first, and software alone records up to 1440p at 30 fps. **60 fps** is offered where the encoder allows it.
+- **4K.** The window Wallpaper Engine opens has to reach the full size. A borderless window is not held to the limit a normal window has: on a 1080p display it reached 3840×2160 and was captured at exactly that size. A display can still refuse. If the window comes out smaller than asked, Claws stops before recording anything and says so (a 4K monitor, or NVIDIA DSR or AMD VSR, lifts it); it never stretches a smaller picture to fake a size. Sizes beyond what the display reports for an ordinary window say so under the choice.
+- **Picture.** A scene that has no effects, particles, animation, scripts, camera shake or sprite sheets does not move. Claws reads this from the scene's package (`scene.pkg`, with every size and offset checked, never run) and says "This wallpaper doesn't move", with **Picture (PNG)** the default: one frame after the scene has loaded.
+- **Time.** A recording takes its length, plus 2 seconds the scene is given to load (4 seconds for a package over 500 MB) and about a second to finish the file. The estimate under the choice says so before you start, with the size it will probably be.
+- **Web wallpapers.** A web wallpaper's page runs inside Wallpaper Engine's own browser while it is recorded, exactly as it does when you apply it. Claws can't tell whether a page moves, so it offers MP4 by default.
+- **Limits.** The recording is silent (a scene's sound is inside its package; adding it is a follow-up). Scenes have no end, so a recording does not loop seamlessly. Mouse- and sound-reactive scenes are recorded idle. A scene that moves but records without any change (Wallpaper Engine paused it) is reported instead of saved as a still video. If the PC was too busy to capture every frame, the result says how many were repeats.
+
+#### Export progress
+
+Every export (copy, conversion, ZIP or recording) shows its stage in the Wallpaper Engine panel: one status line in the Queue's style and the 4 px bar. The bar only shows what the backend can stand behind. Checking, opening and loading show the moving sheen; recording counts real seconds against the length you chose with an exact time left; copying and zipping count bytes with a time left from the recent rate (marked "about"); conversion counts seconds of video with a time left from FFmpeg's speed after a few seconds of data. The bar never passes 100% and never slides back, and turns green with a check only when the file is in the folder, with the total time ("Saved to Videos · took 1:03"). The taskbar button follows a running export, and a Windows notification says when one that took over 30 seconds finishes while Claws is hidden. Conversion speeds are remembered per format and size, so the next estimate has a basis; before the first conversion it says "Estimate after a few seconds". An export over ten minutes asks for confirmation first, and one that would fill the drive stops with a clear message.
 
 Claws checks the installed project's manifest and selects MP4 by default when it finds a supported standalone video. You can switch to GIF or ZIP. Claws validates the manifest again before converting. If it declares no video, or a file outside the item, Claws refuses and offers **Save as ZIP**. A converted video keeps its source resolution and aspect ratio; odd sides are rounded down to the nearest even number, which the encoders require, and nothing is upscaled. Converting needs FFmpeg, which first-run setup or **Settings → Tools** installs (an FFmpeg on your `PATH` counts). A conversion that fails or is cancelled leaves no partial file behind, and an existing export is never replaced.
 
@@ -363,6 +382,10 @@ claws/
 │   ├── workshop.rs             Wallpaper Engine Workshop lookup, export and saving
 │   ├── steam.rs                Steam folders, libraries and Valve's text formats (read only)
 │   ├── workshop_media.rs       Checking a video project and converting it with FFmpeg
+│   ├── workshop_record.rs      Recording a scene or web wallpaper through Wallpaper Engine
+│   ├── scene_pkg.rs, win_window.rs, signature.rs   Reading scene packages (bounded), Win32 window calls, Authenticode signer
+│   ├── export_progress.rs, encoder.rs   The export tracker's events and time-left rules; H.264 encoder choice
+│   ├── leftovers.rs            The old SteamCMD folder, removed only on confirmation
 │   ├── tools.rs                Installing and updating yt-dlp, ffmpeg and Deno
 │   ├── desktop.rs, window.rs   Quick Open, tray, notifications; glass and materials
 │   ├── file_drag.rs            Native outgoing file drag
