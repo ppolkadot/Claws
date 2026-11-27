@@ -355,7 +355,7 @@ impl Tracker {
         let cap = (length - RECORDING_HOLD_BACK).max(0.0);
         let shown = seconds_since_first_frame.clamp(0.0, cap).max(inner.done.min(cap));
         inner.done = shown;
-        self.send(&mut inner, Some(shown), Some(length), Some(Unit::Seconds), Some(length - shown), false, bytes);
+        self.send(&mut inner, Some(shown), Some(length), Some(Unit::Seconds), Some(length - shown), true, bytes);
     }
 
     /// Ends the export: the time in each stage, and the whole of it.
@@ -506,7 +506,7 @@ mod tracker_tests {
     }
 
     #[test]
-    fn recording_counts_seconds_with_an_exact_time_left_and_holds_back_until_it_is_over() {
+    fn recording_counts_seconds_with_an_approximate_time_left_and_holds_back_until_it_is_over() {
         let rig = Rig::new();
         rig.tracker.stage(Stage::Recording, Some((0.0, 60.0, Unit::Seconds)));
         rig.wait(1000);
@@ -514,7 +514,7 @@ mod tracker_tests {
         let event = rig.last();
         assert_eq!((event.done, event.total, event.eta_ms), (Some(42.0), Some(60.0), Some(18_000)));
         assert_eq!(event.bytes, Some(163_577_856));
-        assert!(!event.approximate, "the length was chosen: the time left is exact");
+        assert!(event.approximate, "capture start time is estimated");
         rig.wait(1000);
         rig.tracker.recording(61.0, 60.0, None);
         assert!((rig.last().done.unwrap() - 59.8).abs() < 1e-9, "0.2 s short of the end until FFmpeg exits");

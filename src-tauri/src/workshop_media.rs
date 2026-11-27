@@ -459,8 +459,7 @@ impl ConvertPlan {
         match (source, self.length) {
             (Some(duration), Some(length)) => Some(duration.min(f64::from(length))),
             (Some(duration), None) => Some(duration),
-            (None, Some(length)) => Some(f64::from(length)),
-            (None, None) => None,
+            (None, _) => None,
         }
     }
 }
@@ -1183,6 +1182,7 @@ mod tests {
         assert!(at > args.iter().position(|arg| arg == "-i").unwrap(), "an output option, after the input");
         let mp4 = export_args(Path::new("clip.mp4"), Path::new("x.partial"), &ConvertPlan::basic(MediaFormat::Mp4));
         assert!(!mp4.iter().any(|arg| arg == "-t"), "an MP4 conversion keeps the whole video");
+        assert_eq!(plan.output_seconds(None), None);
         assert_eq!(plan.output_seconds(Some(200.0)), Some(30.0));
         assert_eq!(plan.output_seconds(Some(12.0)), Some(12.0));
         assert_eq!(ConvertPlan::basic(MediaFormat::Mp4).output_seconds(Some(200.0)), Some(200.0));

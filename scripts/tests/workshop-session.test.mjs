@@ -225,6 +225,7 @@ test("the status line says what is happening, in the Queue's style", () => {
   );
   assert.equal(line({ stage: "copying", done: 0, total: 5_856_547_590, unit: "bytes" }), "Copying 0.0 of 5.5 GB");
   assert.equal(line({ stage: "converting", done: 111.9, total: 294.35, unit: "seconds", etaMs: 190_000, approximate: true }), "Converting 38%  ·  about 3:10 left");
+  assert.equal(line({ stage: "converting", done: 99.6, total: 100 }), "Converting 99%");
   assert.equal(line({ stage: "converting", done: 1, total: 294.35, unit: "seconds" }), "Converting 0%", "no time left until it can be backed");
   assert.equal(line({ stage: "converting" }), "Converting…");
   assert.equal(line({ stage: "zipping", done: 16, total: 25, unit: "bytes", etaMs: 12_000, approximate: true }), "Saving the ZIP 64%  ·  about 12s left");

@@ -218,7 +218,7 @@ const SEPARATOR = "  ·  ";
 export function stageLine(p: ExportProgress): string {
   const left = etaText(p.etaMs, p.approximate);
   const counted = stageFraction(p);
-  const percent = counted === null ? null : `${Math.round(counted * 100)}%`;
+  const percent = counted === null ? null : `${Math.min(99, Math.round(counted * 100))}%`;
   const join = (...parts: (string | null | undefined)[]) => parts.filter(Boolean).join(SEPARATOR);
   switch (p.stage) {
     case "checking":
