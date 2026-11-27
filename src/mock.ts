@@ -695,6 +695,7 @@ export function installMock() {
     (cmd, args) => {
       const payload = (args ?? {}) as Record<string, unknown>;
       switch (cmd) {
+        case "drag_wallpaper":
         case "drag_download":
           throw new Error("Native file dragging requires the Windows app.");
         case "bootstrap":

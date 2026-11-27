@@ -181,6 +181,8 @@ pub fn run() {
             commands::repair_kept_files,
             commands::kept_files_report,
             commands::drag_download,
+            commands::reveal_wallpaper,
+            commands::drag_wallpaper,
             commands::open_output_dir,
             commands::delete_history,
             commands::clear_history,

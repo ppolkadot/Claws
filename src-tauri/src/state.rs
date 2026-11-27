@@ -41,6 +41,8 @@ pub struct AppState {
     pub steam_http: reqwest::Client,
     /// The Wallpaper Engine export that may be running. Leaf lock.
     pub workshop: Mutex<crate::workshop::Run>,
+    /// Paths published by this session, for saved-result actions.
+    pub wallpaper_results: Mutex<Vec<PathBuf>>,
     /// Problems found at startup (damaged files, no desktop blur) that the UI shows once.
     pub notices: Mutex<Vec<String>>,
     /// Set as the app exits. Checked under the `running` and `probes` locks before any
@@ -100,6 +102,7 @@ impl AppState {
             tool_install: tokio::sync::Mutex::new(()),
             steam_http: crate::workshop::http_client(),
             workshop: Mutex::new(crate::workshop::Run::default()),
+            wallpaper_results: Mutex::new(Vec::new()),
             notices: Mutex::new(Vec::new()),
             shutting_down: AtomicBool::new(false),
             workers: AtomicUsize::new(0),

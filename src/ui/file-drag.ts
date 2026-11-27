@@ -11,6 +11,14 @@ const fail = (e: unknown) => toast(errorMessage(e), { tone: "error" });
  * Success is never claimed: Windows does not tell Claws what the receiver did.
  */
 export function fileDragButton(id: string): HTMLButtonElement {
+  return fileDragAction(() => api.revealDownload(id), () => api.dragDownload(id));
+}
+
+export function wallpaperFileDragButton(path: string): HTMLButtonElement {
+  return fileDragAction(() => api.revealWallpaper(path), () => api.dragWallpaper(path));
+}
+
+function fileDragAction(reveal: () => Promise<void>, drag: () => Promise<import("./drag-gesture").DragOutcome>): HTMLButtonElement {
   let gesture = idleGesture;
   let listening: AbortController | null = null;
   const control = button({
@@ -20,7 +28,7 @@ export function fileDragButton(id: string): HTMLButtonElement {
     title: "Drag file to a folder or an editor. Click to show it in its folder.",
     variant: "plain",
     onClick: (event) => {
-      if (revealsOnClick(gesture, event.detail)) void api.revealDownload(id).catch(fail);
+      if (revealsOnClick(gesture, event.detail)) void reveal().catch(fail);
     },
   });
   control.classList.add("file-drag");
@@ -54,8 +62,7 @@ export function fileDragButton(id: string): HTMLButtonElement {
         stopListening();
         // Pickup feedback lasts exactly as long as the native operation.
         control.classList.add("file-drag-active");
-        void api
-          .dragDownload(id)
+        void drag()
           .then((outcome) => {
             const message = outcomeMessage(outcome);
             if (message) toast(message);

@@ -456,6 +456,11 @@ pub async fn download_wallpaper(
     let outcome = export(&app, &state, &tracker, id, format, &options).await;
     drop(run);
     let outcome = outcome?;
+    if let WallpaperOutcome::Saved { path, .. } = &outcome {
+        let mut saved = state.wallpaper_results.lock().unwrap();
+        if saved.len() >= 1024 { saved.remove(0); }
+        saved.push(PathBuf::from(path));
+    }
     crate::desktop::notify_export_finished(&app, &outcome);
     Ok(outcome)
 }

@@ -272,6 +272,35 @@ pub async fn drag_download(app: AppHandle, window: WebviewWindow, id: String) ->
     file_drag::start(&app, window, path).await
 }
 
+fn saved_wallpaper_location(saved: &[std::path::PathBuf], path: &str) -> Result<std::path::PathBuf> {
+    saved.iter().find(|saved| saved.as_os_str() == std::ffi::OsStr::new(path)).cloned()
+        .ok_or_else(|| AppError::msg("That wallpaper export is no longer available in this session."))
+}
+
+#[tauri::command]
+pub fn reveal_wallpaper(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<()> {
+    let path = saved_wallpaper_location(&state.wallpaper_results.lock().unwrap(), &path)?;
+    app.opener().reveal_item_in_dir(path).map_err(|e| AppError::msg(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn drag_wallpaper(app: AppHandle, window: WebviewWindow, path: String) -> Result<file_drag::DragOutcome> {
+    let recorded = saved_wallpaper_location(&app.state::<AppState>().wallpaper_results.lock().unwrap(), &path)?;
+    let path = tauri::async_runtime::spawn_blocking(move || file_drag::draggable_file(&recorded)).await??;
+    file_drag::start(&app, window, path).await
+}
+
+#[cfg(test)]
+mod wallpaper_result_tests {
+    use super::*;
+    #[test]
+    fn only_the_saved_path_is_authorized_for_result_actions() {
+        let saved = vec![std::path::PathBuf::from(r"C:\old-folder\wallpaper.mp4")];
+        assert_eq!(saved_wallpaper_location(&saved, r"C:\old-folder\wallpaper.mp4").unwrap(), saved[0]);
+        assert!(saved_wallpaper_location(&saved, r"C:\new-folder\wallpaper.mp4").is_err());
+    }
+}
+
 #[tauri::command]
 pub fn open_output_dir(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
     let dir = state.settings.lock().unwrap().output_dir.clone();

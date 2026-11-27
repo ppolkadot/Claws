@@ -3,6 +3,7 @@ import { formatBytes, folderName } from "../format";
 import { store } from "../store";
 import { button, confirmSheet, segmented, toast, type SegmentedHandle } from "../ui/components";
 import { h, replace } from "../ui/dom";
+import { wallpaperFileDragButton } from "../ui/file-drag";
 import { icon } from "../ui/icons";
 import { paintJobStatus } from "../ui/job-status";
 import { group, progressBar, row, sectionTitle, setProgress } from "../ui/layout";
@@ -197,7 +198,8 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
           "div",
           { class: "notice", attrs: { role: "status" } },
           h("span", { class: "notice-text" }, h("strong", { text: state.filename }), state.note ? h("span", { text: state.note }) : null),
-          button({ label: "Show in folder", variant: "secondary", size: "small", onClick: () => void api.openOutputDir().catch((e) => toast(errorMessage(e), { tone: "error" })) }),
+          wallpaperFileDragButton(state.path),
+          button({ label: "Show in folder", variant: "secondary", size: "small", onClick: () => void api.revealWallpaper(state.path).catch((e) => toast(errorMessage(e), { tone: "error" })) }),
         ),
       );
     } else if (state.phase === "failed") {
