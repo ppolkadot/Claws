@@ -350,7 +350,7 @@ struct RunGuard<'a>(&'a AppState);
 impl<'a> RunGuard<'a> {
     fn begin(state: &'a AppState) -> Result<Self> {
         let mut run = state.workshop.lock().unwrap();
-        if run.active {
+        if run.active || run.window.is_some() {
             return Err(AppError::msg(RUNNING));
         }
         if state.shutting_down.load(Ordering::SeqCst) {
@@ -368,7 +368,9 @@ impl<'a> RunGuard<'a> {
 
 impl Drop for RunGuard<'_> {
     fn drop(&mut self) {
-        *self.0.workshop.lock().unwrap() = Run::default();
+        let mut run = self.0.workshop.lock().unwrap();
+        let window = run.window.take();
+        *run = Run { window, ..Run::default() };
     }
 }
 
