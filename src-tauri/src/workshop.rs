@@ -615,19 +615,14 @@ fn remember_speed(state: &AppState, key: &str, speed: f64) {
     if !speed.is_finite() || speed <= 0.0 {
         return;
     }
-    let mut next = state.settings.lock().unwrap().clone();
-    if next.workshop_speeds.get(key) == Some(&speed) {
-        return;
-    }
-    if next.workshop_speeds.len() >= 16 && !next.workshop_speeds.contains_key(key) {
-        return;
-    }
-    next.workshop_speeds.insert(key.to_string(), speed);
-    let kept = next.clone();
     // Best effort: a speed that was not saved is only measured again next time.
-    let _ = crate::store::save_then(&state.settings_path(), &next, || {
-        *state.settings.lock().unwrap() = kept;
-    });
+    let _ = crate::store::save_transaction(&state.settings_path(), || {
+        let mut next = state.settings.lock().unwrap().clone();
+        if next.workshop_speeds.len() < 16 || next.workshop_speeds.contains_key(key) {
+            next.workshop_speeds.insert(key.to_string(), speed);
+        }
+        Ok(next)
+    }, |next| *state.settings.lock().unwrap() = next.clone());
 }
 
 /// A recording's time is its length, the pre-roll and a second or so to finish: exact enough to

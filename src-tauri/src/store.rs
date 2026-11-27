@@ -113,6 +113,15 @@ pub fn save_then<T: Serialize>(path: &Path, value: &T, commit: impl FnOnce()) ->
     Ok(())
 }
 
+/// Serialize reading, modifying, writing and committing a shared snapshot.
+pub fn save_transaction<T: Serialize>(path: &Path, prepare: impl FnOnce() -> Result<T>, commit: impl FnOnce(&T)) -> Result<T> {
+    let _guard = write_lock();
+    let value = prepare()?;
+    write_atomic(path, &value)?;
+    commit(&value);
+    Ok(value)
+}
+
 /// Removes temp files left behind by a crash mid-write.
 pub fn sweep_temp_files(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else { return };
@@ -184,6 +193,29 @@ mod tests {
         assert_eq!(value.len(), 50);
         let leftovers = fs::read_dir(&dir).unwrap().flatten().count();
         assert_eq!(leftovers, 1, "no temp files should remain");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn concurrent_settings_updates_preserve_both_changes() {
+        use std::sync::{Arc, Barrier};
+        let dir = temp_dir("updates");
+        let path = dir.join("settings.json");
+        let state = Arc::new(Mutex::new((0u32, 0u32)));
+        let barrier = Arc::new(Barrier::new(2));
+        let threads: Vec<_> = (0..2).map(|i| {
+            let (state, path, barrier) = (state.clone(), path.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                save_transaction(&path, || {
+                    let mut next = *state.lock().unwrap();
+                    if i == 0 { next.0 = 1; } else { next.1 = 1; }
+                    Ok(next)
+                }, |next| *state.lock().unwrap() = *next).unwrap();
+            })
+        }).collect();
+        for thread in threads { thread.join().unwrap(); }
+        assert_eq!(*state.lock().unwrap(), (1, 1));
         let _ = fs::remove_dir_all(dir);
     }
 
