@@ -437,7 +437,7 @@ impl<'a> WindowGuard<'a> {
 
     /// Closes the window now. Returns whether it is gone.
     pub fn close_now(&mut self) -> bool {
-        self.close_now_with(|engine, title, grace| close_window(engine, title, grace))
+        self.close_now_with(close_window)
     }
 
     fn close_now_with(&mut self, close: impl FnOnce(&Path, &str, Duration) -> bool) -> bool {

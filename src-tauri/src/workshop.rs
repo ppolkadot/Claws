@@ -1278,6 +1278,7 @@ fn save_project(
         writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
         for copy in 0..1000 {
             let name = export_name(title, id, copy, "zip");
+            if cancelled() { return Ok(None); }
             match move_no_replace(&partial, &output.join(&name)) {
                 Ok(()) => return Ok(Some(name)),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -1483,6 +1484,11 @@ mod tests {
             zip.by_name("assets/index.html").unwrap().read_to_string(&mut html).unwrap();
             assert_eq!(html, "<title>Fixture</title>");
         }
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
+
+        // Cancellation during ZIP finalisation must prevent publication.
+        let cancel = std::cell::Cell::new(false);
+        assert!(save_project(&project, &output, 123, "Fixture", |_, _| {}, || cancel.set(true), || cancel.get()).unwrap().is_none());
         assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
 
         // Cancelled part-way: nothing new is left in the folder.
