@@ -855,13 +855,23 @@ pub async fn has_gfxcapture_tracked(
             let result = tokio::time::timeout(Duration::from_secs(20), async {
                 let bytes = crate::bounded_io::read_capped(stdout, 512 * 1024).await.ok()?;
                 let status = child.wait().await.ok()?;
-                (status.success() && String::from_utf8_lossy(&bytes).contains("gfxcapture")).then_some(())
+                Some(status.success() && String::from_utf8_lossy(&bytes).contains("gfxcapture"))
             }).await;
-            if !matches!(result, Ok(Some(()))) {
-                if let Some(pid) = pid { kill_tree(pid, true); }
-                let _ = child.kill().await;
+            match result {
+                Ok(Some(found)) => found,
+                Ok(None) => {
+                    if matches!(child.try_wait(), Ok(None)) {
+                        if let Some(pid) = pid { kill_tree(pid, true); }
+                        let _ = child.kill().await;
+                    }
+                    false
+                }
+                Err(_) => {
+                    if let Some(pid) = pid { kill_tree(pid, true); }
+                    let _ = child.kill().await;
+                    false
+                }
             }
-            matches!(result, Ok(Some(())))
         } else {
             if let Some(pid) = pid { kill_tree(pid, true); }
             let _ = child.kill().await;
@@ -1237,6 +1247,19 @@ mod tests {
         }));
         assert!(result.is_err());
         assert_eq!(*events.lock().unwrap(), [None]);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn has_gfxcapture_tracked_handles_normal_exit_without_gfxcapture() {
+        let dir = crate::download_tests::temp_dir("gfxcapture-normal-exit");
+        let absent = dir.join("no-gfxcapture.cmd");
+        let present = dir.join("has-gfxcapture.cmd");
+        std::fs::write(&absent, "@echo off\r\necho scale\r\n").unwrap();
+        std::fs::write(&present, "@echo off\r\necho gfxcapture\r\n").unwrap();
+        assert_eq!(has_gfxcapture_tracked(&absent, &|_| true, &|| false).await, Some(false));
+        assert_eq!(has_gfxcapture_tracked(&present, &|_| true, &|| false).await, Some(true));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
