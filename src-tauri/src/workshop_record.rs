@@ -267,7 +267,8 @@ pub fn check_probe(probe: &Probe, capture: &Capture) -> Result<(), String> {
             probe.width, probe.height, capture.width, capture.height
         ));
     }
-    if let (CaptureKind::Video { length, .. }, Some(frames)) = (&capture.kind, probe.frames) {
+    if let CaptureKind::Video { length, .. } = &capture.kind {
+        let frames = probe.frames.ok_or_else(|| "Claws couldn't verify the recording's frame count, so it was not saved.".to_string())?;
         let expected = f64::from(*length) * f64::from(capture.fps);
         let allowed = (expected * 0.01).max(2.0);
         if (frames as f64 - expected).abs() > allowed {
@@ -277,14 +278,22 @@ pub fn check_probe(probe: &Probe, capture: &Capture) -> Result<(), String> {
     Ok(())
 }
 
-/// The mean luma of each frame difference, from FFmpeg's `signalstats` metadata print.
-pub fn parse_yavg(text: &str) -> Vec<f64> {
+fn require_probe(probe: Option<&Probe>, capture: &Capture) -> Result<(), String> {
+    let probe = probe.ok_or_else(|| "Claws couldn't verify the recording with ffprobe, so it was not saved.".to_string())?;
+    check_probe(probe, capture)
+}
+
+/// A channel's mean frame difference from FFmpeg's signalstats metadata.
+fn parse_channel(text: &str, key: &str) -> Vec<f64> {
     text.lines()
-        .filter_map(|line| line.trim().strip_prefix("lavfi.signalstats.YAVG="))
+        .filter_map(|line| line.trim().strip_prefix(key))
         .filter_map(|value| value.trim().parse::<f64>().ok())
         .filter(|value| value.is_finite())
         .collect()
 }
+
+#[cfg(test)]
+fn parse_yavg(text: &str) -> Vec<f64> { parse_channel(text, "lavfi.signalstats.YAVG=") }
 
 /// Whether a set of frame differences says nothing moved: enough samples, and none above a
 /// whisper. The difference of two frames of the same picture is zero.
@@ -304,7 +313,7 @@ async fn frozen_capture(ffmpeg: &Path, file: &Path, length: u32, on_spawn: &(dyn
             .arg(format!("{start:.2}"))
             .args(["-t", "2", "-i"])
             .arg(file)
-            .args(["-vf", "scale=160:-2,tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-", "-f", "null", "-"])
+            .args(["-vf", "scale=160:-2,tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-,metadata=print:key=lavfi.signalstats.UAVG:file=-,metadata=print:key=lavfi.signalstats.VAVG:file=-", "-f", "null", "-"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -324,11 +333,10 @@ async fn frozen_capture(ffmpeg: &Path, file: &Path, length: u32, on_spawn: &(dyn
         };
         let _ = status;
         // The first difference is against nothing; the rest are frame against frame.
-        let mut values = parse_yavg(&String::from_utf8_lossy(&bytes));
-        if !values.is_empty() {
-            values.remove(0);
-        }
-        differences.extend(values);
+        let text = String::from_utf8_lossy(&bytes);
+        let channels = ["lavfi.signalstats.YAVG=", "lavfi.signalstats.UAVG=", "lavfi.signalstats.VAVG="].map(|key| parse_channel(&text, key));
+        if channels[0].len() < 2 || channels.iter().any(|values| values.len() != channels[0].len()) { return None; }
+        differences.extend((1..channels[0].len()).map(|i| channels.iter().map(|values| values[i]).fold(0.0_f64, f64::max)));
     }
     (differences.len() >= 10).then(|| looks_frozen(&differences))
 }
@@ -497,6 +505,7 @@ pub enum Recorded {
     Done {
         /// Frames FFmpeg had to repeat because the capture could not keep up, as a percentage.
         repeated_percent: f64,
+        motion_inconclusive: bool,
     },
     Cancelled,
     LowSpace,
@@ -694,21 +703,22 @@ async fn record_inner(request: &RecordRequest<'_>) -> Result<Recorded, RecordFai
     if !closed {
         // Not fatal: the recording is complete. The guard tries again when it is dropped.
     }
-    if let Some(ffprobe) = request.ffprobe {
-        if let Some(probe) = crate::workshop_media::probe_file_tracked(ffprobe, request.partial, request.on_spawn).await {
-            check_probe(&probe, capture).map_err(|message| fail(message, ""))?;
-        }
-    }
+    let ffprobe = request.ffprobe.ok_or_else(|| fail("Claws couldn't verify the recording because ffprobe is unavailable, so it was not saved.", ""))?;
+    let probe = crate::workshop_media::probe_file_tracked(ffprobe, request.partial, request.on_spawn).await;
+    require_probe(probe.as_ref(), capture).map_err(|message| fail(message, ""))?;
+    let mut motion_inconclusive = false;
     if request.moves {
         if let CaptureKind::Video { length, .. } = capture.kind {
-            if frozen_capture(request.ffmpeg, request.partial, length, request.on_spawn).await == Some(true) {
-                return Err(fail(FROZEN, ""));
+            match frozen_capture(request.ffmpeg, request.partial, length, request.on_spawn).await {
+                Some(true) => return Err(fail(FROZEN, "")),
+                Some(false) => {},
+                None => motion_inconclusive = true,
             }
         }
     }
     let (frames, repeated) = *totals.lock().unwrap();
     let repeated_percent = if frames == 0 { 0.0 } else { repeated as f64 * 100.0 / frames as f64 };
-    Ok(Recorded::Done { repeated_percent })
+    Ok(Recorded::Done { repeated_percent, motion_inconclusive })
 }
 
 /// One block of FFmpeg's progress. The recording starts being counted when FFmpeg first has
@@ -1079,13 +1089,38 @@ mod tests {
         assert!(check_probe(&probe(1920, 1080, Some(1781)), &capture).unwrap_err().contains("1781 frames"));
         assert!(check_probe(&probe(1920, 1080, Some(900)), &capture).is_err(), "half the frames: the capture stalled");
         assert!(check_probe(&probe(1920, 1067, Some(1800)), &capture).unwrap_err().contains("1920×1067 instead of 1920×1080"));
-        assert!(check_probe(&probe(1920, 1080, None), &capture).is_ok(), "no frame count: only the size is checked");
+        assert!(check_probe(&probe(1920, 1080, None), &capture).is_err(), "missing frame count must be refused");
+        assert!(require_probe(None, &capture).is_err(), "failed probe must be refused");
         // A short recording keeps a two-frame allowance.
         let short = Capture { width: 1280, height: 720, fps: 30, kind: CaptureKind::Video { length: 3, encoder: Encoder::X264 } };
         assert!(check_probe(&probe(1280, 720, Some(88)), &short).is_ok());
         assert!(check_probe(&probe(1280, 720, Some(87)), &short).is_err());
         let picture = Capture { width: 1920, height: 1080, fps: 30, kind: CaptureKind::Picture };
         assert!(check_probe(&probe(1920, 1080, Some(1)), &picture).is_ok(), "a picture has no frame count to check");
+    }
+
+    #[tokio::test]
+    async fn constant_luma_colour_alternation_is_motion() {
+        let Some(tools) = crate::download_tests::ffmpeg_dir() else { return };
+        let ffmpeg = tools.join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX));
+        let dir = crate::download_tests::temp_dir("colour-motion");
+        let raw = dir.join("frames.yuv");
+        let clip = dir.join("clip.mkv");
+        let mut frames = Vec::new();
+        for i in 0..60 {
+            frames.extend(vec![128u8; 16 * 16]);
+            frames.extend(vec![if i % 2 == 0 { 64 } else { 192 }; 8 * 8]);
+            frames.extend(vec![128u8; 8 * 8]);
+        }
+        std::fs::write(&raw, frames).unwrap();
+        let status = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", "16x16", "-r", "10", "-i"]).arg(&raw).args(["-c:v", "ffv1"]).arg(&clip).status().await.unwrap();
+        assert!(status.success());
+        assert_eq!(frozen_capture(&ffmpeg, &clip, 6, &|_| true).await, Some(false));
+        let frozen = dir.join("frozen.mkv");
+        let status = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=red:s=16x16:r=10:d=6", "-c:v", "ffv1"]).arg(&frozen).status().await.unwrap();
+        assert!(status.success());
+        assert_eq!(frozen_capture(&ffmpeg, &frozen, 6, &|_| true).await, Some(true));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

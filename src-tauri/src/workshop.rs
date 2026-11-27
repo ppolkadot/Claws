@@ -906,8 +906,8 @@ async fn record_media(
     };
     let recorded = workshop_record::record(&request).await;
     state.workshop.lock().unwrap().pid = None;
-    let repeated = match recorded {
-        Ok(workshop_record::Recorded::Done { repeated_percent }) => repeated_percent,
+    let (repeated, motion_inconclusive) = match recorded {
+        Ok(workshop_record::Recorded::Done { repeated_percent, motion_inconclusive }) => (repeated_percent, motion_inconclusive),
         Ok(workshop_record::Recorded::Cancelled) => return Ok(SaveResult::Cancelled),
         Ok(workshop_record::Recorded::LowSpace) => return Ok(SaveResult::Failed { message: LOW_SPACE.into(), detail: None }),
         Err(failure) => {
@@ -927,14 +927,22 @@ async fn record_media(
         publish_media(&partial, &output_dir, id, &title, extension, |from, to| publish_if_active(&state, from, to))
     }).await?;
     match published {
-        Ok(filename) if repeated > 5.0 => Ok(SaveResult::DoneWithNote(
-            filename,
-            format!("About {repeated:.0}% of the frames are repeats: the PC was too busy to capture every frame. Record again while it is quieter for a smoother result."),
-        )),
-        Ok(filename) => Ok(SaveResult::Done(filename)),
+        Ok(filename) => {
+            match recording_note(repeated, motion_inconclusive) {
+                Some(note) => Ok(SaveResult::DoneWithNote(filename, note)),
+                None => Ok(SaveResult::Done(filename)),
+            }
+        },
         Err(_) if cancelled() => Ok(SaveResult::Cancelled),
         Err(error) => Err(error),
     }
+}
+
+fn recording_note(repeated: f64, motion_inconclusive: bool) -> Option<String> {
+    let mut notes = Vec::new();
+    if repeated > 5.0 { notes.push(format!("About {repeated:.0}% of the frames are repeats: the PC was too busy to capture every frame. Record again while it is quieter for a smoother result.")); }
+    if motion_inconclusive { notes.push("Claws couldn't check whether the recording moves. Review the saved file.".to_string()); }
+    (!notes.is_empty()).then(|| notes.join(" "))
 }
 
 /// For shutdown: closes the Wallpaper Engine window a recording has open, if there is one.
@@ -1512,6 +1520,13 @@ mod tests {
         assert_eq!(export_name("Ocean", 7, 1, "gif"), "Ocean (7) (1).gif");
     }
 
+
+    #[test]
+    fn inconclusive_motion_is_reported_on_the_saved_recording() {
+        assert!(recording_note(0.0, true).unwrap().contains("couldn't check"));
+        assert!(recording_note(0.0, false).is_none());
+        assert!(recording_note(10.0, true).unwrap().contains("repeats"));
+    }
 
     #[test]
     fn shutdown_cancellation_refuses_publish_and_owner_removes_partial() {
