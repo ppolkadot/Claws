@@ -354,6 +354,12 @@ impl<'a> RunGuard<'a> {
         if run.active || run.window.is_some() {
             return Err(AppError::msg(RUNNING));
         }
+        if let Some(partial) = &run.partial {
+            if !remove_owned_partial(partial) {
+                return Err(AppError::msg("Claws couldn't remove the previous unfinished wallpaper file. Close any app using it and try again."));
+            }
+            run.partial = None;
+        }
         if state.shutting_down.load(Ordering::SeqCst) {
             return Err(AppError::msg("Claws is closing."));
         }
@@ -370,10 +376,18 @@ impl<'a> RunGuard<'a> {
 impl Drop for RunGuard<'_> {
     fn drop(&mut self) {
         let partial = self.0.workshop.lock().unwrap().partial.take();
-        if let Some(partial) = partial { let _ = fs::remove_file(partial); }
+        let partial = partial.filter(|path| !remove_owned_partial(path));
         let mut run = self.0.workshop.lock().unwrap();
         let window = run.window.take();
-        *run = Run { window, ..Run::default() };
+        *run = Run { window, partial, ..Run::default() };
+    }
+}
+
+fn remove_owned_partial(path: &Path) -> bool {
+    match fs::remove_file(path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+        Err(_) => false,
     }
 }
 
@@ -394,6 +408,20 @@ fn publish_if_active(state: &AppState, partial: &Path, target: &Path) -> io::Res
 
 pub fn wait_for_export_cleanup(state: &AppState) {
     while state.workshop.lock().unwrap().active { std::thread::sleep(Duration::from_millis(25)); }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let partial = state.workshop.lock().unwrap().partial.clone();
+        let Some(partial) = partial else { return };
+        if remove_owned_partial(&partial) {
+            state.workshop.lock().unwrap().partial = None;
+            return;
+        }
+        if Instant::now() >= deadline {
+            eprintln!("Claws couldn't remove an unfinished wallpaper file because it is still in use.");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[tauri::command]
@@ -1620,6 +1648,30 @@ mod tests {
         drop(guard);
         wait_for_export_cleanup(&state);
         assert!(!partial.exists() && !target.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_partial_is_retained_for_shutdown_retry() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use tauri::Manager;
+        let dir = crate::download_tests::temp_dir("export-locked-partial");
+        let app = tauri::test::mock_builder().build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
+        let writer = crate::downloader::start_queue_writer(app.handle());
+        app.manage(AppState::new(dir.clone(), Default::default(), Vec::new(), Vec::new(), writer, false));
+        let state = app.state::<AppState>();
+        let guard = RunGuard::begin(&state).unwrap();
+        let partial = dir.join("locked.partial");
+        fs::write(&partial, b"data").unwrap();
+        assert!(register_partial(&state, &partial));
+        let held = OpenOptions::new().read(true).share_mode(1).open(&partial).unwrap();
+        drop(guard);
+        assert_eq!(state.workshop.lock().unwrap().partial.as_deref(), Some(partial.as_path()));
+        drop(held);
+        wait_for_export_cleanup(&state);
+        assert!(!partial.exists());
+        assert!(state.workshop.lock().unwrap().partial.is_none());
         let _ = fs::remove_dir_all(dir);
     }
 

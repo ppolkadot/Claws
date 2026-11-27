@@ -335,3 +335,5 @@ After adding export cleanup ownership and tracking verification children, the sa
 After making probe verification mandatory and motion colour-aware, `CLAWS_TEST_WALLPAPER_ENGINE=1272964419 cargo test records_three_seconds_of_a_real_scene_when_given -- --nocapture` passed (2026-11-27): 90 frames at 720p30, 2,005,591 bytes, 6.9 seconds; the moving-scene check passed and the test closed its window and removed temporary output.
 
 After bounding the recording progress reader and capability output, the 2026-11-27 live cancellation test passed again in all four stages, with its window, process, and partial cleanup assertions.
+
+The four live cancel cases passed once more after retaining and retrying locked partials (2026-11-27); the test again checked that its window, FFmpeg process, and partial were gone.
