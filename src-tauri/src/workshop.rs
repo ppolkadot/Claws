@@ -460,6 +460,32 @@ pub async fn download_wallpaper(
     Ok(outcome)
 }
 
+/// Resolve the existing ancestor before creating anything, preserving a missing suffix.
+fn destination_outside_libraries(destination: &Path, libraries: &[PathBuf]) -> io::Result<bool> {
+    if !destination.is_absolute() || destination.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+        return Ok(false);
+    }
+    let mut ancestor = destination;
+    let mut missing = Vec::new();
+    while !ancestor.exists() {
+        let Some(name) = ancestor.file_name() else { return Ok(false) };
+        missing.push(name.to_os_string());
+        ancestor = ancestor.parent().ok_or_else(|| io::Error::other("No existing destination ancestor"))?;
+    }
+    let mut resolved = fs::canonicalize(ancestor)?;
+    for part in missing.into_iter().rev() { resolved.push(part); }
+    for library in libraries {
+        let root = fs::canonicalize(library)?;
+        if resolved.starts_with(root) { return Ok(false); }
+    }
+    Ok(true)
+}
+
+fn safe_export_destination(destination: &Path) -> bool {
+    let libraries = steam_root().map(|root| library_folders(&root)).unwrap_or_default();
+    destination_outside_libraries(destination, &libraries).unwrap_or(false)
+}
+
 /// One export, from the lookup to the published file.
 async fn export(app: &AppHandle, state: &AppState, tracker: &Tracker, id: u64, format: ExportFormat, options: &ExportOptions) -> Result<WallpaperOutcome> {
     let found = lookup(&state.steam_http, id).await.map_err(|_| AppError::msg(STEAM_UNREACHABLE))?;
@@ -470,8 +496,11 @@ async fn export(app: &AppHandle, state: &AppState, tracker: &Tracker, id: u64, f
         return Err(AppError::msg("Choose a download folder in Settings first."));
     }
     let output = tauri::async_runtime::spawn_blocking(move || -> Result<PathBuf> {
+        if !safe_export_destination(&output) { return Err(AppError::msg("Choose a download folder outside your Steam libraries.")); }
         fs::create_dir_all(&output)?;
-        Ok(output.canonicalize()?)
+        let output = output.canonicalize()?;
+        if !safe_export_destination(&output) { return Err(AppError::msg("Choose a download folder outside your Steam libraries.")); }
+        Ok(output)
     })
     .await??;
 
@@ -1407,6 +1436,12 @@ fn collect(folder: &Path, prefix: &str, depth: u8, out: &mut Vec<Entry>) -> Resu
 
 /// Removes exports a crash left half-written in the download folder.
 pub fn sweep_partials(dir: &Path) {
+    let libraries = steam_root().map(|root| library_folders(&root)).unwrap_or_default();
+    sweep_partials_in_libraries(dir, &libraries);
+}
+
+fn sweep_partials_in_libraries(dir: &Path, libraries: &[PathBuf]) {
+    if !destination_outside_libraries(dir, libraries).unwrap_or(false) { return; }
     let Ok(entries) = fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -1546,6 +1581,23 @@ mod tests {
         drop(guard);
         wait_for_export_cleanup(&state);
         assert!(!partial.exists() && !target.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn steam_library_destinations_are_rejected_before_creation() {
+        let dir = crate::download_tests::temp_dir("destination-safety");
+        let library = dir.join("library");
+        let steamapps = library.join("steamapps");
+        fs::create_dir_all(&steamapps).unwrap();
+        let inside = steamapps.join("new").join("output");
+        assert!(!destination_outside_libraries(&inside, std::slice::from_ref(&library)).unwrap());
+        assert!(!inside.exists());
+        let partial = steamapps.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
+        fs::write(&partial, b"keep").unwrap();
+        sweep_partials_in_libraries(&steamapps, std::slice::from_ref(&library));
+        assert!(partial.exists(), "startup sweep must leave Steam files alone");
+        assert!(destination_outside_libraries(&dir.join("elsewhere"), &[library]).unwrap());
         let _ = fs::remove_dir_all(dir);
     }
 

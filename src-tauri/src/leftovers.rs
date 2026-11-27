@@ -76,8 +76,42 @@ fn scan(folder: &Path, depth: usize, seen: &mut usize) -> std::io::Result<Scan> 
     Ok(Scan::Plain { bytes })
 }
 
+/// Hold the managed tools path in place and reject links in every component.
+#[cfg(windows)]
+fn hold_plain_directory(path: &Path) -> std::io::Result<Vec<fs::File>> {
+    use std::os::windows::fs::OpenOptionsExt;
+    let mut current = PathBuf::new();
+    let mut held = Vec::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if matches!(component, std::path::Component::Prefix(_)) { continue; }
+        if matches!(component, std::path::Component::ParentDir | std::path::Component::CurDir) {
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Unsafe tools path"));
+        }
+        let file = fs::OpenOptions::new().read(true).share_mode(3).custom_flags(0x0220_0000).open(&current)?;
+        let meta = file.metadata()?;
+        if !meta.is_dir() || is_link(&meta) { return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Linked tools path")); }
+        held.push(file);
+    }
+    Ok(held)
+}
+
+#[cfg(not(windows))]
+fn hold_plain_directory(path: &Path) -> std::io::Result<Vec<fs::File>> {
+    let mut current = PathBuf::new();
+    let mut held = Vec::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        let meta = fs::symlink_metadata(&current)?;
+        if !meta.is_dir() || is_link(&meta) { return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Linked tools path")); }
+        held.push(fs::File::open(&current)?);
+    }
+    Ok(held)
+}
+
 /// The leftover folder's size, or `None` when there is nothing (or nothing safe) to offer.
 fn find(bin: &Path) -> Option<LegacyFiles> {
+    let _held = hold_plain_directory(bin).ok()?;
     let folder = folder_in(bin);
     let meta = fs::symlink_metadata(&folder).ok()?;
     if !meta.is_dir() || is_link(&meta) {
@@ -101,6 +135,7 @@ fn remove(bin: &Path) -> Result<()> {
     if !meta.is_dir() || is_link(&meta) {
         return Err(AppError::msg("That folder is not a plain folder, so Claws left it alone."));
     }
+    let _held = hold_plain_directory(bin).map_err(|_| AppError::msg("Claws' tools path contains a link or cannot be checked, so it was left alone."))?;
     // The tools folder must itself be where it should be, so a removal can only reach below it.
     let parent = fs::canonicalize(bin)?;
     let target = fs::canonicalize(&folder)?;
@@ -122,7 +157,7 @@ fn remove(bin: &Path) -> Result<()> {
 
 #[tauri::command]
 pub async fn legacy_files(state: State<'_, AppState>) -> Result<Option<LegacyFiles>> {
-    let bin = state.bin_dir();
+    let bin = state.data_dir.join("bin");
     tauri::async_runtime::spawn_blocking(move || find(&bin))
         .await
         .map_err(|_| AppError::msg("Couldn't look at the tools folder."))
@@ -131,7 +166,7 @@ pub async fn legacy_files(state: State<'_, AppState>) -> Result<Option<LegacyFil
 /// Deletes the leftover folder. The interface asks for confirmation first.
 #[tauri::command]
 pub async fn remove_legacy_files(state: State<'_, AppState>) -> Result<()> {
-    let bin = state.bin_dir();
+    let bin = state.data_dir.join("bin");
     tauri::async_runtime::spawn_blocking(move || remove(&bin))
         .await
         .map_err(|_| AppError::msg("Couldn't remove the files."))?
@@ -183,6 +218,23 @@ mod tests {
         assert!(remove(&dir).is_err());
         assert!(dir.join("steamcmd").exists());
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_link_at_the_tools_directory_is_refused() {
+        let parent = bin("linked-tools-parent");
+        let target = bin("linked-tools-target");
+        fixture(&target);
+        let link = parent.join("bin");
+        if std::os::windows::fs::symlink_dir(&target, &link).is_ok() {
+            assert!(find(&link).is_none());
+            assert!(remove(&link).is_err());
+            assert!(target.join("steamcmd/steamcmd.exe").exists());
+            fs::remove_dir(&link).unwrap();
+        } else { eprintln!("skipped: creating a directory symlink requires permission"); }
+        fs::remove_dir_all(parent).unwrap();
+        fs::remove_dir_all(target).unwrap();
     }
 
     #[cfg(windows)]
