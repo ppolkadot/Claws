@@ -883,7 +883,14 @@ async fn record_media(
             detail: None,
         });
     }
-    let Some(chosen) = encoder::pick_for(&works, size.height, fps) else {
+    let probe_spawn = |pid: Option<u32>| {
+        let mut current = state.workshop.lock().unwrap();
+        if pid.is_none() { current.pid = None; true }
+        else if current.cancelled || state.shutting_down.load(Ordering::SeqCst) { false }
+        else { current.pid = pid; true }
+    };
+    let Some(chosen) = encoder::pick_tested(&ffmpeg, &working, size.width, size.height, fps, &probe_spawn).await else {
+        if state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst) { return Ok(SaveResult::Cancelled); }
         return Ok(SaveResult::Failed { message: "This PC has no video encoder that can record at that size.".into(), detail: None });
     };
     let length = options.length_seconds.unwrap_or(workshop_record::DEFAULT_LENGTH).clamp(1, workshop_record::MAX_LENGTH);

@@ -133,6 +133,36 @@ fn probe_args(encoder: Encoder) -> Vec<String> {
     args
 }
 
+/// Probe candidates at the requested capture dimensions, trying the next one on failure.
+async fn pick_tested_with<F, Fut>(working: &[Encoder], height: u32, fps: u32, mut test: F) -> Option<Encoder>
+where F: FnMut(Encoder) -> Fut, Fut: std::future::Future<Output = bool> {
+    for encoder in ORDER {
+        if encoder.handles(height, fps) && (encoder == Encoder::X264 || working.contains(&encoder)) && test(encoder).await {
+            return Some(encoder);
+        }
+    }
+    None
+}
+
+pub async fn pick_tested(ffmpeg: &Path, working: &[Encoder], width: u32, height: u32, fps: u32, on_spawn: &(dyn Fn(Option<u32>) -> bool + Sync)) -> Option<Encoder> {
+    pick_tested_with(working, height, fps, |encoder| async move {
+        let source = format!("color=c=black:s={width}x{height}:r={fps}");
+        let mut args: Vec<String> = ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", &source, "-frames:v", "2"].map(str::to_string).into();
+        args.extend(encoder.args(width, height, fps));
+        args.extend(["-f", "null", "-"].map(str::to_string));
+        let mut command = Command::new(ffmpeg);
+        command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000);
+        let Ok(mut child) = command.spawn() else { return false };
+        if !on_spawn(child.id()) { let _ = child.kill().await; return false; }
+        let result = tokio::time::timeout(Duration::from_secs(20), child.wait()).await;
+        if result.is_err() { let _ = child.kill().await; }
+        on_spawn(None);
+        matches!(result, Ok(Ok(status)) if status.success())
+    }).await
+}
+
 /// Which encoders this FFmpeg can really use on this PC, in probe order. Each is tried with a
 /// short encode; the answer is kept for the life of the app.
 pub async fn available(ffmpeg: &Path) -> Vec<Encoder> {
@@ -174,6 +204,29 @@ mod tests {
         assert_eq!(first(&|e| e == Encoder::MediaFoundation), Some(Encoder::MediaFoundation));
         assert_eq!(first(&|_| false), Some(Encoder::X264), "software is always there");
         assert_eq!(ORDER.map(Encoder::name), ["h264_nvenc", "h264_amf", "h264_qsv", "h264_mf", "libx264"]);
+    }
+
+    #[tokio::test]
+    async fn tested_encoder_falls_back_when_initialization_fails() {
+        let tried = Mutex::new(Vec::new());
+        let picked = pick_tested_with(&ORDER, 2160, 60, |candidate| {
+            tried.lock().unwrap().push(candidate);
+            async move { candidate == Encoder::Qsv }
+        }).await;
+        assert_eq!(picked, Some(Encoder::Qsv));
+        assert_eq!(*tried.lock().unwrap(), [Encoder::Nvenc, Encoder::Amf, Encoder::Qsv]);
+    }
+
+    #[tokio::test]
+    async fn actual_size_probe_starts_and_releases_its_child() {
+        let Some(tools) = crate::download_tests::ffmpeg_dir() else { return };
+        let ffmpeg = tools.join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX));
+        let events = Mutex::new(Vec::new());
+        let chosen = pick_tested(&ffmpeg, &[], 640, 360, 30, &|pid| { events.lock().unwrap().push(pid); true }).await;
+        assert_eq!(chosen, Some(Encoder::X264));
+        let events = events.lock().unwrap();
+        assert!(events.first().is_some_and(Option::is_some));
+        assert_eq!(events.last(), Some(&None));
     }
 
     #[test]

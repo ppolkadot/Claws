@@ -112,7 +112,7 @@ pub struct SizeOption {
 }
 
 fn even(value: f64) -> u32 {
-    ((value / 2.0).round() as u32) * 2
+    ((value / 2.0).floor() as u32) * 2
 }
 
 fn label_of(height: u32) -> String {
@@ -135,18 +135,16 @@ pub fn size_options(authored: Authored, display: Option<Display>, works: &dyn Fn
             (f64::from(w) / f64::from(h), None)
         }
     };
+    if !ratio.is_finite() || ratio <= 0.0 { return Vec::new(); }
+    let max_height = (2160.0_f64).min(3840.0 / ratio).min((8_294_400.0 / ratio).sqrt())
+        .min(cap.map_or(f64::INFINITY, f64::from));
+    let max_height = even(max_height);
     let mut heights: Vec<u32> = STANDARD_HEIGHTS.to_vec();
-    if let Some(cap) = cap {
-        // A scene authored at an odd size can be recorded at that size too.
-        let own = cap - cap % 2;
-        if own >= 2 && !heights.contains(&own) {
-            heights.push(own);
-        }
-    }
+    if max_height >= 2 && !heights.contains(&max_height) { heights.push(max_height); }
     heights.sort_unstable();
     heights
         .into_iter()
-        .filter(|height| cap.is_none_or(|cap| *height <= cap))
+        .filter(|height| *height <= max_height)
         .map(|height| {
             let width = even(f64::from(height) * ratio);
             let beyond_display = display.is_some_and(|d| width > d.max_client.0 || height > d.max_client.1);
@@ -159,6 +157,7 @@ pub fn size_options(authored: Authored, display: Option<Display>, works: &dyn Fn
             };
             SizeOption { width, height, label: label_of(height), available, reason, beyond_display, fps: if !steady { vec![] } else if fast { vec![30, 60] } else { vec![30] } }
         })
+        .filter(|size| size.width >= 2 && size.width <= 3840 && u64::from(size.width) * u64::from(size.height) <= 8_294_400)
         .collect()
 }
 
@@ -943,6 +942,22 @@ mod tests {
         let tall = size_options(fixed(1920, 1200), None, &all);
         assert_eq!(heights(&tall), [720, 1080, 1200]);
         assert_eq!(size_options(fixed(1873, 927), None, &all).last().unwrap().height, 926, "even sides only");
+    }
+
+    #[test]
+    fn recording_sizes_never_exceed_4k_or_round_up() {
+        let all = |_: Encoder| true;
+        for authored in [fixed(7680, 4320), fixed(9000, 2000), fixed(1873, 927)] {
+            let sizes = size_options(authored, None, &all);
+            assert!(!sizes.is_empty());
+            for size in sizes {
+                assert!(size.width <= 3840 && size.height <= 2160);
+                assert!(u64::from(size.width) * u64::from(size.height) <= 3840 * 2160);
+                assert_eq!(size.width % 2, 0);
+                assert_eq!(size.height % 2, 0);
+                if let Authored::Fixed { width, height } = authored { assert!(size.width <= width && size.height <= height); }
+            }
+        }
     }
 
     #[test]
