@@ -417,9 +417,11 @@ pub fn wallpaper_engine_exe(libraries: &[PathBuf], root: &Path) -> Option<PathBu
             continue;
         };
         let exe = steamapps.join("common").join(name).join("wallpaper64.exe");
-        if fs::symlink_metadata(&exe).is_ok_and(|meta| meta.is_file() && !is_link(&meta)) {
-            return Some(exe);
-        }
+        #[cfg(windows)]
+        let safe = crate::workshop_record::lock_engine_path(&exe).is_ok();
+        #[cfg(not(windows))]
+        let safe = fs::symlink_metadata(&exe).is_ok_and(|meta| meta.is_file() && !is_link(&meta));
+        if safe { return Some(exe); }
     }
     None
 }

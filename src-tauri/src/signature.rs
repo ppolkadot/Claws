@@ -7,6 +7,12 @@ use std::path::Path;
 #[cfg(windows)]
 #[allow(dead_code)] // used to check Wallpaper Engine's signature
 pub(crate) fn signer_organization(path: &Path) -> Option<String> {
+    signer_organization_with_file(path, None)
+}
+
+#[cfg(windows)]
+pub(crate) fn signer_organization_with_file(path: &Path, handle: Option<&std::fs::File>) -> Option<String> {
+    use std::os::windows::io::AsRawHandle;
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::HWND;
@@ -21,6 +27,7 @@ pub(crate) fn signer_organization(path: &Path) -> Option<String> {
     let mut file = WINTRUST_FILE_INFO {
         cbStruct: std::mem::size_of::<WINTRUST_FILE_INFO>() as u32,
         pcwszFilePath: PCWSTR(wide.as_ptr()),
+        hFile: handle.map_or(windows::Win32::Foundation::HANDLE::default(), |f| windows::Win32::Foundation::HANDLE(f.as_raw_handle())),
         ..Default::default()
     };
     let mut data = WINTRUST_DATA {

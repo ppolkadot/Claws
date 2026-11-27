@@ -10,10 +10,10 @@
 //! Engine's folders and never changes Wallpaper Engine's settings.
 use std::{
     collections::HashMap,
+    sync::{Mutex, OnceLock},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Mutex, OnceLock},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use serde::Serialize;
@@ -77,21 +77,9 @@ pub fn check_engine(exe: Option<PathBuf>, genuine: impl Fn(&Path) -> bool) -> Re
     }
 }
 
-/// Whether Windows verifies `exe`'s signature and the signer is exactly `Skutta Software GmbH`.
-/// The answer is kept for a file that has not changed, because the check takes a moment.
+/// Check the publisher without caching a verdict for a replaceable path.
 fn signed_by_the_publisher(exe: &Path) -> bool {
-    type Key = (PathBuf, u64, u64);
-    static CACHE: OnceLock<Mutex<HashMap<Key, bool>>> = OnceLock::new();
-    let Ok(meta) = std::fs::metadata(exe) else { return false };
-    let modified = meta.modified().ok().and_then(|m| m.duration_since(SystemTime::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
-    let key: Key = (exe.to_path_buf(), meta.len(), modified);
-    let cache = CACHE.get_or_init(Default::default);
-    if let Some(known) = cache.lock().unwrap().get(&key) {
-        return *known;
-    }
-    let genuine = crate::signature::signed_by(exe, PUBLISHER);
-    cache.lock().unwrap().insert(key, genuine);
-    genuine
+    crate::signature::signed_by(exe, PUBLISHER)
 }
 
 /// Finds Wallpaper Engine and checks it. Blocking: reads Steam's files and verifies a signature.
@@ -340,9 +328,40 @@ async fn frozen_capture(ffmpeg: &Path, file: &Path, length: u32) -> Option<bool>
 // ---------------------------------------------------------------------------------------
 // Wallpaper Engine's window
 
+/// Hold every path component without delete sharing, and the executable without write
+/// sharing. This keeps the verified image and its path stable until process creation.
+#[cfg(windows)]
+pub(crate) fn lock_engine_path(exe: &Path) -> std::io::Result<Vec<std::fs::File>> {
+    use std::os::windows::fs::OpenOptionsExt;
+    let mut path = PathBuf::new();
+    let mut held = Vec::new();
+    for component in exe.components() {
+        path.push(component.as_os_str());
+        if matches!(component, std::path::Component::Prefix(_)) { continue; }
+        let final_component = path == exe;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).share_mode(if final_component { 1 } else { 3 })
+            .custom_flags(0x0020_0000 | if final_component { 0 } else { 0x0200_0000 });
+        let file = options.open(&path)?;
+        let meta = file.metadata()?;
+        if crate::download_files::is_link(&meta) || if final_component { !meta.is_file() } else { !meta.is_dir() } {
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Unsafe Wallpaper Engine path"));
+        }
+        held.push(file);
+    }
+    if held.is_empty() { return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Empty engine path")); }
+    Ok(held)
+}
+
 /// Runs Wallpaper Engine's command line. It returns as soon as it has passed the order on (or
 /// has become the running Wallpaper Engine itself, which is why it is never waited for).
 fn engine_command(exe: &Path, args: &[&str]) -> std::io::Result<()> {
+    #[cfg(windows)]
+    let held = lock_engine_path(exe)?;
+    #[cfg(windows)]
+    if !crate::signature::signer_organization_with_file(exe, held.last()).is_some_and(|name| crate::signature::is_publisher(&name, PUBLISHER)) {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Wallpaper Engine signature verification failed"));
+    }
     let mut command = std::process::Command::new(exe);
     command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     #[cfg(windows)]
@@ -822,6 +841,22 @@ mod tests {
         assert_eq!(check_engine(Some(exe.clone()), |_| true).unwrap().exe, exe);
         assert!(EngineProblem::NotInstalled.message().contains("Steam library"));
         assert!(EngineProblem::NotGenuine.message().contains("signature"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn engine_path_lock_denies_replacement_and_write() {
+        let dir = crate::download_tests::temp_dir("engine-lock");
+        let nested = dir.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let exe = nested.join("wallpaper64.exe");
+        std::fs::write(&exe, b"test").unwrap();
+        let held = lock_engine_path(&exe).unwrap();
+        assert!(std::fs::write(&exe, b"replace").is_err());
+        assert!(std::fs::rename(&nested, dir.join("renamed")).is_err());
+        drop(held);
+        std::fs::write(&exe, b"replace").unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
