@@ -221,22 +221,27 @@ mod tests {
     }
 
     #[cfg(windows)]
+    fn make_junction(link: &Path, target: &Path) {
+        use std::process::{Command, Stdio};
+        let made = Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "creating a junction must succeed on a standard account: {}", String::from_utf8_lossy(&made.stderr));
+    }
+
+    #[cfg(windows)]
     #[test]
     fn a_link_at_the_tools_directory_is_refused() {
-        use std::process::{Command, Stdio};
         let parent = bin("linked-tools-parent");
         let target = bin("linked-tools-target");
         fixture(&target);
         let link = parent.join("bin");
-        let made = Command::new("cmd")
-            .args(["/c", "mklink", "/J"])
-            .arg(&link)
-            .arg(&target)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
-        assert!(made.success(), "creating a junction must succeed on a standard account");
+        make_junction(&link, &target);
         assert!(find(&link).is_none());
         assert!(remove(&link).is_err());
         assert!(target.join("steamcmd/steamcmd.exe").exists());
@@ -248,28 +253,17 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_junction_inside_the_folder_stops_the_removal_and_its_target_survives() {
-        use std::process::{Command, Stdio};
         let dir = bin("leftover-junction");
         let target = bin("leftover-junction-target");
         fs::write(target.join("precious.txt"), b"mine").unwrap();
         fixture(&dir);
-        let made = Command::new("cmd")
-            .args(["/c", "mklink", "/J"])
-            .arg(dir.join("steamcmd").join("linked"))
-            .arg(&target)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
-        if !made.success() {
-            eprintln!("skipped: the test user cannot create a junction");
-        } else {
-            assert!(remove(&dir).is_err(), "a folder holding a link is never removed");
-            assert!(dir.join("steamcmd").join("steamcmd.exe").exists(), "nothing in it was deleted either");
-            assert_eq!(fs::read(target.join("precious.txt")).unwrap(), b"mine");
-            // Take the junction out ourselves; the target must still be there.
-            fs::remove_dir(dir.join("steamcmd").join("linked")).unwrap();
-        }
+        let link = dir.join("steamcmd").join("linked");
+        make_junction(&link, &target);
+        assert!(remove(&dir).is_err(), "a folder holding a link is never removed");
+        assert!(dir.join("steamcmd").join("steamcmd.exe").exists(), "nothing in it was deleted either");
+        assert_eq!(fs::read(target.join("precious.txt")).unwrap(), b"mine");
+        // Take the junction out ourselves; the target must still be there.
+        fs::remove_dir(&link).unwrap();
         fs::remove_dir_all(&dir).unwrap();
         fs::remove_dir_all(&target).unwrap();
     }
@@ -277,26 +271,15 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_linked_folder_itself_is_not_followed() {
-        use std::process::{Command, Stdio};
         let dir = bin("leftover-linked-root");
         let target = bin("leftover-linked-root-target");
         fs::write(target.join("precious.txt"), b"mine").unwrap();
-        let made = Command::new("cmd")
-            .args(["/c", "mklink", "/J"])
-            .arg(dir.join("steamcmd"))
-            .arg(&target)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
-        if made.success() {
-            assert_eq!(find(&dir), None);
-            assert!(remove(&dir).is_err());
-            assert_eq!(fs::read(target.join("precious.txt")).unwrap(), b"mine");
-            fs::remove_dir(dir.join("steamcmd")).unwrap();
-        } else {
-            eprintln!("skipped: the test user cannot create a junction");
-        }
+        let link = dir.join("steamcmd");
+        make_junction(&link, &target);
+        assert_eq!(find(&dir), None);
+        assert!(remove(&dir).is_err());
+        assert_eq!(fs::read(target.join("precious.txt")).unwrap(), b"mine");
+        fs::remove_dir(&link).unwrap();
         fs::remove_dir_all(&dir).unwrap();
         fs::remove_dir_all(&target).unwrap();
     }
