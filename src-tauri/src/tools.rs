@@ -28,14 +28,6 @@ const FFMPEG_ZIP_NAME: &str = "ffmpeg-master-latest-win64-gpl.zip";
 const DENO_URL: &str = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip";
 const DENO_SUMS_URL: &str = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip.sha256sum";
 const DENO_ZIP_NAME: &str = "deno-x86_64-pc-windows-msvc.zip";
-/// Valve's own SteamCMD download. Valve publishes no checksum for it, so the extracted
-/// steamcmd.exe is accepted only with a valid Authenticode signature from Valve.
-const STEAMCMD_URL: &str = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip";
-/// The archive is under 1 MB; steamcmd.exe about 2 MB before it updates itself.
-const STEAMCMD_ZIP_MAX: u64 = 32 * 1024 * 1024;
-const STEAMCMD_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
-/// SteamCMD's first run downloads the rest of itself (about 40 MB).
-const STEAMCMD_FIRST_RUN: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -57,9 +49,6 @@ pub struct ToolsStatus {
     pub latest_ytdlp: Option<String>,
     /// "Deno" or "Node.js": the JavaScript runtime yt-dlp uses for sites such as YouTube.
     pub js_runtime: Option<String>,
-    /// SteamCMD for Wallpaper Engine downloads: the one chosen in Settings, else the copy
-    /// Claws installed. `version` is empty: SteamCMD reports none without starting up.
-    pub steamcmd: Option<ToolInfo>,
 }
 
 #[derive(Serialize, Clone)]
@@ -187,7 +176,6 @@ pub async fn status(app: &AppHandle) -> ToolsStatus {
     let state = app.state::<AppState>();
     let _engine = state.engine.read().await;
     let (ytdlp, ffmpeg, deno) = tokio::join!(ytdlp_info(app), ffmpeg_info(app), deno_info(app));
-    let steamcmd = steamcmd_info(app);
     let js_runtime = if deno.is_some() {
         Some("Deno")
     } else if on_path("node").is_some() {
@@ -201,36 +189,7 @@ pub async fn status(app: &AppHandle) -> ToolsStatus {
         deno,
         latest_ytdlp: None,
         js_runtime: js_runtime.map(str::to_string),
-        steamcmd,
     }
-}
-
-/// Where Claws installs SteamCMD: its own folder, because SteamCMD writes its updates,
-/// sign-in and downloads next to the exe.
-pub fn managed_steamcmd(state: &AppState) -> PathBuf {
-    state.bin_dir().join("steamcmd").join("steamcmd.exe")
-}
-
-/// The SteamCMD Wallpaper Engine downloads use: the one chosen in Settings, else the copy
-/// Claws installed, else none.
-pub fn find_steamcmd(state: &AppState) -> Option<PathBuf> {
-    let chosen = state.settings.lock().unwrap().steamcmd_path.trim().to_string();
-    if !chosen.is_empty() {
-        return Some(PathBuf::from(chosen));
-    }
-    let managed = managed_steamcmd(state);
-    managed.is_file().then_some(managed)
-}
-
-fn steamcmd_info(app: &AppHandle) -> Option<ToolInfo> {
-    let state = app.state::<AppState>();
-    let path = find_steamcmd(&state)?;
-    Some(ToolInfo {
-        managed: is_managed(app, &path),
-        fast_start: false,
-        path: path.to_string_lossy().into_owned(),
-        version: String::new(),
-    })
 }
 
 /// Exclusive use of the engine for an install. Fails at once, rather than waiting for
@@ -844,112 +803,6 @@ fn commit_ffmpeg(staged: &[(PathBuf, PathBuf)]) -> Result<()> {
     Ok(())
 }
 
-/// Only the root `steamcmd.exe` is read, into the attempt folder.
-fn stage_steamcmd(zip_path: &Path, staging: &Path, entry_limit: u64) -> Result<PathBuf> {
-    let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path)?)?;
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index)?;
-        if !matches!(entry.name(), Ok(name) if name.eq_ignore_ascii_case("steamcmd.exe")) {
-            continue;
-        }
-        check_entry(&entry)?;
-        let tmp = staging.join("steamcmd.exe");
-        let copied = std::fs::File::create(&tmp)
-            .map_err(AppError::from)
-            .and_then(|mut f| copy_limited(&mut entry, &mut f, entry_limit));
-        if let Err(e) = copied {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e);
-        }
-        return Ok(tmp);
-    }
-    Err(AppError::msg("The SteamCMD archive did not contain steamcmd.exe."))
-}
-
-/// Downloads Valve's SteamCMD into the tools folder, checks Valve's signature, and runs it
-/// once so it fetches the rest of itself now rather than during the first wallpaper.
-pub async fn install_steamcmd(app: &AppHandle) -> Result<()> {
-    let state = app.state::<AppState>();
-    let _install = reserve_install(&state)?;
-    if state.workshop.lock().unwrap().active {
-        return Err(AppError::msg("A wallpaper download is using SteamCMD. Try again when it finishes."));
-    }
-    let bin = state.bin_dir();
-    let attempt = Attempt::create(&bin).await?;
-    let archive = attempt.dir.join("steamcmd.zip.part");
-    let bounds = Bounds { idle: TIMING.idle, total: TIMING.artifact_total, max_bytes: STEAMCMD_ZIP_MAX };
-    fetch_to_file(&state.http, STEAMCMD_URL, &archive, bounds, &mut |received, total| {
-        emit_progress(app, "steamcmd", received, total, "download")
-    })
-    .await?;
-
-    emit_progress(app, "steamcmd", 0, 0, "extract");
-    let (archive_for_task, staging_for_task) = (archive.clone(), attempt.dir.clone());
-    let staged = tokio::task::spawn_blocking(move || -> Result<PathBuf> {
-        let staged = stage_steamcmd(&archive_for_task, &staging_for_task, STEAMCMD_ENTRY_BYTES)?;
-        if !crate::workshop::signed_by_valve(&staged) {
-            return Err(AppError::msg("The downloaded SteamCMD isn't signed by Valve, so it was discarded."));
-        }
-        Ok(staged)
-    })
-    .await
-    .map_err(blocking_failed)??;
-    let _ = tokio::fs::remove_file(&archive).await;
-
-    let target = managed_steamcmd(&state);
-    tokio::task::spawn_blocking({
-        let target = target.clone();
-        move || -> Result<()> {
-            std::fs::create_dir_all(target.parent().expect("managed path has a folder"))?;
-            replace_all(&[(staged.clone(), target)]).map_err(|e| {
-                discard(&[(staged, PathBuf::new())]);
-                AppError::msg(format!("Could not install SteamCMD because the file is in use ({e}). The previous copy was kept."))
-            })
-        }
-    })
-    .await
-    .map_err(blocking_failed)??;
-
-    // Best effort: when this first run fails, SteamCMD finishes updating on first use.
-    emit_progress(app, "steamcmd", 0, 0, "update");
-    let _ = first_run_steamcmd(app, &target).await;
-    Ok(())
-}
-
-async fn first_run_steamcmd(app: &AppHandle, exe: &Path) -> Result<()> {
-    use tokio::io::BufReader;
-    let mut command = Command::new(exe);
-    command
-        .current_dir(exe.parent().expect("managed path has a folder"))
-        .args(["+@ShutdownOnFailedCommand", "1", "+@NoPromptForPassword", "1", "+quit"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    #[cfg(windows)]
-    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    let mut child = command.spawn()?;
-    let pid = child.id();
-    let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
-    let read = async {
-        let mut line = Vec::new();
-        while crate::bounded_io::read_line_capped(&mut stdout, &mut line, 8192).await.is_some() {
-            let text = String::from_utf8_lossy(&line);
-            if let Some(percent) = crate::workshop::update_percent(&text) {
-                emit_progress(app, "steamcmd", (percent * 10.0) as u64, 1000, "update");
-            }
-        }
-        let _ = child.wait().await;
-    };
-    if tokio::time::timeout(STEAMCMD_FIRST_RUN, read).await.is_err() {
-        if let Some(pid) = pid {
-            crate::downloader::kill_tree(pid, true);
-        }
-        return Err(AppError::msg("SteamCMD took too long to update itself."));
-    }
-    Ok(())
-}
-
 /// Only the root `deno.exe` is read; returns the `(temporary, final)` pair for `replace_all`.
 fn stage_deno(zip_path: &Path, staging: &Path, bin: &Path, entry_limit: u64) -> Result<Vec<(PathBuf, PathBuf)>> {
     let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path)?)?;
@@ -1011,7 +864,7 @@ async fn install_deno_from(app: &AppHandle, release: &Release<'_>, timing: Timin
 /// Startup repair after an exit mid-install: restores a tool left as `.old` and
 /// removes `.part` leftovers and abandoned install-attempt folders.
 pub fn recover_bin(bin: &Path) {
-    for name in ["yt-dlp", "ffmpeg.exe", "ffprobe.exe", "deno.exe", "steamcmd/steamcmd.exe"] {
+    for name in ["yt-dlp", "ffmpeg.exe", "ffprobe.exe", "deno.exe"] {
         let target = bin.join(name);
         let backup = backup_of(&target);
         if !target.exists() && backup.exists() {
@@ -1081,30 +934,6 @@ fn replace_all(pairs: &[(PathBuf, PathBuf)]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Live: set CLAWS_TEST_STEAMCMD_ZIP to Valve's steamcmd.zip. The installer's unpack step
-    /// finds steamcmd.exe and Valve's signature on it is accepted.
-    #[cfg(windows)]
-    #[test]
-    fn unpacks_valves_signed_steamcmd_when_given() {
-        let Some(zip) = std::env::var_os("CLAWS_TEST_STEAMCMD_ZIP") else { return };
-        let dir = temp_dir("steamcmd-stage");
-        let staged = stage_steamcmd(Path::new(&zip), &dir, STEAMCMD_ENTRY_BYTES).unwrap();
-        assert!(crate::workshop::signed_by_valve(&staged));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn steamcmd_archive_without_the_exe_is_refused() {
-        let dir = temp_dir("steamcmd-empty");
-        let zip_path = dir.join("steamcmd.zip");
-        let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
-        zip.start_file("readme.txt", zip::write::SimpleFileOptions::default()).unwrap();
-        zip.write_all(b"no exe").unwrap();
-        zip.finish().unwrap();
-        assert!(stage_steamcmd(&zip_path, &dir, STEAMCMD_ENTRY_BYTES).is_err());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
 
     #[test]
     fn recover_bin_restores_and_sweeps() {

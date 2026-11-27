@@ -73,12 +73,11 @@ Claws runs on [yt-dlp](https://github.com/yt-dlp/yt-dlp), so it handles any site
 
 Paste one Wallpaper Engine Steam Workshop item link into **Download**. Claws shows the wallpaper's preview, title, type and size, then saves it in the download folder as `<title> (<item ID>).zip` (the whole project, as Steam downloaded it). Workshop collections and other games' items are refused with a message; open each wallpaper on its own. Exports run separately from the media queue, keep running if you switch tabs, and can be cancelled.
 
-A video wallpaper can also be saved as **MP4** or **GIF** (see [formats](#wallpaper-engine-formats) below); every other project is saved as its ZIP. There are two sources:
+A video wallpaper can also be saved as **MP4** or **GIF** (see [formats](#wallpaper-engine-formats) below); every other project is saved as its ZIP.
 
-- **Steam library (no sign-in in Claws).** If Steam is installed and signed in with the account that owns Wallpaper Engine, press **Subscribe in Steam**, subscribe on the page that opens, and wait. Claws watches your Steam libraries for up to ten minutes and enables Save when Steam has downloaded the wallpaper. Claws only reads Steam's folders.
-- **SteamCMD.** Press **Install SteamCMD**: Claws downloads Valve's [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD) into its own tools folder, accepts it only with a valid Valve signature, and lets it update itself. You can also **Choose…** a copy you already have (outside OneDrive). Claws suggests account names found on this PC. Choose or enter the login name of the account that owns Wallpaper Engine, then press **Sign in to SteamCMD…**: SteamCMD opens in its own window for the password and any Steam Guard code; type `quit` when it says it is logged in. Claws remembers the SteamCMD location and account name (never a password). Steam's desktop sign-in and SteamCMD's saved sign-in are separate. If SteamCMD reports an invalid password, check the login name and password in Steam. The Steam library source works without signing in to SteamCMD. SteamCMD keeps its own copy of each wallpaper unless **Remove SteamCMD's copy** is on; that copy is removed only after the save succeeded.
+**Steam library only.** Claws needs Steam with Wallpaper Engine installed on this PC, and nothing else: no sign-in in Claws, no extra tool, no account name. Press **Subscribe in Steam**, subscribe on the page that opens, and wait. Claws watches your Steam libraries for up to ten minutes and enables Save when Steam has downloaded the wallpaper. Claws only reads Steam's folders and never writes into them. Without Steam, the wallpaper card says what is needed and **View in Steam** opens the item page (in the browser when Steam is not installed). A wallpaper that needs other Workshop items says so; download those as well.
 
-Anonymous SteamCMD sign-ins cannot download Wallpaper Engine items, and Valve's public item details carry no download link, so one of these two sources is needed (see the [spike notes](docs/wallpaper-engine-no-login-spike.md)). A wallpaper that needs other Workshop items says so; download those as well. **View in Steam** opens the item page, in the browser when Steam is not installed.
+Earlier versions could install Valve's SteamCMD into Claws' tools folder. Claws no longer uses it. If that folder is still there, **Settings → Wallpaper Engine** shows "SteamCMD files from an earlier version" with its size and **Remove…**. Nothing is deleted unless you confirm, and only that folder inside Claws' own tools folder is touched.
 
 #### Wallpaper Engine formats
 
@@ -86,7 +85,7 @@ Anonymous SteamCMD sign-ins cannot download Wallpaper Engine items, and Valve's 
 - **MP4** is H.264 video with AAC audio when the wallpaper has sound, in an MP4 that plays and edits in common players. It contains the wallpaper's own video, not the project, so its other files are not kept.
 - **GIF** is a silent, looping animation at 15 frames per second, with a colour palette fitted to each frame. It keeps the source resolution, so it is much larger than MP4 for a long or high-resolution clip; short loops work best.
 
-For the Steam library source, Claws checks the installed project's manifest and selects MP4 by default when it finds a supported standalone video. You can switch to GIF or ZIP. For SteamCMD, Workshop tags guide the available formats before download. Claws validates the downloaded manifest before converting. If it declares no video, or a file outside the item, Claws refuses and offers **Save as ZIP**. The video keeps its source resolution and aspect ratio; odd sides are rounded down to the nearest even number, which the encoders require, and nothing is upscaled. Converting needs FFmpeg, which first-run setup or **Settings → Tools** installs (an FFmpeg on your `PATH` counts). A conversion that fails or is cancelled leaves no partial file behind, and an existing export is never replaced.
+Claws checks the installed project's manifest and selects MP4 by default when it finds a supported standalone video. You can switch to GIF or ZIP. Claws validates the manifest again before converting. If it declares no video, or a file outside the item, Claws refuses and offers **Save as ZIP**. The video keeps its source resolution and aspect ratio; odd sides are rounded down to the nearest even number, which the encoders require, and nothing is upscaled. Converting needs FFmpeg, which first-run setup or **Settings → Tools** installs (an FFmpeg on your `PATH` counts). A conversion that fails or is cancelled leaves no partial file behind, and an existing export is never replaced.
 
 ### Managing
 
@@ -274,7 +273,7 @@ Two ideas were measured and dropped because they did not reach the 1.5× gate on
 
 ## Privacy and security
 
-Claws sends no telemetry. Network traffic goes to the sites you download from (including the servers their artwork comes from), to GitHub when yt-dlp, ffmpeg or Deno is installed or updated, to `sponsor.ajay.app` through yt-dlp when SponsorBlock is on, and to public Spotify and YouTube pages for track matching. For Wallpaper Engine links, Claws checks the item with Valve and SteamCMD handles sign-in and downloads. Claws receives the Steam account name only. Notifications are local Windows notifications.
+Claws sends no telemetry. Network traffic goes to the sites you download from (including the servers their artwork comes from), to GitHub when yt-dlp, ffmpeg or Deno is installed or updated, to `sponsor.ajay.app` through yt-dlp when SponsorBlock is on, and to public Spotify and YouTube pages for track matching. For Wallpaper Engine links, Claws asks Valve's public Workshop service about the item; it receives no Steam account name and signs in to nothing. Notifications are local Windows notifications.
 
 - **Verified tools.** Claws checks the SHA-256 of each tool archive it installs against the hash its project publishes and discards mismatches. Unpacking is defensive: names that could land outside the tool folder are skipped, encrypted entries and links are refused, and entry counts and bytes written are capped whatever size an entry claims.
 - **Untrusted input.** Only `http` and `https` links are accepted, and they reach yt-dlp as plain arguments after `--`, never through a shell. Anything that ends up on the command line (browser names, cookie files, filename templates, SponsorBlock categories) is validated first, and text from sites is rendered as text, never HTML.
@@ -359,7 +358,8 @@ claws/
 │   ├── probe.rs, links.rs      Reading links; saved details for instant lookups
 │   ├── transcript.rs           Caption parsing and text/SRT/VTT output
 │   ├── spotify.rs, spotify_match.rs   Spotify identity and YouTube ranking
-│   ├── workshop.rs             Wallpaper Engine Workshop lookup, SteamCMD export and saving
+│   ├── workshop.rs             Wallpaper Engine Workshop lookup, export and saving
+│   ├── steam.rs                Steam folders, libraries and Valve's text formats (read only)
 │   ├── workshop_media.rs       Checking a video project and converting it with FFmpeg
 │   ├── tools.rs                Installing and updating yt-dlp, ffmpeg and Deno
 │   ├── desktop.rs, window.rs   Quick Open, tray, notifications; glass and materials

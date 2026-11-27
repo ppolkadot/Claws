@@ -15,14 +15,17 @@ mod estimate;
 mod file_drag;
 mod history;
 mod history_mutation;
+mod leftovers;
 #[cfg(test)]
 mod lifecycle_tests;
 mod links;
 mod probe;
 mod queue_writer;
 mod settings;
+mod signature;
 mod spotify;
 mod spotify_match;
+mod steam;
 mod state;
 mod store;
 mod tools;
@@ -181,15 +184,13 @@ pub fn run() {
             commands::update_ytdlp,
             commands::install_ffmpeg,
             commands::install_deno,
-            commands::install_steamcmd,
             commands::default_output_dir,
             commands::open_font_page,
+            leftovers::legacy_files,
+            leftovers::remove_legacy_files,
             workshop::open_workshop_item,
             workshop::workshop_item_details,
-            workshop::choose_steamcmd,
-            workshop::sign_in_steamcmd,
             workshop::find_wallpaper_in_library,
-            workshop::detect_steam_accounts,
             workshop::download_wallpaper,
             workshop::cancel_wallpaper_download,
         ])

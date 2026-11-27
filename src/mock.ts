@@ -40,9 +40,6 @@ const settings: Settings = {
   keepRunning: true,
   openAtLogin: false,
   audioSelection: "preferMatching",
-  steamcmdPath: "",
-  steamAccount: "",
-  removeSteamcmdCopy: false,
 };
 
 const job = (id: string, title: string, hues: [number, number], over: Partial<Job>): Job => ({
@@ -441,25 +438,8 @@ const sampleTools: ToolsStatus = {
   deno: { path: "C:\\sample\\deno.exe", version: "2.9.8", managed: true, fastStart: false },
   latestYtdlp: null,
   jsRuntime: "Deno",
-  steamcmd: null,
 };
-const mockTools: ToolsStatus = freshSetup ? { ytdlp: null, ffmpeg: null, deno: null, latestYtdlp: null, jsRuntime: null, steamcmd: null } : { ...sampleTools };
-const sampleSteamcmd = { path: "C:\\Users\\Sample\\AppData\\Roaming\\dev.claws.downloader\\bin\\steamcmd\\steamcmd.exe", version: "", managed: true, fastStart: false };
-
-async function sampleSteamcmdInstall(): Promise<ToolsStatus> {
-  for (let step = 1; step <= 5; step++) {
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    void emit("tool-progress", { tool: "steamcmd", received: step * 200_000, total: 1_000_000, stage: "download" });
-  }
-  void emit("tool-progress", { tool: "steamcmd", received: 0, total: 0, stage: "extract" });
-  for (let step = 1; step <= 5; step++) {
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    void emit("tool-progress", { tool: "steamcmd", received: step * 200, total: 1000, stage: "update" });
-  }
-  mockTools.steamcmd = sampleSteamcmd;
-  return { ...mockTools };
-}
-
+const mockTools: ToolsStatus = freshSetup ? { ytdlp: null, ffmpeg: null, deno: null, latestYtdlp: null, jsRuntime: null } : { ...sampleTools };
 async function sampleInstall(tool: ToolName): Promise<ToolsStatus> {
   const total = 40 * 1024 * 1024;
   for (let step = 1; step <= 10; step++) {
@@ -475,11 +455,10 @@ async function sampleInstall(tool: ToolName): Promise<ToolsStatus> {
 
 // Sample Wallpaper Engine items: 2250845956 is a scene wallpaper, an id ending in 2 a
 // collection, in 3 another game's item, in 0 missing, in 5 a video wallpaper, and in 8 a
-// video wallpaper whose project has no usable video (the ZIP fallback sample). Account
-// names starting with "fail_" show each SteamCMD failure ("fail_guard", "fail_password",
-// "fail_access"); others succeed.
+// video wallpaper whose project has no usable video (the ZIP fallback sample).
 const mockSubscribed = new Set<string>();
 let mockWallpaperCancelled = false;
+let mockLegacyRemoved = false;
 
 /** The sample item type: video for ids ending in 5 or 8, scene otherwise. */
 function mockWallpaperType(id: string): string {
@@ -505,7 +484,7 @@ function mockWorkshopDetails(url: string) {
   };
 }
 
-async function mockWallpaperDownload(url: string, source: string, account: string | null, format: string) {
+async function mockWallpaperDownload(url: string, format: string) {
   mockWallpaperCancelled = false;
   const id = new URL(url).searchParams.get("id") ?? "";
   const media = format === "mp4" || format === "gif";
@@ -521,39 +500,13 @@ async function mockWallpaperDownload(url: string, source: string, account: strin
       message: "This wallpaper's project has no video that Claws can convert. Save it as a ZIP instead.",
     };
   }
-  const steps: [string, number | null][] =
-    source === "library"
-      ? media
-        ? [["converting", null], ["saving", 50], ["saving", 100]]
-        : [["saving", 0], ["saving", 35], ["saving", 70], ["saving", 100]]
-      : [
-          ["updating", 40],
-          ["updating", 100],
-          ["signingIn", null],
-          ["downloading", null],
-          ["downloading", null],
-          ...(media ? [["converting", null] as [string, number | null]] : []),
-          ["saving", 50],
-          ["saving", 100],
-        ];
+  const steps: [string, number | null][] = media
+    ? [["converting", null], ["saving", 50], ["saving", 100]]
+    : [["saving", 0], ["saving", 35], ["saving", 70], ["saving", 100]];
   for (const [stage, percent] of steps) {
     if (mockWallpaperCancelled) return { status: "cancelled" };
     void emit("workshop-progress", { url, stage, percent });
     await new Promise((resolve) => setTimeout(resolve, 700));
-    if (account?.startsWith("fail_") && stage === "signingIn") {
-      const kind = account.slice(5);
-      const message =
-        kind === "guard"
-          ? "Steam needs a Steam Guard code for this account. Use Sign in to Steam to enter it, then try again."
-          : kind === "password"
-            ? "Steam rejected the sign-in for this account. Use Sign in to Steam to enter the password again, then try again."
-            : "This Steam account can't download this item. Check that it owns Wallpaper Engine and that the item is still public.";
-      return {
-        status: "failed",
-        message,
-        detail: "Redirecting stderr to '%USERPROFILE%\\SteamCMD\\logs\\stderr.txt'\nLogging in user '<account>' to Steam Public...FAILED (Sample failure)",
-      };
-    }
   }
   if (mockWallpaperCancelled) return { status: "cancelled" };
   const extension = media ? format : "zip";
@@ -584,18 +537,14 @@ export function installMock() {
           setTimeout(() => mockSubscribed.add(id), 4000);
           return null;
         }
-        case "choose_steamcmd":
-          mockTools.steamcmd = { path: "C:\\SteamCMD\\steamcmd.exe", version: "", managed: false, fastStart: false };
-          return "C:\\SteamCMD\\steamcmd.exe";
-        case "sign_in_steamcmd":
+        case "legacy_files":
+          // Sample mode: add ?legacy=1 to the address to see the leftover-files row.
+          return new URLSearchParams(location.search).get("legacy") === "1" && !mockLegacyRemoved ? { bytes: 2_254_857_830 } : null;
+        case "remove_legacy_files":
+          mockLegacyRemoved = true;
           return null;
         case "download_wallpaper":
-          return mockWallpaperDownload(
-            String(payload.url),
-            String(payload.source),
-            (payload.account as string | null) ?? null,
-            String(payload.format ?? "zip"),
-          );
+          return mockWallpaperDownload(String(payload.url), String(payload.format ?? "zip"));
         case "cancel_wallpaper_download":
           mockWallpaperCancelled = true;
           return null;
@@ -607,10 +556,6 @@ export function installMock() {
           return sampleInstall("ffmpeg");
         case "install_deno":
           return sampleInstall("deno");
-        case "install_steamcmd":
-          return sampleSteamcmdInstall();
-        case "detect_steam_accounts":
-          return mockTools.steamcmd ? ["sample_owner"] : [];
         case "plugin:app|version":
           return "1.0.9";
         case "list_history":

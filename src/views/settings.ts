@@ -3,7 +3,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { api, errorMessage, type Backdrop, type CookieKind, type QuickOpenShortcut, type Theme } from "../api";
 import type { ToolName } from "../setup";
 import { store } from "../store";
-import { button, chipRadio, segmented, slider, stepper, toast, toggle } from "../ui/components";
+import { formatBytes } from "../format";
+import { button, chipRadio, confirmSheet, segmented, slider, stepper, toast, toggle } from "../ui/components";
 import { h, replace } from "../ui/dom";
 import { group, progressBar, row, sectionTitle, setProgress } from "../ui/layout";
 import type { MountView } from "./shell";
@@ -287,72 +288,43 @@ function buildSettings(container: HTMLElement): () => void {
     cookieDetail,
   );
 
-  // Wallpaper Engine: what the SteamCMD source uses (the Steam library source needs nothing).
-  const steamcmdPath = h("span", { class: "path" });
-  const installSteamcmd = button({
-    label: "Install",
+  // Wallpaper Engine: Claws reads wallpapers from the Steam library and needs nothing set up.
+  // The only thing here is the folder an earlier Claws left behind, shown only while it exists.
+  const legacyText = h("span", { class: "path" });
+  const legacyRemove = button({
+    label: "Remove…",
     variant: "secondary",
     size: "small",
-    onClick: () => void store.runTool("steamcmd", api.installSteamcmd),
+    onClick: async () => {
+      const choice = await confirmSheet(
+        "Remove these files?",
+        "These are Valve's SteamCMD and the wallpaper copies it saved, in Claws' own tools folder. Claws no longer uses them, and your Steam library is not touched. This can't be undone.",
+        [{ label: "Remove files", value: "remove", variant: "danger" }],
+      );
+      if (choice !== "remove") return;
+      legacyRemove.disabled = true;
+      try {
+        await api.removeLegacyFiles();
+        toast("Removed the files.");
+      } catch (error) {
+        onError(errorMessage(error));
+      }
+      void paintLegacy();
+    },
   });
-  // "Clear" goes back to Claws' own copy (or none).
-  const clearSteamcmd = button({
-    label: "Clear",
-    variant: "plain",
-    size: "small",
-    onClick: () => void store.setSteamcmd("", onError),
-  });
-  const paintSteam = () => {
-    const tool = store.tools.steamcmd;
-    const busy = Boolean(store.toolBusy.steamcmd);
-    const progress = store.toolProgress.steamcmd;
-    const pct = progress && progress.total > 0 ? ` ${Math.round((progress.received / progress.total) * 100)}%` : "…";
-    steamcmdPath.textContent = busy
-      ? progress?.stage === "update" ? `Updating${pct}` : progress?.stage === "extract" ? "Checking Valve's signature…" : `Downloading${pct}`
-      : tool ? (tool.managed ? "Installed by Claws" : tool.path) : "Not installed";
-    steamcmdPath.title = tool?.path ?? "";
-    installSteamcmd.hidden = Boolean(tool) && !busy;
-    installSteamcmd.disabled = busy;
-    clearSteamcmd.hidden = !s().steamcmdPath;
-    const error = store.toolError.steamcmd;
-    steamcmdHint.textContent = error ?? (tool ? "Only needed for wallpapers you haven't subscribed to in Steam." : "Downloads Valve's SteamCMD into Claws' tools folder. Only needed for wallpapers you haven't subscribed to in Steam.");
+  const legacyRow = row("SteamCMD files from an earlier version", h("div", { class: "inline" }, legacyText, legacyRemove));
+  const wallpaper = group(legacyRow);
+  const wallpaperTitle = sectionTitle("Wallpaper Engine");
+  let leaving = false;
+  const paintLegacy = async () => {
+    const found = await api.legacyFiles().catch(() => null);
+    if (leaving) return;
+    legacyText.textContent = found ? formatBytes(found.bytes) || "Found" : "";
+    legacyRemove.disabled = false;
+    wallpaper.hidden = wallpaperTitle.hidden = !found;
   };
-  const steamcmdHint = h("span");
-  const steamAccount = h("input", {
-    class: "text-input",
-    attrs: { id: "settings-steam-account", type: "text", maxlength: 64, spellcheck: false, autocomplete: "username", value: s().steamAccount },
-  });
-  steamAccount.addEventListener("change", () => update({ steamAccount: steamAccount.value.trim() }));
-  const wallpaper = group(
-    row(
-      "SteamCMD",
-      h(
-        "div",
-        { class: "inline" },
-        steamcmdPath,
-        installSteamcmd,
-        button({
-          label: "Choose…",
-          variant: "plain",
-          size: "small",
-          onClick: () =>
-            void api.chooseSteamcmd().then(
-              (path) => (path ? store.setSteamcmd(path, onError) : undefined),
-              (e) => onError(errorMessage(e)),
-            ),
-        }),
-        clearSteamcmd,
-      ),
-      steamcmdHint,
-    ),
-    row("Steam account", steamAccount, "The account that owns Wallpaper Engine.", steamAccount.id),
-    row(
-      "Remove SteamCMD's copy",
-      toggle("Remove SteamCMD's copy after saving", s().removeSteamcmdCopy, (v) => update({ removeSteamcmdCopy: v })),
-      "Deletes the wallpaper from SteamCMD's folder once the ZIP is saved.",
-    ),
-  );
-  paintSteam();
+  wallpaper.hidden = wallpaperTitle.hidden = true;
+  void paintLegacy();
 
   const toolsGroup = h("div", { class: "tools" });
   const paintTools = () => {
@@ -446,7 +418,7 @@ function buildSettings(container: HTMLElement): () => void {
     );
     toolsGroup.querySelectorAll<HTMLButtonElement>("button").forEach((b) => (b.disabled = ytdlpBusy || ffmpegBusy || denoBusy));
   };
-  const offTools = [store.on("tools", paintTools), store.on("toolProgress", paintTools), store.on("tools", paintSteam), store.on("toolProgress", paintSteam)];
+  const offTools = [store.on("tools", paintTools), store.on("toolProgress", paintTools)];
   paintTools();
 
   container.append(
@@ -455,11 +427,14 @@ function buildSettings(container: HTMLElement): () => void {
       sectionTitle("Quick access"), quickAccess,
       sectionTitle("Appearance"), appearance,
       sectionTitle("Sign-in"), cookies,
-      sectionTitle("Wallpaper Engine"), wallpaper,
+      wallpaperTitle, wallpaper,
       sectionTitle("Tools"), toolsGroup,
       h("p", { class: "footnote", text: "Only download content you have the right to save." }),
     ),
   );
 
-  return () => offTools.forEach((off) => off());
+  return () => {
+    leaving = true;
+    offTools.forEach((off) => off());
+  };
 }

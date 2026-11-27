@@ -116,9 +116,6 @@ const defaultSettings: Settings = {
   keepRunning: true,
   openAtLogin: false,
   audioSelection: "preferMatching",
-  steamcmdPath: "",
-  steamAccount: "",
-  removeSteamcmdCopy: false,
 };
 
 class Store {
@@ -127,7 +124,7 @@ class Store {
   /** The download list, kept in creation order from revisioned events. */
   readonly jobs = new JobTable<Job>();
   history: HistoryItem[] = [];
-  tools: ToolsStatus = { ytdlp: null, ffmpeg: null, deno: null, latestYtdlp: null, jsRuntime: null, steamcmd: null };
+  tools: ToolsStatus = { ytdlp: null, ffmpeg: null, deno: null, latestYtdlp: null, jsRuntime: null };
   /** "Not Now" on the setup panel: optional tools are not offered again until the next launch. */
   setupDismissed = false;
   libraryKind: LibraryKind = "all";
@@ -370,13 +367,6 @@ class Store {
   dismissSetup() {
     this.setupDismissed = true;
     this.emit("tools");
-  }
-
-  /** Saves the SteamCMD to use ("" for Claws' own copy) and reads which one that now is. */
-  async setSteamcmd(path: string, onError: (message: string) => void) {
-    this.updateSettings({ steamcmdPath: path }, onError);
-    await this.flushSettings().catch(() => undefined);
-    this.setTools(await api.toolsStatus());
   }
 
   setTools(tools: ToolsStatus) {

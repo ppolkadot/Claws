@@ -215,20 +215,18 @@ export function buildShell(root: HTMLElement, views: Record<Route, { title: stri
 
   let lastTool: ManagedTool | null = null;
   const paintTools = () => {
-    const busy = store.toolBusy.ytdlp || store.toolBusy.ffmpeg || store.toolBusy.deno || store.toolBusy.steamcmd;
-    const tool: ManagedTool = store.toolBusy.ytdlp ? "ytdlp" : store.toolBusy.ffmpeg ? "ffmpeg" : store.toolBusy.deno ? "deno" : "steamcmd";
+    const busy = store.toolBusy.ytdlp || store.toolBusy.ffmpeg || store.toolBusy.deno;
+    const tool: ManagedTool = store.toolBusy.ytdlp ? "ytdlp" : store.toolBusy.ffmpeg ? "ffmpeg" : store.toolBusy.deno ? "deno" : "ytdlp";
     const progress = store.toolProgress[tool];
     toolChip.classList.toggle("busy", Boolean(busy));
     toolDot.dataset.state = !store.toolsKnown ? "" : store.toolError.ytdlp ? "error" : store.tools.ytdlp ? "ok" : "missing";
     if (busy) {
       const pct = progress && progress.total > 0 ? progress.received / progress.total : null;
-      const name = tool === "ytdlp" ? "yt-dlp" : tool === "ffmpeg" ? "ffmpeg" : tool === "deno" ? "Deno" : "SteamCMD";
+      const name = tool === "ytdlp" ? "yt-dlp" : tool === "ffmpeg" ? "ffmpeg" : tool === "deno" ? "Deno" : "yt-dlp";
       toolText.textContent =
         progress?.stage === "extract"
           ? `Unpacking ${name}…`
-          : progress?.stage === "update"
-            ? `Updating ${name}${pct !== null ? ` ${Math.round(pct * 100)}%` : "…"}`
-            : `Setting up ${name}${pct !== null ? ` ${Math.round(pct * 100)}%` : "…"}`;
+          : `Setting up ${name}${pct !== null ? ` ${Math.round(pct * 100)}%` : "…"}`;
       // The next tool's download starts on the same bar: it jumps back to its start.
       setProgress(toolBar, pct, tool !== lastTool ? "snap" : "smooth");
       lastTool = tool;

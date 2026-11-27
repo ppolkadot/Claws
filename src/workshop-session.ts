@@ -1,6 +1,6 @@
 /**
- * One Wallpaper Engine item on the Download screen: where its project comes from, the export
- * while it runs, and how it ended. Kept in the store, so leaving Download and coming back
+ * One Wallpaper Engine item on the Download screen: the export while it runs, and how it
+ * ended. The project always comes from the user's own Steam library. Kept in the store, so leaving Download and coming back
  * shows a running export as it is. No DOM here; views/workshop.ts draws it.
  */
 
@@ -25,7 +25,7 @@ export type WorkshopLookup =
 /** ZIP saves the whole project; MP4 and GIF are converted from a video wallpaper. */
 export type ExportFormat = "zip" | "mp4" | "gif";
 
-export type WorkshopStage = "starting" | "updating" | "signingIn" | "downloading" | "converting" | "saving";
+export type WorkshopStage = "starting" | "converting" | "saving";
 
 export interface WorkshopProgress {
   url: string;
@@ -38,8 +38,6 @@ export type WallpaperOutcome =
   | { status: "failed"; message: string; detail: string | null }
   | { status: "unsupported"; message: string }
   | { status: "cancelled" };
-
-export type WorkshopSource = "library" | "steamcmd";
 
 export interface LibraryStatus {
   /** Steam is installed for this Windows user. */
@@ -60,7 +58,7 @@ export type WorkshopState =
   | { phase: "cancelled" };
 
 export interface WorkshopDeps {
-  download(url: string, source: WorkshopSource, account: string | null, format: ExportFormat): Promise<WallpaperOutcome>;
+  download(url: string, format: ExportFormat): Promise<WallpaperOutcome>;
   cancel(): Promise<void>;
   findInLibrary(url: string): Promise<LibraryStatus>;
   describeError(error: unknown): string;
@@ -86,12 +84,6 @@ export function stageText(stage: WorkshopStage, percent: number | null, format: 
   switch (stage) {
     case "starting":
       return "Starting…";
-    case "updating":
-      return `Updating SteamCMD…${pct}`;
-    case "signingIn":
-      return "Signing in to Steam…";
-    case "downloading":
-      return "Downloading from Steam…";
     case "converting":
       return "Converting the video with FFmpeg…";
     case "saving":
@@ -105,16 +97,9 @@ export function offersVideo(item: WorkshopItem): boolean {
 }
 
 /** Why the export can't start yet, or null when it can. */
-export function missingForStart(source: WorkshopSource, library: LibraryStatus | null, steamcmdPath: string, account: string): string | null {
-  if (source === "library") {
-    if (library && !library.steam) return "Steam isn't installed for this Windows user.";
-    if (!library?.found) return "Subscribe in Steam first.";
-    return null;
-  }
-  if (!steamcmdPath.trim()) return "Install SteamCMD first.";
-  if (!/^[A-Za-z0-9_]{1,64}$/.test(account.trim()) || account.trim().toLowerCase() === "anonymous") {
-    return "Enter your Steam account name.";
-  }
+export function missingForStart(library: LibraryStatus | null): string | null {
+  if (library && !library.steam) return "Steam isn't installed for this Windows user.";
+  if (!library?.found) return "Subscribe in Steam first.";
   return null;
 }
 
@@ -123,7 +108,6 @@ export const LIBRARY_POLL_MS = 3000;
 export const LIBRARY_WAIT_MS = 10 * 60 * 1000;
 
 export class WorkshopSession {
-  source: WorkshopSource;
   library: LibraryStatus | null = null;
   state: WorkshopState = { phase: "ready" };
   private chosenFormat: ExportFormat | null = null;
@@ -137,22 +121,19 @@ export class WorkshopSession {
     readonly url: string,
     readonly item: WorkshopItem,
     private readonly deps: WorkshopDeps,
-    steamcmdChosen: boolean,
-  ) {
-    this.source = steamcmdChosen ? "steamcmd" : "library";
-  }
+  ) {}
 
   get running(): boolean {
     return this.state.phase === "running";
   }
 
   get videoAvailable(): boolean {
-    return this.source === "library" ? this.library?.video === true : offersVideo(this.item);
+    return this.library?.video === true;
   }
 
   get format(): ExportFormat {
     if (!this.videoAvailable) return "zip";
-    return this.chosenFormat ?? (this.source === "library" ? "mp4" : "zip");
+    return this.chosenFormat ?? "mp4";
   }
 
   on(listener: () => void): () => void {
@@ -164,22 +145,13 @@ export class WorkshopSession {
     for (const listener of [...this.listeners]) listener();
   }
 
-  /** Reads the library once; the source follows what was found unless the user chose one. */
-  async checkLibrary(preferFound = false): Promise<void> {
+  /** Reads the Steam library once. */
+  async checkLibrary(): Promise<void> {
     try {
       this.library = await this.deps.findInLibrary(this.url);
     } catch {
       this.library = { steam: false, found: false, video: false };
     }
-    if (preferFound && this.library.found && !this.running) this.source = "library";
-    this.changed();
-  }
-
-  setSource(source: WorkshopSource) {
-    if (this.running || this.source === source) return;
-    this.source = source;
-    if (source !== "library") this.stopWatching();
-    if (this.state.phase !== "ready") this.state = { phase: "ready" };
     this.changed();
   }
 
@@ -221,14 +193,14 @@ export class WorkshopSession {
     }, LIBRARY_POLL_MS);
   }
 
-  async start(account: string): Promise<void> {
+  async start(): Promise<void> {
     if (this.running) return;
     this.stopWatching();
     this.state = { phase: "running", stage: "starting", percent: null };
     this.changed();
     let outcome: WallpaperOutcome;
     try {
-      outcome = await this.deps.download(this.url, this.source, this.source === "steamcmd" ? account.trim() : null, this.format);
+      outcome = await this.deps.download(this.url, this.format);
     } catch (error) {
       outcome = { status: "failed", message: this.deps.describeError(error), detail: null };
     }

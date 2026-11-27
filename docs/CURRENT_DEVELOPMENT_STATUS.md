@@ -6,6 +6,12 @@
 
 The earlier [1.0.9 GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.9) has its own [release notes](releases/1.0.9.md) and installer.
 
+## In development (after 1.0.9e)
+
+Follows [the 2026-11-26 plan](superpowers/plans/2026-11-26-wallpaper-recording-progress-steamcmd-removal.md) and the [Wallpaper Engine study](wallpaper-engine-local-library-study.md). The version files stay `1.0.9`. No installer has been built from this work.
+
+- **SteamCMD is gone.** The Steam library is the only Wallpaper Engine source: no install, sign-in, account name or Steam account detection. Settings files from 1.0.9e that still hold the old fields load, and the fields are dropped on the next save. A leftover SteamCMD folder in Claws' tools folder is offered for removal in Settings → Wallpaper Engine, never deleted without confirmation.
+
 ## What 1.0.9e adds
 
 - SteamCMD acceptance recognises both exact publisher names Valve uses: `Valve` (the official bootstrap ZIP) and `Valve Corp.` (an updated copy). Both still need a signature Windows verifies with `WinVerifyTrust`, and lookalike names are refused.
@@ -66,7 +72,7 @@ Settings schema stays 2 and queue schema stays 3; every new field is defaulted.
 | Real slow source | No affected source/format was supplied. Controlled benchmarks do not establish an Internet throughput improvement. Follow [speed diagnosis](performance/speed-diagnosis.md). |
 | Native drag | Explorer/editor import, a stalled receiver, swapped buttons, long/UNC paths and Windows 10 acceptance need disposable-environment checks. See [manual acceptance](HANDOFF.md#manual-acceptance). |
 | Installed application | Fresh installation/upgrade and manual real-WebView2 checks remain unverified. |
-| Wallpaper Engine | Live Valve metadata, collection detection and Valve's signatures on both disposable `steamcmd.exe` builds (`Valve` and `Valve Corp.`) are covered by opt-in live tests (`CLAWS_TEST_NETWORK`, `CLAWS_TEST_STEAMCMD`). MP4/GIF conversion is covered against generated FFmpeg fixtures with ffprobe. Still to check live: a real video wallpaper's conversion, a SteamCMD download with an owning account, the Steam library source on a PC with Steam, and both in the native app. |
+| Wallpaper Engine | Live Valve metadata and collection detection are covered by the opt-in live test (`CLAWS_TEST_NETWORK`). MP4/GIF conversion is covered against generated FFmpeg fixtures with ffprobe. Still to check live: a real video wallpaper's conversion, a SteamCMD download with an owning account, the Steam library source on a PC with Steam, and both in the native app. |
 | Spotify | Real share-link redirect smoke, OS-level IME composition, listening-based playback and live outage/removal behavior remain unverified. Historical native saves and synthetic UI checks are recorded separately. |
 | Disk behavior | Real peak space across all postprocessors and constrained-volume behavior need controlled measurements; no strict pre-FFmpeg launch gate is claimed. |
 | Optional permission cleanup | `core:window:allow-destroy` is still used by `onCloseRequested`. Replace that close path before considering removal. |

@@ -1,50 +1,36 @@
 //! Wallpaper Engine Workshop items. Details come from Valve's public API; the project comes
-//! either from the user's own Steam library (an item they subscribed to in Steam) or from
-//! Valve's SteamCMD signed in with the account that owns Wallpaper Engine. A project is
+//! from the user's own Steam library (an item they subscribed to in Steam). A project is
 //! saved as a ZIP, or — for a video project — converted with FFmpeg to MP4 or GIF. Claws
-//! never writes into Steam's folders, except to remove SteamCMD's own copy when the user
-//! asked for that.
+//! never writes into Steam's folders.
 use std::{
-    collections::VecDeque,
     fs::{self, File, OpenOptions},
     io::{self, BufWriter, Read, Write},
     path::{Path, PathBuf},
-    process::Stdio,
     sync::atomic::Ordering,
     time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
-use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
-use tokio::{
-    io::{AsyncRead, BufReader},
-    process::Command,
-    time::timeout,
-};
 
 use crate::{
-    bounded_io::{read_line_capped, read_tail},
     disk_budget,
     download_files::{is_link, move_no_replace},
     downloader::kill_tree,
     error::{AppError, Result},
     state::AppState,
+    steam::{library_folders, library_project, steam_root},
     workshop_media::{self, MediaError, MediaFormat},
     AppHandle,
 };
 
-pub const APP_ID: u64 = 431960;
+pub use crate::steam::APP_ID;
 /// Workshop collections are published under Steam's own collection app.
 const COLLECTION_APP: u64 = 766;
 const STEAM_DETAILS: &str = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/";
 const STEAM_COLLECTION: &str = "https://api.steampowered.com/ISteamRemoteStorage/GetCollectionDetails/v1/";
 const MAX_DETAILS: usize = 512 * 1024;
-/// SteamCMD may be quiet throughout a large download.
-const STEAMCMD_LIMIT: Duration = Duration::from_secs(90 * 60);
-/// Output lines kept for the "Show the full message" detail.
-const TAIL_LINES: usize = 60;
 const MAX_EXPORT_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const MAX_ENTRIES: usize = 50_000;
 const PARTIAL_PREFIX: &str = ".claws-wallpaper-";
@@ -69,7 +55,7 @@ pub fn http_client() -> reqwest::Client {
 pub struct Run {
     pub active: bool,
     pub cancelled: bool,
-    /// The process id while SteamCMD or FFmpeg runs.
+    /// The process id while FFmpeg runs.
     pub pid: Option<u32>,
 }
 
@@ -255,440 +241,6 @@ pub fn open_workshop_item(app: AppHandle, url: String) -> Result<()> {
         .map_err(|_| AppError::msg("Couldn't open the Workshop page."))
 }
 
-// ---------------------------------------------------------------------------------------
-// SteamCMD location and account
-
-/// Steam account names use letters, digits and underscores.
-pub fn check_account(account: &str) -> Result<String> {
-    let account = account.trim();
-    if account.is_empty()
-        || account.eq_ignore_ascii_case("anonymous")
-        || account.len() > 64
-        || !account.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
-    {
-        return Err(AppError::msg("Enter the Steam account name that owns Wallpaper Engine."));
-    }
-    Ok(account.to_string())
-}
-
-/// Whether `path` sits in a OneDrive folder, whose placeholders SteamCMD cannot use.
-fn in_sync_folder(path: &Path) -> bool {
-    let lower = |p: &Path| p.to_string_lossy().replace('/', "\\").to_lowercase();
-    let path = lower(path);
-    ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"]
-        .iter()
-        .filter_map(std::env::var_os)
-        .map(|root| lower(Path::new(&root)))
-        .filter(|root| !root.is_empty())
-        .any(|root| path == root || path.starts_with(&format!("{}\\", root.trim_end_matches('\\'))))
-}
-
-/// The checks every use of a SteamCMD path passes: Valve's signed steamcmd.exe, a plain
-/// file, outside OneDrive.
-pub fn validate_steamcmd(path: &Path) -> Result<()> {
-    if !path.is_absolute()
-        || !path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .is_some_and(|s| s.eq_ignore_ascii_case("steamcmd.exe"))
-        || !fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file() && !is_link(&meta))
-    {
-        return Err(AppError::msg("Choose Valve's installed SteamCMD (steamcmd.exe)."));
-    }
-    if in_sync_folder(path) {
-        return Err(AppError::msg(
-            "SteamCMD can't run from OneDrive. Move its folder somewhere else, such as C:\\SteamCMD, then choose it again.",
-        ));
-    }
-    if !signed_by_valve(path) {
-        return Err(AppError::msg("This steamcmd.exe isn't signed by Valve. Download SteamCMD from Valve again."));
-    }
-    Ok(())
-}
-
-/// The publisher names Valve's own SteamCMD builds carry: the bootstrap ZIP signs as
-/// `Valve`, and an updated copy as `Valve Corp.`. Anything else is not Valve's.
-fn valve_publisher(organization: &str) -> bool {
-    matches!(organization, "Valve" | "Valve Corp.")
-}
-
-/// Authenticode: a valid signature whose signer's organisation is one Valve uses.
-#[cfg(windows)]
-pub(crate) fn signed_by_valve(path: &Path) -> bool {
-    signer_organization(path).is_some_and(|organization| valve_publisher(&organization))
-}
-
-/// The organisation named by the file's Authenticode signer, or `None` when Windows does
-/// not verify the signature.
-#[cfg(windows)]
-pub(crate) fn signer_organization(path: &Path) -> Option<String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows::core::PCWSTR;
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::Security::Cryptography::{CertGetNameStringW, CERT_NAME_ATTR_TYPE};
-    use windows::Win32::Security::WinTrust::{
-        WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData, WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2,
-        WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO, WTD_CHOICE_FILE, WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE,
-        WTD_STATEACTION_VERIFY, WTD_UI_NONE,
-    };
-
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let mut file = WINTRUST_FILE_INFO {
-        cbStruct: std::mem::size_of::<WINTRUST_FILE_INFO>() as u32,
-        pcwszFilePath: PCWSTR(wide.as_ptr()),
-        ..Default::default()
-    };
-    let mut data = WINTRUST_DATA {
-        cbStruct: std::mem::size_of::<WINTRUST_DATA>() as u32,
-        dwUIChoice: WTD_UI_NONE,
-        fdwRevocationChecks: WTD_REVOKE_NONE,
-        dwUnionChoice: WTD_CHOICE_FILE,
-        Anonymous: WINTRUST_DATA_0 { pFile: &mut file },
-        dwStateAction: WTD_STATEACTION_VERIFY,
-        ..Default::default()
-    };
-    let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-    let verify = |data: &mut WINTRUST_DATA, action: &mut windows::core::GUID| unsafe {
-        WinVerifyTrust(HWND(std::ptr::null_mut()), action, data as *mut WINTRUST_DATA as *mut _)
-    };
-    let mut organisation = None;
-    if verify(&mut data, &mut action) == 0 {
-        unsafe {
-            let provider = WTHelperProvDataFromStateData(data.hWVTStateData);
-            let signer = WTHelperGetProvSignerFromChain(provider, 0, false, 0);
-            if !signer.is_null() && !(*signer).pasCertChain.is_null() {
-                let cert = (*(*signer).pasCertChain).pCert;
-                // szOID_ORGANIZATION_NAME
-                let oid = b"2.5.4.10\0";
-                let mut buf = [0u16; 256];
-                let len = CertGetNameStringW(cert, CERT_NAME_ATTR_TYPE, 0, Some(oid.as_ptr() as *const _), Some(&mut buf));
-                if len > 1 {
-                    organisation = Some(String::from_utf16_lossy(&buf[..len as usize - 1]));
-                }
-            }
-        }
-    }
-    data.dwStateAction = WTD_STATEACTION_CLOSE;
-    verify(&mut data, &mut action);
-    organisation
-}
-
-#[cfg(not(windows))]
-pub(crate) fn signed_by_valve(_path: &Path) -> bool {
-    false
-}
-
-#[tauri::command]
-pub async fn choose_steamcmd(app: AppHandle) -> Result<Option<String>> {
-    let (send, receive) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .file()
-        .set_title("Choose Valve's steamcmd.exe")
-        .add_filter("SteamCMD", &["exe"])
-        .pick_file(move |file| {
-            let _ = send.send(file);
-        });
-    let file = receive.await.map_err(|_| AppError::msg("Couldn't open the file picker."))?;
-    let Some(file) = file else { return Ok(None) };
-    let path = file.into_path().map_err(|_| AppError::msg("Choose a local steamcmd.exe."))?;
-    let checked = path.clone();
-    tauri::async_runtime::spawn_blocking(move || validate_steamcmd(&checked)).await??;
-    Ok(Some(path.to_string_lossy().into_owned()))
-}
-
-/// Opens SteamCMD in its own console signed in as `account`, so the password and any Steam
-/// Guard code are typed there. SteamCMD keeps the sign-in for later downloads.
-#[tauri::command]
-pub async fn sign_in_steamcmd(state: State<'_, AppState>, account: String) -> Result<()> {
-    let account = check_account(&account)?;
-    let steamcmd = steamcmd_path(&state)?;
-    let exe = steamcmd.clone();
-    tauri::async_runtime::spawn_blocking(move || validate_steamcmd(&exe)).await??;
-    let mut command = std::process::Command::new(&steamcmd);
-    command
-        .current_dir(steamcmd.parent().expect("absolute executable path has a parent"))
-        .args(["+login", &account]);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0000_0010); // CREATE_NEW_CONSOLE
-    }
-    command.spawn().map_err(|_| AppError::msg("Couldn't start SteamCMD."))?;
-    Ok(())
-}
-
-/// The SteamCMD to use: the one chosen in Settings, else the copy Claws installed.
-fn steamcmd_path(state: &AppState) -> Result<PathBuf> {
-    crate::tools::find_steamcmd(state).ok_or_else(|| AppError::msg("Install SteamCMD first, or choose your own copy."))
-}
-
-// ---------------------------------------------------------------------------------------
-// The Steam account name, found on this PC
-
-/// One value of a Valve KeyValues (VDF) file: text, or a block of named values.
-#[derive(Debug, PartialEq)]
-enum Vdf {
-    Text(String),
-    Block(Vec<(String, Vdf)>),
-}
-
-/// Parses VDF text: quoted strings (with backslash escapes), braces and `//` comments.
-/// Malformed input yields whatever parsed before the problem.
-fn parse_vdf(text: &str) -> Vec<(String, Vdf)> {
-    enum Token {
-        Text(String),
-        Open,
-        Close,
-    }
-    let mut tokens = Vec::new();
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '{' => tokens.push(Token::Open),
-            '}' => tokens.push(Token::Close),
-            '/' if chars.peek() == Some(&'/') => {
-                for c in chars.by_ref() {
-                    if c == '\n' {
-                        break;
-                    }
-                }
-            }
-            '"' => {
-                let mut token = String::new();
-                while let Some(c) = chars.next() {
-                    match c {
-                        '\\' => match chars.next() {
-                            Some('n') => token.push('\n'),
-                            Some('t') => token.push('\t'),
-                            Some(other) => token.push(other),
-                            None => break,
-                        },
-                        '"' => break,
-                        other => token.push(other),
-                    }
-                }
-                tokens.push(Token::Text(token));
-            }
-            _ => {}
-        }
-    }
-    fn block(tokens: &mut std::iter::Peekable<std::vec::IntoIter<Token>>, depth: usize) -> Vec<(String, Vdf)> {
-        let mut out = Vec::new();
-        while let Some(token) = tokens.next() {
-            let key = match token {
-                Token::Text(key) => key,
-                Token::Close => break,
-                Token::Open => continue,
-            };
-            match tokens.next() {
-                Some(Token::Text(value)) => out.push((key, Vdf::Text(value))),
-                Some(Token::Open) if depth < 32 => out.push((key, Vdf::Block(block(tokens, depth + 1)))),
-                _ => break,
-            }
-        }
-        out
-    }
-    block(&mut tokens.into_iter().peekable(), 0)
-}
-
-/// Every block named `name` (case-insensitive), at any depth.
-fn find_blocks<'a>(entries: &'a [(String, Vdf)], name: &str, out: &mut Vec<&'a [(String, Vdf)]>) {
-    for (key, value) in entries {
-        if let Vdf::Block(children) = value {
-            if key.eq_ignore_ascii_case(name) {
-                out.push(children);
-            }
-            find_blocks(children, name, out);
-        }
-    }
-}
-
-/// Accounts SteamCMD itself has signed in with (`config/config.vdf`, `Accounts` block).
-fn steamcmd_accounts(config_vdf: &str) -> Vec<String> {
-    let entries = parse_vdf(config_vdf);
-    let mut blocks = Vec::new();
-    find_blocks(&entries, "Accounts", &mut blocks);
-    blocks.into_iter().flat_map(|accounts| accounts.iter().map(|(name, _)| name.clone())).collect()
-}
-
-/// Accounts the Steam client remembers (`config/loginusers.vdf`), the most recent first.
-fn steam_client_accounts(loginusers_vdf: &str) -> Vec<String> {
-    let entries = parse_vdf(loginusers_vdf);
-    let mut blocks = Vec::new();
-    find_blocks(&entries, "users", &mut blocks);
-    let mut users: Vec<(bool, String)> = blocks
-        .into_iter()
-        .flat_map(|users| users.iter())
-        .filter_map(|(_, user)| match user {
-            Vdf::Block(fields) => {
-                let field = |name: &str| {
-                    fields.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).and_then(|(_, value)| match value {
-                        Vdf::Text(text) => Some(text.as_str()),
-                        Vdf::Block(_) => None,
-                    })
-                };
-                Some((field("MostRecent") == Some("1"), field("AccountName")?.to_string()))
-            }
-            Vdf::Text(_) => None,
-        })
-        .collect();
-    users.sort_by_key(|(recent, _)| !*recent);
-    users.into_iter().map(|(_, name)| name).collect()
-}
-
-/// The Steam client's remembered automatic sign-in.
-#[cfg(windows)]
-fn steam_auto_login_user() -> Option<String> {
-    use windows::core::w;
-    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
-    let mut buf = [0u16; 256];
-    let mut size = (buf.len() * 2) as u32;
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            w!("Software\\Valve\\Steam"),
-            w!("AutoLoginUser"),
-            RRF_RT_REG_SZ,
-            None,
-            Some(buf.as_mut_ptr() as *mut _),
-            Some(&mut size),
-        )
-    };
-    if status.is_err() {
-        return None;
-    }
-    let len = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
-    Some(String::from_utf16_lossy(&buf[..len]))
-}
-
-#[cfg(not(windows))]
-fn steam_auto_login_user() -> Option<String> {
-    None
-}
-
-/// Usable account names in order, each once: those SteamCMD already signed in with (they
-/// download without a new sign-in), then the Steam client's most recent, its automatic
-/// sign-in, and the rest it remembers.
-fn merge_accounts(groups: impl IntoIterator<Item = Vec<String>>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for name in groups.into_iter().flatten() {
-        let Ok(name) = check_account(&name) else { continue };
-        if !out.iter().any(|known| known.eq_ignore_ascii_case(&name)) {
-            out.push(name);
-        }
-    }
-    out
-}
-
-/// Steam account names found on this PC, best first. Nothing leaves the PC.
-#[tauri::command]
-pub async fn detect_steam_accounts(state: State<'_, AppState>) -> Result<Vec<String>> {
-    let steamcmd = crate::tools::find_steamcmd(&state);
-    tauri::async_runtime::spawn_blocking(move || {
-        let read = |path: PathBuf| fs::read_to_string(path).unwrap_or_default();
-        let from_steamcmd = steamcmd
-            .and_then(|exe| exe.parent().map(|dir| dir.join("config").join("config.vdf")))
-            .map(|path| steamcmd_accounts(&read(path)))
-            .unwrap_or_default();
-        let client = steam_root().map(|root| steam_client_accounts(&read(root.join("config").join("loginusers.vdf")))).unwrap_or_default();
-        let (recent, rest) = client.split_first().map(|(first, rest)| (vec![first.clone()], rest.to_vec())).unwrap_or_default();
-        merge_accounts([from_steamcmd, recent, steam_auto_login_user().into_iter().collect(), rest])
-    })
-    .await
-    .map_err(|_| AppError::msg("Couldn't look for Steam accounts."))
-}
-
-// ---------------------------------------------------------------------------------------
-// The user's Steam library
-
-/// Library folder paths listed in Steam's `libraryfolders.vdf`.
-pub fn parse_library_paths(text: &str) -> Vec<PathBuf> {
-    let mut tokens = Vec::new();
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '"' {
-            continue;
-        }
-        let mut token = String::new();
-        while let Some(c) = chars.next() {
-            match c {
-                '\\' => match chars.next() {
-                    Some('n') => token.push('\n'),
-                    Some('t') => token.push('\t'),
-                    Some(other) => token.push(other),
-                    None => break,
-                },
-                '"' => break,
-                other => token.push(other),
-            }
-        }
-        tokens.push(token);
-    }
-    let mut paths = Vec::new();
-    let mut i = 0;
-    while i + 1 < tokens.len() {
-        if tokens[i].eq_ignore_ascii_case("path") && !tokens[i + 1].is_empty() {
-            paths.push(PathBuf::from(&tokens[i + 1]));
-            i += 2;
-        } else {
-            i += 1;
-        }
-    }
-    paths
-}
-
-/// Steam's install folder from the registry.
-#[cfg(windows)]
-fn steam_root() -> Option<PathBuf> {
-    use windows::core::w;
-    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
-    let mut buf = [0u16; 1024];
-    let mut size = (buf.len() * 2) as u32;
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            w!("Software\\Valve\\Steam"),
-            w!("SteamPath"),
-            RRF_RT_REG_SZ,
-            None,
-            Some(buf.as_mut_ptr() as *mut _),
-            Some(&mut size),
-        )
-    };
-    if status.is_err() {
-        return None;
-    }
-    let len = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
-    let path = PathBuf::from(String::from_utf16_lossy(&buf[..len]));
-    path.is_absolute().then_some(path)
-}
-
-#[cfg(not(windows))]
-fn steam_root() -> Option<PathBuf> {
-    None
-}
-
-/// Every Steam library folder: Steam's own folder first, then the ones it lists.
-pub fn library_folders(root: &Path) -> Vec<PathBuf> {
-    let mut folders = vec![root.to_path_buf()];
-    if let Ok(text) = fs::read_to_string(root.join("steamapps").join("libraryfolders.vdf")) {
-        for path in parse_library_paths(&text) {
-            let key = |p: &Path| p.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
-            if path.is_absolute() && !folders.iter().any(|known| key(known) == key(&path)) {
-                folders.push(path);
-            }
-        }
-    }
-    folders
-}
-
-/// A subscribed item's project folder in one of the libraries.
-pub fn library_project(libraries: &[PathBuf], id: u64) -> Option<PathBuf> {
-    libraries
-        .iter()
-        .filter_map(|library| workshop_folder(library, id).ok())
-        .find(|folder| fs::symlink_metadata(folder.join("project.json")).is_ok_and(|m| m.is_file() && !is_link(&m)))
-}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -744,9 +296,6 @@ impl ExportFormat {
 #[serde(rename_all = "camelCase")]
 pub enum Stage {
     Starting,
-    Updating,
-    SigningIn,
-    Downloading,
     Converting,
     Saving,
 }
@@ -785,6 +334,7 @@ impl<'a> RunGuard<'a> {
         Ok(Self(state))
     }
 
+    #[allow(dead_code)] // Phase 3's tracker reads it
     fn cancelled(&self) -> bool {
         self.0.workshop.lock().unwrap().cancelled || self.0.shutting_down.load(Ordering::SeqCst)
     }
@@ -811,7 +361,7 @@ pub fn cancel_wallpaper_download(state: State<'_, AppState>) {
     }
 }
 
-/// For shutdown: the SteamCMD or FFmpeg process to stop, if one runs.
+/// For shutdown: the FFmpeg process to stop, if one runs.
 pub fn stop_for_shutdown(state: &AppState) -> Option<u32> {
     let mut run = state.workshop.lock().unwrap();
     run.cancelled = true;
@@ -819,21 +369,8 @@ pub fn stop_for_shutdown(state: &AppState) -> Option<u32> {
 }
 
 #[tauri::command]
-pub async fn download_wallpaper(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    url: String,
-    source: String,
-    account: Option<String>,
-    format: ExportFormat,
-) -> Result<WallpaperOutcome> {
+pub async fn download_wallpaper(app: AppHandle, state: State<'_, AppState>, url: String, format: ExportFormat) -> Result<WallpaperOutcome> {
     let id = item_id(&url)?;
-    let from_library = match source.as_str() {
-        "library" => true,
-        "steamcmd" => false,
-        _ => return Err(AppError::msg("Unknown wallpaper source.")),
-    };
-    let account = if from_library { None } else { Some(check_account(account.as_deref().unwrap_or(""))?) };
     let run = RunGuard::begin(&state)?;
     let progress = |stage: Stage, percent: Option<f64>| {
         let _ = app.emit("workshop-progress", Progress { url: url.clone(), stage, percent });
@@ -843,14 +380,6 @@ pub async fn download_wallpaper(
     let found = lookup(&state.steam_http, id).await.map_err(|_| AppError::msg(STEAM_UNREACHABLE))?;
     let WorkshopLookup::Wallpaper { item } = found else { return Err(not_a_wallpaper(&found)) };
     let media = format.media();
-    // The Steam library already has the manifest. For SteamCMD, tags guide the choice
-    // until the project is downloaded. Conversion validates the actual file either way.
-    if !from_library && media.is_some() && !item.wallpaper_type.as_deref().is_some_and(|kind| kind.eq_ignore_ascii_case("Video")) {
-        return Ok(WallpaperOutcome::Unsupported {
-            message: "This Workshop item isn't a video wallpaper, so Claws can only save the project as a ZIP. Choose ZIP and try again."
-                .into(),
-        });
-    }
 
     let output = PathBuf::from(state.settings.lock().unwrap().output_dir.clone());
     if !output.is_absolute() {
@@ -862,45 +391,14 @@ pub async fn download_wallpaper(
     })
     .await??;
 
-    let (project, steamcmd_copy) = if from_library {
-        let project = tauri::async_runtime::spawn_blocking(move || steam_root().and_then(|root| library_project(&library_folders(&root), id)))
-            .await
-            .map_err(|_| AppError::msg("Couldn't check the Steam library."))?;
-        let Some(project) = project else {
-            return Ok(WallpaperOutcome::Failed {
-                message: "This wallpaper isn't in your Steam library yet. Subscribe to it in Steam, wait for Steam to download it, then try again.".into(),
-                detail: None,
-            });
-        };
-        (project, false)
-    } else {
-        let steamcmd = steamcmd_path(&state)?;
-        if state.tool_install.try_lock().is_err() {
-            return Err(AppError::msg("A tool install is running. Try again when it finishes."));
-        }
-        let exe = steamcmd.clone();
-        let steam_dir = tauri::async_runtime::spawn_blocking(move || -> Result<PathBuf> {
-            validate_steamcmd(&exe)?;
-            Ok(exe.parent().expect("absolute executable path has a parent").canonicalize()?)
-        })
-        .await??;
-        if let Some(size) = item.file_size {
-            if let Some(message) = space_shortfall(&state, &steam_dir, size, "the drive that holds SteamCMD") {
-                return Ok(WallpaperOutcome::Failed { message, detail: None });
-            }
-        }
-        let account = account.expect("checked above");
-        let reported = match run_steamcmd(&state, &run, &steamcmd, &steam_dir, id, &account, &progress).await? {
-            SteamRun::Done(reported) => reported,
-            SteamRun::Cancelled => return Ok(WallpaperOutcome::Cancelled),
-            SteamRun::Failed { message, detail } => {
-                let detail = redact(&detail, &account);
-                return Ok(WallpaperOutcome::Failed { message, detail: (!detail.trim().is_empty()).then_some(detail) });
-            }
-        };
-        let root = steam_dir.clone();
-        let project = tauri::async_runtime::spawn_blocking(move || checked_project(&root, &reported, id)).await??;
-        (project, true)
+    let project = tauri::async_runtime::spawn_blocking(move || steam_root().and_then(|root| library_project(&library_folders(&root), id)))
+        .await
+        .map_err(|_| AppError::msg("Couldn't check the Steam library."))?;
+    let Some(project) = project else {
+        return Ok(WallpaperOutcome::Failed {
+            message: "This wallpaper isn't in your Steam library yet. Subscribe to it in Steam, wait for Steam to download it, then try again.".into(),
+            detail: None,
+        });
     };
 
     let title = item.title.clone();
@@ -948,9 +446,6 @@ pub async fn download_wallpaper(
             Err(error) => return Err(error),
         }
     };
-    if steamcmd_copy && state.settings.lock().unwrap().remove_steamcmd_copy {
-        let _ = tauri::async_runtime::spawn_blocking(move || fs::remove_dir_all(project)).await;
-    }
     drop(run);
     Ok(WallpaperOutcome::Saved { path: output.join(&filename).to_string_lossy().into_owned(), filename })
 }
@@ -1031,7 +526,7 @@ async fn convert_media(
             if cancelled() {
                 return Ok(SaveResult::Cancelled);
             }
-            let detail = redact(&failure.detail, "");
+            let detail = redact(&failure.detail);
             return Ok(SaveResult::Failed { message: failure.message, detail: (!detail.trim().is_empty()).then_some(detail) });
         }
     }
@@ -1084,6 +579,30 @@ fn space_shortfall(state: &AppState, folder: &Path, bytes: u64, place: &str) -> 
     })
 }
 
+/// FFmpeg's error text without the user's home folder, which it prints in paths.
+fn redact(text: &str) -> String {
+    let Some(home) = std::env::var("USERPROFILE").ok().filter(|home| home.len() > 3) else { return text.to_string() };
+    redact_with(text, &home)
+}
+
+fn redact_with(text: &str, home: &str) -> String {
+    let mut out = text.to_string();
+    for form in [home.to_string(), home.replace('\\', "/")] {
+        let lower = out.to_ascii_lowercase();
+        let needle = form.to_ascii_lowercase();
+        let mut next = String::with_capacity(out.len());
+        let mut at = 0;
+        while let Some(found) = lower[at..].find(&needle) {
+            next.push_str(&out[at..at + found]);
+            next.push_str("%USERPROFILE%");
+            at += found + needle.len();
+        }
+        next.push_str(&out[at..]);
+        out = next;
+    }
+    out
+}
+
 fn format_bytes(bytes: u64) -> String {
     let units = ["bytes", "KB", "MB", "GB", "TB"];
     let mut value = bytes as f64;
@@ -1099,260 +618,8 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-enum SteamRun {
-    Done(Vec<u8>),
-    Failed { message: String, detail: String },
-    Cancelled,
-}
 
-fn reported_project<'a>(line: &'a [u8], marker: &[u8]) -> Option<&'a [u8]> {
-    let start = line.windows(marker.len()).position(|part| part == marker)? + marker.len();
-    let after = line.get(start..)?;
-    let path = &after[..after.iter().position(|byte| *byte == b'"')?];
-    (!path.is_empty()).then_some(path)
-}
 
-/// SteamCMD's own update progress ("[ 45%] Downloading update ..."), for the installer.
-pub(crate) fn update_percent(line: &str) -> Option<f64> {
-    match progress_of(line) {
-        Some((Stage::Updating, percent)) => percent,
-        _ => None,
-    }
-}
-
-/// What a SteamCMD output line says about progress.
-fn progress_of(line: &str) -> Option<(Stage, Option<f64>)> {
-    let percent = line
-        .trim_start()
-        .strip_prefix('[')
-        .and_then(|rest| rest.split_once("%]"))
-        .and_then(|(number, _)| number.trim().parse::<f64>().ok());
-    let lower = line.to_ascii_lowercase();
-    if ["checking for available update", "downloading update", "verifying installation", "extracting package", "installing update"]
-        .iter()
-        .any(|text| lower.contains(text))
-    {
-        Some((Stage::Updating, percent))
-    } else if lower.contains("logging in") || lower.contains("waiting for user info") {
-        Some((Stage::SigningIn, None))
-    } else if lower.contains("downloading item") {
-        Some((Stage::Downloading, None))
-    } else {
-        None
-    }
-}
-
-const SIGNED_OUT: &str = "SteamCMD isn't signed in with this account. Sign in to SteamCMD once, then type quit. You can also use the Steam library.";
-
-/// The message for SteamCMD's output when no project was reported.
-fn classify(output: &str) -> &'static str {
-    let text = output.to_ascii_lowercase();
-    let has = |needles: &[&str]| needles.iter().any(|needle| text.contains(needle));
-    if has(&["invalid password"]) {
-        "Steam rejected the sign-in. Check the account name and password in Steam, then sign in to SteamCMD again or use the Steam library."
-    } else if has(&["account logon denied", "two-factor", "steam guard", "steamguard"]) {
-        "Steam needs a Steam Guard code for this account. Use Sign in to SteamCMD to enter it, then try again."
-    } else if has(&["rate limit"]) {
-        "Steam is limiting sign-ins for now. Wait a few minutes, then try again."
-    } else if has(&["cached credentials not found", "no cached credentials", "login failure", "failed to log"]) {
-        SIGNED_OUT
-    } else if has(&["no subscription", "access denied"]) {
-        "This Steam account can't download this item. Check that it owns Wallpaper Engine and that the item is still public."
-    } else if has(&["file not found"]) {
-        "Steam couldn't find the files for this item. It may have been removed."
-    } else if has(&["disk write failure", "not enough space", "disk full"]) {
-        "There isn't enough free space for SteamCMD to save this wallpaper. Free up space on its drive, then try again."
-    } else if has(&["(timeout)", "timed out"]) {
-        "Steam took too long to respond. Try again."
-    } else {
-        "SteamCMD couldn't download this wallpaper. Check that the account owns Wallpaper Engine and is signed in, then try again."
-    }
-}
-
-/// Replaces `needle` in `text` ignoring ASCII case (byte lengths stay the same).
-fn replace_ignore_case(text: &str, needle: &str, with: &str) -> String {
-    if needle.is_empty() {
-        return text.to_string();
-    }
-    let lower = text.to_ascii_lowercase();
-    let needle = needle.to_ascii_lowercase();
-    let mut out = String::with_capacity(text.len());
-    let mut at = 0;
-    while let Some(found) = lower[at..].find(&needle) {
-        out.push_str(&text[at..at + found]);
-        out.push_str(with);
-        at += found + needle.len();
-    }
-    out.push_str(&text[at..]);
-    out
-}
-
-/// SteamCMD's output without the account name or the user's home folder.
-fn redact_with(text: &str, account: &str, home: Option<&str>) -> String {
-    let mut out = text.to_string();
-    if let Some(home) = home.filter(|home| home.len() > 3) {
-        out = replace_ignore_case(&out, home, "%USERPROFILE%");
-        out = replace_ignore_case(&out, &home.replace('\\', "/"), "%USERPROFILE%");
-    }
-    if account.len() >= 3 {
-        out = replace_ignore_case(&out, account, "<account>");
-    }
-    out
-}
-
-fn redact(text: &str, account: &str) -> String {
-    let home = std::env::var("USERPROFILE").ok();
-    redact_with(text, account, home.as_deref())
-}
-
-async fn run_steamcmd(
-    state: &AppState,
-    run: &RunGuard<'_>,
-    exe: &Path,
-    directory: &Path,
-    id: u64,
-    account: &str,
-    progress: &(dyn Fn(Stage, Option<f64>) + Sync),
-) -> Result<SteamRun> {
-    let mut command = Command::new(exe);
-    command
-        .current_dir(directory)
-        .args(["+@ShutdownOnFailedCommand", "1", "+@NoPromptForPassword", "1"])
-        .args(["+login", account])
-        .args(["+workshop_download_item", &APP_ID.to_string(), &id.to_string(), "+quit"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    #[cfg(windows)]
-    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    let mut child = command.spawn().map_err(|_| AppError::msg("Couldn't start SteamCMD."))?;
-    let pid = child.id();
-    {
-        let mut current = state.workshop.lock().unwrap();
-        if current.cancelled || state.shutting_down.load(Ordering::SeqCst) {
-            drop(current);
-            if let Some(pid) = pid {
-                kill_tree(pid, true);
-            }
-            return Ok(SteamRun::Cancelled);
-        }
-        current.pid = pid;
-    }
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
-    let marker = format!("Success. Downloaded item {id} to \"");
-    let errors = tokio::spawn(read_tail(stderr, 16 * 1024));
-    let result = timeout(STEAMCMD_LIMIT, read_output(stdout, marker.as_bytes(), progress)).await;
-    let (reported, mut tail) = match result {
-        Ok(read) => read,
-        Err(_) => {
-            if let Some(pid) = pid {
-                kill_tree(pid, true);
-            }
-            let _ = child.kill().await;
-            state.workshop.lock().unwrap().pid = None;
-            if run.cancelled() {
-                return Ok(SteamRun::Cancelled);
-            }
-            return Ok(SteamRun::Failed { message: "Steam took too long to download this wallpaper. Try again.".into(), detail: String::new() });
-        }
-    };
-    let _ = child.wait().await;
-    state.workshop.lock().unwrap().pid = None;
-    if let Ok(errors) = errors.await {
-        let errors = String::from_utf8_lossy(&errors);
-        tail.extend(errors.lines().map(str::to_string));
-    }
-    if run.cancelled() {
-        return Ok(SteamRun::Cancelled);
-    }
-    // The success line is the answer. SteamCMD's exit code is not reliable after it updates
-    // itself, so it is not used.
-    if let Some(reported) = reported {
-        return Ok(SteamRun::Done(reported));
-    }
-    let detail = tail.into_iter().collect::<Vec<_>>().join("\n");
-    Ok(SteamRun::Failed { message: classify(&detail).to_string(), detail })
-}
-
-async fn read_output<R: AsyncRead + Unpin>(
-    stdout: R,
-    marker: &[u8],
-    progress: &(dyn Fn(Stage, Option<f64>) + Sync),
-) -> (Option<Vec<u8>>, VecDeque<String>) {
-    let mut reader = BufReader::new(stdout);
-    let mut line = Vec::new();
-    let mut reported = None;
-    let mut tail = VecDeque::new();
-    while let Some(truncated) = read_line_capped(&mut reader, &mut line, 8192).await {
-        if line.last() == Some(&b'\r') {
-            line.pop();
-        }
-        if !truncated {
-            if let Some(path) = reported_project(&line, marker) {
-                reported = Some(path.to_vec());
-            }
-        }
-        let text = String::from_utf8_lossy(&line).into_owned();
-        if let Some((stage, percent)) = progress_of(&text) {
-            progress(stage, percent);
-        }
-        if !text.trim().is_empty() {
-            if tail.len() == TAIL_LINES {
-                tail.pop_front();
-            }
-            tail.push_back(text);
-        }
-    }
-    (reported, tail)
-}
-
-/// `root\steamapps\workshop\content\431960\<id>`, every part a real folder (no links).
-fn workshop_folder(root: &Path, id: u64) -> Result<PathBuf> {
-    let item = id.to_string();
-    let app_id = APP_ID.to_string();
-    let mut expected = root.canonicalize()?;
-    for part in ["steamapps", "workshop", "content", &app_id, &item] {
-        expected.push(part);
-        let meta = fs::symlink_metadata(&expected)?;
-        if !meta.is_dir() || is_link(&meta) {
-            return Err(AppError::msg("SteamCMD reported an unsafe Workshop folder."));
-        }
-    }
-    Ok(expected)
-}
-
-fn checked_project(steam_dir: &Path, reported: &[u8], id: u64) -> Result<PathBuf> {
-    let expected = workshop_folder(steam_dir, id)?;
-    if !matches_reported_path(reported, &expected.canonicalize()?) {
-        return Err(AppError::msg("SteamCMD saved the item outside its expected Workshop folder."));
-    }
-    Ok(expected)
-}
-
-fn matches_reported_path(reported: &[u8], expected: &Path) -> bool {
-    let same = |path: &Path| path.is_absolute() && path.canonicalize().is_ok_and(|path| path == expected);
-    if std::str::from_utf8(reported).is_ok_and(|path| same(Path::new(path))) {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::{ffi::OsString, os::windows::ffi::OsStringExt};
-        use windows::Win32::Globalization::{MultiByteToWideChar, CP_ACP, CP_OEMCP, MB_ERR_INVALID_CHARS};
-
-        // SteamCMD may print a legacy code page instead of UTF-8. Try the
-        // Windows encodings, comparing the entire canonical path in either case.
-        let mut wide = vec![0u16; reported.len()];
-        for code_page in [CP_ACP, CP_OEMCP] {
-            let count = unsafe { MultiByteToWideChar(code_page, MB_ERR_INVALID_CHARS, reported, Some(&mut wide)) };
-            if count > 0 && same(Path::new(&OsString::from_wide(&wide[..count as usize]))) {
-                return true;
-            }
-        }
-    }
-    false
-}
 
 // ---------------------------------------------------------------------------------------
 // ZIP export
@@ -1540,7 +807,10 @@ pub fn sweep_partials(dir: &Path) {
 mod tests {
     use super::*;
     use std::io::Read;
-    use std::time::Instant;
+    #[cfg(windows)]
+    use std::{process::Stdio, time::Instant};
+    #[cfg(windows)]
+    use tokio::{process::Command, time::timeout};
 
     #[test]
     fn classifies_wallpapers_collections_and_other_items() {
@@ -1593,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_single_workshop_id_and_requires_the_same_id_in_steamcmd_output() {
+    fn parses_a_single_workshop_id() {
         let url = "https://steamcommunity.com/sharedfiles/filedetails/?id=123&searchtext=blue";
         assert_eq!(item_id(url).unwrap(), 123);
         for invalid in [
@@ -1605,57 +875,13 @@ mod tests {
         ] {
             assert!(item_id(invalid).is_err(), "{invalid}");
         }
-        let line = br#"Success. Downloaded item 123 to "C:\SteamCMD\steamapps\workshop\content\431960\123" (42 bytes)"#;
-        assert_eq!(
-            reported_project(line, b"Success. Downloaded item 123 to \"").unwrap(),
-            br"C:\SteamCMD\steamapps\workshop\content\431960\123"
-        );
-        assert!(reported_project(line, b"Success. Downloaded item 456 to \"").is_none());
     }
 
     #[test]
-    fn accepts_only_plain_steam_account_names() {
-        assert_eq!(check_account("  some_user1 ").unwrap(), "some_user1");
-        for bad in ["", "anonymous", "ANONYMOUS", "a b", "+quit", "user@example.com", &"x".repeat(65)] {
-            assert!(check_account(bad).is_err(), "{bad}");
-        }
-    }
-
-    #[test]
-    fn reads_progress_lines() {
-        assert_eq!(progress_of("[ 45%] Downloading update (1,234 of 2,000 KB)..."), Some((Stage::Updating, Some(45.0))));
-        assert_eq!(progress_of("[----] Verifying installation..."), Some((Stage::Updating, None)));
-        assert_eq!(progress_of("Logging in user 'someone' to Steam Public...OK"), Some((Stage::SigningIn, None)));
-        assert_eq!(progress_of("Downloading item 123 ..."), Some((Stage::Downloading, None)));
-        assert_eq!(progress_of("Loading Steam API...OK"), None);
-    }
-
-    #[test]
-    fn classifies_steamcmd_failures() {
-        let cases = [
-            ("Logging in user 'x' to Steam Public...FAILED (Invalid Password)", "rejected the sign-in"),
-            ("FAILED (Account Logon Denied)", "Steam Guard"),
-            ("FAILED (Two-factor code mismatch)", "Steam Guard"),
-            ("FAILED (Rate Limit Exceeded)", "limiting sign-ins"),
-            ("Cached credentials not found.", "isn't signed in"),
-            ("ERROR! Download item 1 failed (Access Denied).", "can't download this item"),
-            ("ERROR! Download item 1 failed (File Not Found).", "couldn't find the files"),
-            ("ERROR! Download item 1 failed (Disk Write Failure).", "free space"),
-            ("ERROR! Download item 1 failed (Timeout).", "too long"),
-            // What an anonymous sign-in gets: generic, not a claim about ownership.
-            ("ERROR! Download item 2250845956 failed (Failure).", "couldn't download this wallpaper"),
-        ];
-        for (line, expected) in cases {
-            assert!(classify(line).contains(expected), "{line} -> {}", classify(line));
-        }
-    }
-
-    #[test]
-    fn redacts_account_and_home_folder() {
-        let text = "Logging in user 'Some_User' ... C:\\Users\\Ana\\SteamCMD and c:/users/ana/x some_user";
-        let out = redact_with(text, "some_user", Some("C:\\Users\\Ana"));
-        assert_eq!(out, "Logging in user '<account>' ... %USERPROFILE%\\SteamCMD and %USERPROFILE%/x <account>");
-        assert_eq!(redact_with("short", "ab", None), "short");
+    fn redacts_the_home_folder() {
+        let text = r"Error opening C:\Users\Ana\Videos\x.mp4 and c:/users/ana/y";
+        assert_eq!(redact_with(text, r"C:\Users\Ana"), r"Error opening %USERPROFILE%\Videos\x.mp4 and %USERPROFILE%/y");
+        assert_eq!(redact_with("nothing here", r"C:\Users\Ana"), "nothing here");
     }
 
     #[test]
@@ -1672,76 +898,6 @@ mod tests {
         assert_eq!(export_name("Ocean", 7, 1, "gif"), "Ocean (7) (1).gif");
     }
 
-    #[test]
-    fn finds_steam_account_names_on_this_pc() {
-        let steamcmd = r#""InstallConfigStore"
-        {
-            "Software" { "Valve" { "Steam" {
-                // comment
-                "Accounts" { "cmd_user" { "SteamID" "7656" } "Second_One" { } }
-                "ConnectCache" { "abc" "def" }
-            } } }
-        }"#;
-        assert_eq!(steamcmd_accounts(steamcmd), ["cmd_user", "Second_One"]);
-        let loginusers = r#""users"
-        {
-            "765611" { "AccountName" "older" "PersonaName" "Old" "MostRecent" "0" }
-            "765612" { "AccountName" "newest" "PersonaName" "New \"one\"" "MostRecent" "1" }
-        }"#;
-        assert_eq!(steam_client_accounts(loginusers), ["newest", "older"]);
-        assert!(steamcmd_accounts("").is_empty() && steam_client_accounts("{{{").is_empty());
-        let merged = merge_accounts([
-            vec!["cmd_user".to_string()],
-            vec!["newest".to_string()],
-            vec!["CMD_USER".to_string(), "bad name".to_string(), "anonymous".to_string()],
-            vec!["older".to_string()],
-        ]);
-        assert_eq!(merged, ["cmd_user", "newest", "older"]);
-    }
-
-    #[test]
-    fn parses_library_folders() {
-        let vdf = r#""libraryfolders"
-        {
-            "0"
-            {
-                "path"		"C:\\Program Files (x86)\\Steam"
-                "label"		""
-                "apps" { "431960"		"123" }
-            }
-            "1"
-            {
-                "path"		"D:\\Jogos\\Bibliothèque \"Steam\""
-            }
-        }"#;
-        assert_eq!(
-            parse_library_paths(vdf),
-            [PathBuf::from(r"C:\Program Files (x86)\Steam"), PathBuf::from(r#"D:\Jogos\Bibliothèque "Steam""#)]
-        );
-        assert!(parse_library_paths("").is_empty());
-    }
-
-    #[test]
-    fn finds_a_subscribed_item_in_any_library() {
-        let dir = crate::download_tests::temp_dir("workshop-library");
-        let steam = dir.join("Steam");
-        let second = dir.join("Second Library");
-        fs::create_dir_all(steam.join("steamapps")).unwrap();
-        let project = second.join("steamapps/workshop/content/431960/123");
-        fs::create_dir_all(&project).unwrap();
-        fs::write(project.join("project.json"), "{}").unwrap();
-        // An item folder without a project does not count.
-        fs::create_dir_all(steam.join("steamapps/workshop/content/431960/456")).unwrap();
-        let vdf = format!("\"libraryfolders\" {{ \"1\" {{ \"path\" \"{}\" }} }}", second.display().to_string().replace('\\', "\\\\"));
-        fs::write(steam.join("steamapps/libraryfolders.vdf"), vdf).unwrap();
-
-        let libraries = library_folders(&steam);
-        assert_eq!(libraries.len(), 2);
-        assert_eq!(library_project(&libraries, 123).unwrap(), project.canonicalize().unwrap());
-        assert!(library_project(&libraries, 456).is_none());
-        assert!(library_project(&libraries, 789).is_none());
-        fs::remove_dir_all(dir).unwrap();
-    }
 
     #[test]
     fn exports_the_project_tree_without_replacing_an_existing_backup() {
@@ -1755,8 +911,8 @@ mod tests {
         fs::write(project.join("assets/video.mp4"), vec![7u8; 300_000]).unwrap();
         fs::write(output.join("Fixture (123).zip"), b"existing").unwrap();
 
-        let project = checked_project(&dir, project.to_str().unwrap().as_bytes(), 123).unwrap();
-        assert!(checked_project(&dir, output.to_str().unwrap().as_bytes(), 123).is_err());
+        let project = crate::steam::workshop_folder(&dir, 123).unwrap();
+        assert_eq!(project, fs::canonicalize(dir.join("steamapps/workshop/content/431960/123")).unwrap());
         let mut fractions = Vec::new();
         let name = save_project(&project, &output, 123, "Fixture", |f| fractions.push(f), || false).unwrap().unwrap();
         assert_eq!(name, "Fixture (123) (1).zip");
@@ -1860,49 +1016,6 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    #[test]
-    fn accepts_only_the_publisher_names_valve_uses() {
-        for name in ["Valve", "Valve Corp."] {
-            assert!(valve_publisher(name), "{name}");
-        }
-        for name in [
-            "",
-            "Valve Corp",
-            "Valve Corporation",
-            "Valve Corp. ",
-            " Valve Corp.",
-            "valve",
-            "valve corp.",
-            "Valve Corp..",
-            "Valve Inc.",
-            "Valve Corp. Ltd",
-            "Not Valve Corp.",
-            "Valve Corp. (fake)",
-        ] {
-            assert!(!valve_publisher(name), "{name:?} must not pass as Valve");
-        }
-    }
-
-    /// Live: set CLAWS_TEST_STEAMCMD to one or more steamcmd.exe paths, separated by ';' on
-    /// Windows. Each must carry a valid Valve signature under one of the accepted names.
-    #[cfg(windows)]
-    #[test]
-    fn accepts_valves_signed_steamcmd_when_given() {
-        let Some(paths) = std::env::var_os("CLAWS_TEST_STEAMCMD") else { return };
-        let mut checked = 0;
-        for path in std::env::split_paths(&paths) {
-            if path.as_os_str().is_empty() {
-                continue;
-            }
-            let organization = signer_organization(&path)
-                .unwrap_or_else(|| panic!("Windows does not verify the signature on {}", path.display()));
-            assert!(valve_publisher(&organization), "{} is signed by {organization:?}", path.display());
-            assert!(signed_by_valve(&path));
-            assert!(validate_steamcmd(&path).is_ok(), "{}", path.display());
-            checked += 1;
-        }
-        assert!(checked > 0, "CLAWS_TEST_STEAMCMD named no path");
-    }
 
     /// Live: set CLAWS_TEST_NETWORK=1 to ask Valve's API about a known wallpaper and collection.
     #[tokio::test]
@@ -1916,15 +1029,6 @@ mod tests {
         assert!(matches!(lookup(&client, 3844862544).await.unwrap(), WorkshopLookup::Collection { items, .. } if items > 0));
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn rejects_unsigned_executables() {
-        // The test binary itself is not signed by Valve.
-        let me = std::env::current_exe().unwrap();
-        assert!(!signed_by_valve(&me));
-        assert!(signer_organization(&me).is_none(), "an unsigned file has no verified signer");
-        assert!(!signed_by_valve(Path::new(r"C:\no such folder\steamcmd.exe")));
-    }
 
     #[cfg(windows)]
     #[tokio::test]

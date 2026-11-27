@@ -426,7 +426,7 @@ export const mountDownload: MountView = (container, ctx) => {
         if (mine !== ticket) return;
         problem = lookupProblem(found);
         if (found.kind === "wallpaper") {
-          showWorkshop(new WorkshopSession(url, found.item, workshopDeps, Boolean(store.tools.steamcmd)));
+          showWorkshop(new WorkshopSession(url, found.item, workshopDeps));
           return;
         }
       } catch (error) {
