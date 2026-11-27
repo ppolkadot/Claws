@@ -323,3 +323,7 @@ Measured on the owner's PC while implementing [the plan](superpowers/plans/2026-
 - Whether `NeedsUpdate` in the ACF marks a partly updated item reliably (Claws does not use it).
 - HEVC copies play in Windows' default player only with the HEVC extension: Claws copies H.264 only and converts the rest.
 - A web wallpaper's page runs inside Wallpaper Engine's own browser while it is recorded, exactly as when it is applied. Only one of the library's six web wallpapers was recorded.
+
+### Window cleanup recheck (2026-11-27)
+
+`CLAWS_TEST_WALLPAPER_ENGINE_CANCEL=1272964419 cargo test a_cancelled_recording_leaves_nothing_behind_when_given -- --nocapture` passed on this PC. Cancel during opening, loading, recording and shutdown-like cancellation during recording each reported success; the test checked that its window, FFmpeg process and temporary partial were gone. This does not cover a launch that appears at the deadline or a refused close; those paths have deterministic tests.

@@ -372,6 +372,14 @@ fn engine_command(exe: &Path, args: &[&str]) -> std::io::Result<()> {
     command.spawn().map(drop)
 }
 
+fn find_with_grace<T>(grace: Duration, mut find: impl FnMut() -> Option<T>, elapsed: impl Fn() -> Duration, mut sleep: impl FnMut()) -> Option<T> {
+    loop {
+        if let Some(found) = find() { return Some(found); }
+        if elapsed() >= grace { return None; }
+        sleep();
+    }
+}
+
 /// Closes the window with this title, the way Wallpaper Engine documents (`closeWallpaper`) and
 /// then, if it is still there, the way a close button does. Only a window that exists is asked:
 /// asking Wallpaper Engine when it is not running would start it. Blocking, about a second (plus
@@ -380,16 +388,8 @@ pub fn close_window(engine: &Path, title: &str, grace: Duration) -> bool {
     // The window can still be on its way when the order to open it was only just given: wait for
     // it for `grace`, so a cancel that comes early does not leave it to appear afterwards.
     let waiting = Instant::now();
-    let found = loop {
-        if let Some(found) = win_window::find_window(title, engine) {
-            break Some(found);
-        }
-        if waiting.elapsed() >= grace {
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    let Some(found) = found else { return true };
+    let found = find_with_grace(grace, || win_window::find_window(title, engine), || waiting.elapsed(), || std::thread::sleep(Duration::from_millis(50)));
+    let Some(_found) = found else { return true };
     let gone = |wait_ms: u64| {
         let deadline = Instant::now() + Duration::from_millis(wait_ms);
         while Instant::now() < deadline {
@@ -404,7 +404,10 @@ pub fn close_window(engine: &Path, title: &str, grace: Duration) -> bool {
     if gone(3000) {
         return true;
     }
-    win_window::post_close(found);
+    // The original handle may have been destroyed and reused while waiting.
+    if let Some(current) = win_window::find_window(title, engine) {
+        win_window::post_close(current);
+    }
     gone(2000)
 }
 
@@ -434,16 +437,20 @@ impl<'a> WindowGuard<'a> {
 
     /// Closes the window now. Returns whether it is gone.
     pub fn close_now(&mut self) -> bool {
-        if self.closed {
-            return true;
+        self.close_now_with(|engine, title, grace| close_window(engine, title, grace))
+    }
+
+    fn close_now_with(&mut self, close: impl FnOnce(&Path, &str, Duration) -> bool) -> bool {
+        if self.closed { return true; }
+        let grace = self.opened.map_or(Duration::ZERO, |opened| WINDOW_WAIT.saturating_sub(opened.elapsed()));
+        let gone = close(&self.engine, &self.title, grace);
+        if gone {
+            self.closed = true;
+            (self.announce)(None);
         }
-        // Within three seconds of the order to open it, the window may not exist yet.
-        let grace = self.opened.map_or(Duration::ZERO, |opened| Duration::from_secs(3).saturating_sub(opened.elapsed()));
-        let gone = close_window(&self.engine, &self.title, grace);
-        self.closed = true;
-        (self.announce)(None);
         gone
     }
+
 }
 
 impl Drop for WindowGuard<'_> {
@@ -841,6 +848,29 @@ mod tests {
         assert_eq!(check_engine(Some(exe.clone()), |_| true).unwrap().exe, exe);
         assert!(EngineProblem::NotInstalled.message().contains("Steam library"));
         assert!(EngineProblem::NotGenuine.message().contains("signature"));
+    }
+
+    #[test]
+    fn cleanup_finds_a_window_appearing_near_the_open_deadline() {
+        use std::cell::Cell;
+        let elapsed = Cell::new(Duration::ZERO);
+        let found = find_with_grace(Duration::from_secs(15),
+            || (elapsed.get() >= Duration::from_secs(14)).then_some(42),
+            || elapsed.get(),
+            || elapsed.set(elapsed.get() + Duration::from_secs(1)));
+        assert_eq!(found, Some(42));
+    }
+
+    #[test]
+    fn failed_close_keeps_the_window_announced_and_retries() {
+        let announcements = Mutex::new(Vec::new());
+        let announce = |title: Option<&str>| announcements.lock().unwrap().push(title.map(str::to_owned));
+        let mut guard = WindowGuard::new(Path::new("engine"), "title", &announce);
+        guard.opened();
+        assert!(!guard.close_now_with(|_, _, grace| { assert!(grace > Duration::from_secs(14)); false }));
+        assert_eq!(announcements.lock().unwrap().as_slice(), &[Some("title".to_owned())]);
+        assert!(guard.close_now_with(|_, _, _| true));
+        assert_eq!(announcements.lock().unwrap().as_slice(), &[Some("title".to_owned()), None]);
     }
 
     #[cfg(windows)]

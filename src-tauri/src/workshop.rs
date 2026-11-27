@@ -889,7 +889,12 @@ async fn record_media(
 pub fn close_recording_window(state: &AppState) {
     let window = state.workshop.lock().unwrap().window.clone();
     if let Some((engine, title)) = window {
-        workshop_record::close_window(&engine, &title, Duration::from_millis(1500));
+        if workshop_record::close_window(&engine, &title, Duration::from_secs(15)) {
+            let mut current = state.workshop.lock().unwrap();
+            if current.window.as_ref().is_some_and(|entry| entry.0 == engine && entry.1 == title) {
+                current.window = None;
+            }
+        }
     }
 }
 
