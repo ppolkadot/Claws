@@ -223,16 +223,24 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_link_at_the_tools_directory_is_refused() {
+        use std::process::{Command, Stdio};
         let parent = bin("linked-tools-parent");
         let target = bin("linked-tools-target");
         fixture(&target);
         let link = parent.join("bin");
-        if std::os::windows::fs::symlink_dir(&target, &link).is_ok() {
-            assert!(find(&link).is_none());
-            assert!(remove(&link).is_err());
-            assert!(target.join("steamcmd/steamcmd.exe").exists());
-            fs::remove_dir(&link).unwrap();
-        } else { eprintln!("skipped: creating a directory symlink requires permission"); }
+        let made = Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(made.success(), "creating a junction must succeed on a standard account");
+        assert!(find(&link).is_none());
+        assert!(remove(&link).is_err());
+        assert!(target.join("steamcmd/steamcmd.exe").exists());
+        fs::remove_dir(&link).unwrap();
         fs::remove_dir_all(parent).unwrap();
         fs::remove_dir_all(target).unwrap();
     }

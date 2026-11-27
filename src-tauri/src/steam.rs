@@ -619,16 +619,24 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn linked_download_ancestor_is_not_followed() {
+        use std::process::{Command, Stdio};
         let dir = library("linked-download-path");
         let target = library("linked-download-target");
         let child = target.join("431960/123");
         fs::create_dir_all(&child).unwrap();
         fs::write(child.join("part"), b"data").unwrap();
-        let link = dir.join("steamapps/workshop/downloads");
-        if std::os::windows::fs::symlink_dir(&target, &link).is_ok() {
-            assert_eq!(locate_item(std::slice::from_ref(&dir), 123, None).state, ItemState::NotInstalled);
-            fs::remove_dir(link).unwrap();
-        } else { eprintln!("skipped: creating a directory symlink requires permission"); }
+        let link = dir.join("steamapps").join("workshop").join("downloads");
+        let made = Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "creating a junction must succeed on a standard account: {}", String::from_utf8_lossy(&made.stderr));
+        assert_eq!(locate_item(std::slice::from_ref(&dir), 123, None).state, ItemState::NotInstalled);
+        fs::remove_dir(link).unwrap();
         let _ = fs::remove_dir_all(dir);
         let _ = fs::remove_dir_all(target);
     }
