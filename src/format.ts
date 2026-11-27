@@ -26,6 +26,25 @@ export function formatDuration(seconds: number | null | undefined): string {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
+/** A clock reading: 0:42, 1:03, 1:02:03. Unlike `formatDuration`, zero reads as 0:00. */
+export function clock(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "";
+  return Math.round(seconds) === 0 ? "0:00" : formatDuration(seconds);
+}
+
+/** "2.6 of 5.6 GB": both numbers in the unit the total reads best in. */
+export function formatBytesOf(done: number, total: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let unit = 0;
+  let scale = 1;
+  while (total / scale >= 1024 && unit < units.length - 1) {
+    scale *= 1024;
+    unit += 1;
+  }
+  const digits = unit === 0 ? 0 : 1;
+  return `${(done / scale).toFixed(digits)} of ${(total / scale).toFixed(digits)} ${units[unit]}`;
+}
+
 export function formatEta(seconds: number | null | undefined): string {
   if (seconds == null || !Number.isFinite(seconds)) return "";
   if (seconds < 60) return `${Math.max(1, Math.round(seconds))}s left`;

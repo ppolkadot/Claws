@@ -61,6 +61,9 @@ pub struct Settings {
     /// Which audio stream to fetch for audio-only downloads.
     #[serde(default)]
     pub audio_selection: AudioSelection,
+    /// How fast conversions last ran, as multiples of real time, by kind (`mp4-2160`). Written by
+    /// the Wallpaper Engine export, never edited by hand; the estimate before an export reads it.
+    pub workshop_speeds: std::collections::BTreeMap<String, f64>,
 }
 
 impl Default for Settings {
@@ -86,6 +89,7 @@ impl Default for Settings {
             open_at_login: false,
             // New installations prefer audio that can be copied rather than converted.
             audio_selection: AudioSelection::PreferMatching,
+            workshop_speeds: Default::default(),
         }
     }
 }
@@ -98,6 +102,12 @@ impl Settings {
         self.max_concurrent = self.max_concurrent.clamp(1, 8);
         self.max_processing = self.max_processing.clamp(1, 8);
         self.speed_limit_kib = self.speed_limit_kib.min(MAX_SPEED_LIMIT_KIB);
+        // Remembered conversion speeds are measurements: keep only sensible ones.
+        self.workshop_speeds.retain(|key, speed| key.len() <= 32 && speed.is_finite() && (0.001..=100_000.0).contains(speed));
+        while self.workshop_speeds.len() > 16 {
+            let Some(last) = self.workshop_speeds.keys().next_back().cloned() else { break };
+            self.workshop_speeds.remove(&last);
+        }
 
         if !["system", "light", "dark"].contains(&self.theme.as_str()) {
             self.theme = "system".into();
@@ -281,6 +291,29 @@ mod tests {
         assert_eq!((s.output_dir.as_str(), s.max_concurrent, s.schema_version), ("D:/Downloads", 5, SETTINGS_SCHEMA));
         let written = serde_json::to_string(&s).unwrap().to_lowercase();
         assert!(!written.contains("steam"), "the old fields are not written back: {written}");
+    }
+
+    #[test]
+    fn remembered_conversion_speeds_are_kept_only_when_sensible_and_default_to_none() {
+        let old = r#"{"schemaVersion":2,"outputDir":"D:/Downloads","filenameTemplate":"%(title)s.%(ext)s"}"#;
+        let mut s: Settings = serde_json::from_str(old).unwrap();
+        assert!(s.workshop_speeds.is_empty(), "an older file has none");
+        assert!(s.repair().is_none());
+        s.workshop_speeds.insert("mp4-2160".into(), 2.5);
+        s.workshop_speeds.insert("gif-720".into(), f64::NAN);
+        s.workshop_speeds.insert("mp4-1080".into(), -1.0);
+        s.workshop_speeds.insert("x".repeat(40), 3.0);
+        s.validate().unwrap();
+        assert_eq!(s.workshop_speeds.len(), 1);
+        assert_eq!(s.workshop_speeds["mp4-2160"], 2.5);
+        for i in 0..40 {
+            s.workshop_speeds.insert(format!("k{i}"), 1.0);
+        }
+        s.validate().unwrap();
+        assert!(s.workshop_speeds.len() <= 16);
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(json["workshopSpeeds"].is_object(), "written under its own key");
+        assert_eq!(json["schemaVersion"], 2, "the schema stays 2");
     }
 
     #[test]

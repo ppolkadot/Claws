@@ -52,6 +52,8 @@ function announceWhenHidden(session: WorkshopSession) {
   announced.add(session);
   let was = session.state.phase;
   session.on(() => {
+    // The taskbar button follows a running export, so it hears every change.
+    store.emit("workshop");
     const state = session.state;
     const finished = was === "running" && state.phase !== "running";
     was = state.phase;
@@ -321,6 +323,7 @@ export const mountDownload: MountView = (container, ctx) => {
     cancel: api.cancelWallpaperDownload,
     findInLibrary: api.findWallpaperInLibrary,
     videoInfo: api.wallpaperVideoInfo,
+    estimate: api.estimateWallpaperExport,
     describeError: errorMessage,
   };
 

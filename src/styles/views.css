@@ -1064,6 +1064,37 @@
   gap: 8px;
   margin: 16px 6px 0;
 }
+/* The tracker's line is a Queue status line (12px, secondary ink, tabular numbers); only its
+   colour follows the result, and the bar turns green or red the way a Queue row's does. */
+.workshop-progress .job-status {
+  display: block;
+}
+.workshop-progress[data-status="saved"] .job-status {
+  color: var(--green-text);
+}
+.workshop-progress[data-status="failed"] .job-status {
+  color: var(--red-text);
+}
+.workshop-progress[data-status="saved"] .bar-fill {
+  background: var(--green);
+}
+.workshop-progress[data-status="failed"] .bar-fill {
+  background: var(--red);
+}
+.workshop-progress .bar {
+  margin-top: 0;
+}
+/* What a choice is expected to take: a caption under the choice, numbers aligned. */
+.workshop-estimate {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.workshop-estimate[hidden] {
+  display: none;
+}
 .workshop-panel .actions .workshop-reason {
   margin-left: auto;
 }

@@ -6,7 +6,13 @@
 //! backed. Nothing here invents a fraction, and the time left is `None` until there is enough
 //! data to stand behind it.
 #![allow(dead_code)] // some of this is used only by the export tracker, which lands in a later commit
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
+use serde::Serialize;
 
 // ---------------------------------------------------------------------------------------
 // FFmpeg `-progress pipe:1`
@@ -115,6 +121,396 @@ pub fn eta_from_speed(done_seconds: f64, total_seconds: f64, speed: Option<f64>,
     }
     let speed = speed.filter(|speed| *speed > 0.0)?;
     Some((total_seconds - done_seconds).max(0.0) / speed)
+}
+
+// ---------------------------------------------------------------------------------------
+// The tracker: what the interface is told
+
+/// Where an export is. The stages an export passes through depend on what it does:
+/// checking, then copying, converting or zipping (or opening, loading and recording), then
+/// finishing.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Stage {
+    Checking,
+    Opening,
+    Loading,
+    Recording,
+    Finishing,
+    Copying,
+    Converting,
+    Zipping,
+}
+
+impl Stage {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Checking => "checking",
+            Self::Opening => "opening",
+            Self::Loading => "loading",
+            Self::Recording => "recording",
+            Self::Finishing => "finishing",
+            Self::Copying => "copying",
+            Self::Converting => "converting",
+            Self::Zipping => "zipping",
+        }
+    }
+}
+
+/// What `done` and `total` count.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Unit {
+    Seconds,
+    Bytes,
+}
+
+/// The `workshop-progress` event. A number is present only when it can be backed.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressEvent {
+    pub url: String,
+    pub stage: Stage,
+    pub done: Option<f64>,
+    pub total: Option<f64>,
+    pub unit: Option<Unit>,
+    /// Milliseconds left, or `None` when there is no estimate to stand behind.
+    pub eta_ms: Option<u64>,
+    /// The time left rests on a measured rate, not on a known length.
+    pub approximate: bool,
+    pub elapsed_ms: u64,
+}
+
+/// How long an export spent in one stage.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StageTime {
+    pub name: &'static str,
+    pub ms: u64,
+}
+
+/// What a finished export reports: the total time and the time in each stage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Summary {
+    pub elapsed_ms: u64,
+    pub stages: Vec<StageTime>,
+}
+
+/// At most this many events per second, plus one at every change of stage.
+const MIN_EVENT_GAP: Duration = Duration::from_millis(250);
+/// A byte rate is taken over this window, and trusted after this much data.
+const RATE_WINDOW: Duration = Duration::from_secs(3);
+const BYTES_MIN_ELAPSED: Duration = Duration::from_secs(1);
+/// A conversion's speed settles after a few seconds.
+const SPEED_MIN_ELAPSED: Duration = Duration::from_secs(3);
+/// While recording, the bar waits this long below the end until FFmpeg has really finished.
+const RECORDING_HOLD_BACK: f64 = 0.2;
+
+struct Inner {
+    stage: Stage,
+    stage_started: Duration,
+    stages: Vec<StageTime>,
+    last_emit: Option<Duration>,
+    /// The largest `done` sent in this stage: it never goes back.
+    done: f64,
+    rate: RateWindow,
+}
+
+/// Turns what an export knows into events: throttled, never backwards, and carrying a time
+/// left only when it can be backed. Cheap to clone; every clone is the same export.
+#[derive(Clone)]
+pub struct Tracker {
+    url: Arc<str>,
+    inner: Arc<Mutex<Inner>>,
+    emit: Arc<dyn Fn(ProgressEvent) + Send + Sync>,
+    clock: Arc<dyn Fn() -> Duration + Send + Sync>,
+}
+
+impl Tracker {
+    /// A tracker with its own clock, starting now.
+    pub fn new(url: &str, emit: impl Fn(ProgressEvent) + Send + Sync + 'static) -> Self {
+        let start = Instant::now();
+        Self::with_clock(url, emit, move || start.elapsed())
+    }
+
+    /// A tracker on a given clock, which reports the time since the export began.
+    pub fn with_clock(url: &str, emit: impl Fn(ProgressEvent) + Send + Sync + 'static, clock: impl Fn() -> Duration + Send + Sync + 'static) -> Self {
+        let tracker = Self {
+            url: url.into(),
+            inner: Arc::new(Mutex::new(Inner {
+                stage: Stage::Checking,
+                stage_started: Duration::ZERO,
+                stages: Vec::new(),
+                last_emit: None,
+                done: 0.0,
+                rate: RateWindow::new(RATE_WINDOW),
+            })),
+            emit: Arc::new(emit),
+            clock: Arc::new(clock),
+        };
+        tracker.send(&mut tracker.inner.lock().unwrap(), None, None, None, None, false);
+        tracker
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        (self.clock)()
+    }
+
+    fn send(&self, inner: &mut Inner, done: Option<f64>, total: Option<f64>, unit: Option<Unit>, eta: Option<f64>, approximate: bool) {
+        let now = (self.clock)();
+        inner.last_emit = Some(now);
+        (self.emit)(ProgressEvent {
+            url: self.url.to_string(),
+            stage: inner.stage,
+            done,
+            total,
+            unit,
+            eta_ms: eta.filter(|eta| eta.is_finite()).map(|eta| (eta.max(0.0) * 1000.0).round() as u64),
+            approximate: approximate && eta.is_some(),
+            elapsed_ms: now.as_millis() as u64,
+        });
+    }
+
+    /// Moves to a new stage and says so at once. The numbers are those the stage starts with
+    /// (`None` for a stage with nothing to count yet).
+    pub fn stage(&self, stage: Stage, start: Option<(f64, f64, Unit)>) {
+        let mut inner = self.inner.lock().unwrap();
+        let now = (self.clock)();
+        if inner.stage != stage {
+            let spent = now.saturating_sub(inner.stage_started);
+            let name = inner.stage.name();
+            inner.stages.push(StageTime { name, ms: spent.as_millis() as u64 });
+            inner.stage = stage;
+            inner.stage_started = now;
+            inner.done = start.map_or(0.0, |(done, _, _)| done);
+            inner.rate = RateWindow::new(RATE_WINDOW);
+        }
+        let (done, total, unit) = match start {
+            Some((done, total, unit)) => (Some(done), Some(total), Some(unit)),
+            None => (None, None, None),
+        };
+        self.send(&mut inner, done, total, unit, None, false);
+    }
+
+    /// Whether an update may be sent now (not more than four a second).
+    fn due(&self, inner: &Inner) -> bool {
+        inner.last_emit.is_none_or(|last| (self.clock)().saturating_sub(last) >= MIN_EVENT_GAP)
+    }
+
+    /// Copying or zipping: bytes written of bytes to write. The time left comes from the rate
+    /// over the last three seconds once a second of data exists, and is marked approximate.
+    pub fn bytes(&self, done: u64, total: u64) {
+        let mut inner = self.inner.lock().unwrap();
+        let since = (self.clock)().saturating_sub(inner.stage_started);
+        inner.rate.push(since, done);
+        if !self.due(&inner) {
+            return;
+        }
+        let shown = (done as f64).max(inner.done).min(total as f64);
+        inner.done = shown;
+        let eta = eta_from_rate(shown as u64, total, inner.rate.rate(), since, BYTES_MIN_ELAPSED);
+        self.send(&mut inner, Some(shown), Some(total as f64), Some(Unit::Bytes), eta, true);
+    }
+
+    /// Converting: seconds of media encoded of the seconds to encode, with the time left from
+    /// FFmpeg's speed once it has run for three seconds.
+    pub fn converting(&self, done_seconds: f64, total_seconds: f64, speed: Option<f64>) {
+        let mut inner = self.inner.lock().unwrap();
+        if !self.due(&inner) {
+            return;
+        }
+        let since = (self.clock)().saturating_sub(inner.stage_started);
+        let shown = done_seconds.max(inner.done).min(total_seconds);
+        inner.done = shown;
+        let eta = eta_from_speed(shown, total_seconds, speed, since, SPEED_MIN_ELAPSED);
+        self.send(&mut inner, Some(shown), Some(total_seconds), Some(Unit::Seconds), eta, true);
+    }
+
+    /// Recording: seconds since FFmpeg's first captured frame, of the length chosen. The time
+    /// left is exact. It stops 0.2 s short of the end until FFmpeg itself has finished.
+    pub fn recording(&self, seconds_since_first_frame: f64, length: f64) {
+        let mut inner = self.inner.lock().unwrap();
+        if !self.due(&inner) {
+            return;
+        }
+        let cap = (length - RECORDING_HOLD_BACK).max(0.0);
+        let shown = seconds_since_first_frame.clamp(0.0, cap).max(inner.done.min(cap));
+        inner.done = shown;
+        self.send(&mut inner, Some(shown), Some(length), Some(Unit::Seconds), Some(length - shown), false);
+    }
+
+    /// Ends the export: the time in each stage, and the whole of it.
+    pub fn finish(&self) -> Summary {
+        let mut inner = self.inner.lock().unwrap();
+        let now = (self.clock)();
+        let spent = now.saturating_sub(inner.stage_started);
+        let name = inner.stage.name();
+        inner.stages.push(StageTime { name, ms: spent.as_millis() as u64 });
+        inner.stage_started = now;
+        Summary { elapsed_ms: now.as_millis() as u64, stages: std::mem::take(&mut inner.stages) }
+    }
+}
+
+#[cfg(test)]
+mod tracker_tests {
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+
+    struct Rig {
+        now: Arc<StdMutex<Duration>>,
+        events: Arc<StdMutex<Vec<ProgressEvent>>>,
+        tracker: Tracker,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            let now = Arc::new(StdMutex::new(Duration::ZERO));
+            let events = Arc::new(StdMutex::new(Vec::new()));
+            let (sink, clock) = (events.clone(), now.clone());
+            let tracker = Tracker::with_clock("https://example/?id=1", move |event| sink.lock().unwrap().push(event), move || *clock.lock().unwrap());
+            Self { now, events, tracker }
+        }
+        fn wait(&self, ms: u64) {
+            *self.now.lock().unwrap() += Duration::from_millis(ms);
+        }
+        fn last(&self) -> ProgressEvent {
+            self.events.lock().unwrap().last().cloned().unwrap()
+        }
+        fn count(&self) -> usize {
+            self.events.lock().unwrap().len()
+        }
+    }
+
+    #[test]
+    fn starts_checking_with_nothing_to_count() {
+        let rig = Rig::new();
+        let first = rig.last();
+        assert_eq!((first.stage, first.done, first.total, first.unit, first.eta_ms), (Stage::Checking, None, None, None, None));
+        assert!(!first.approximate);
+    }
+
+    #[test]
+    fn sends_at_most_four_updates_a_second_and_every_change_of_stage() {
+        let rig = Rig::new();
+        rig.tracker.stage(Stage::Copying, Some((0.0, 1000.0, Unit::Bytes)));
+        let before = rig.count();
+        // A thousand progress calls inside one second: no more than four events.
+        for step in 0..1000u64 {
+            rig.wait(1);
+            rig.tracker.bytes(step, 1000);
+        }
+        assert!(rig.count() - before <= 4, "{} events", rig.count() - before);
+        // A stage change is never throttled.
+        rig.tracker.stage(Stage::Finishing, None);
+        let after = rig.count();
+        rig.tracker.stage(Stage::Copying, Some((0.0, 1.0, Unit::Bytes)));
+        assert_eq!(rig.count(), after + 1);
+    }
+
+    #[test]
+    fn done_never_goes_backwards_within_a_stage_and_never_passes_the_total() {
+        let rig = Rig::new();
+        rig.tracker.stage(Stage::Copying, Some((0.0, 100.0, Unit::Bytes)));
+        rig.wait(300);
+        rig.tracker.bytes(60, 100);
+        rig.wait(300);
+        rig.tracker.bytes(40, 100);
+        assert_eq!(rig.last().done, Some(60.0));
+        rig.wait(300);
+        rig.tracker.bytes(500, 100);
+        assert_eq!(rig.last().done, Some(100.0));
+    }
+
+    #[test]
+    fn a_copy_has_a_time_left_only_after_a_second_and_marks_it_approximate() {
+        let rig = Rig::new();
+        rig.tracker.stage(Stage::Copying, Some((0.0, 1000.0, Unit::Bytes)));
+        rig.wait(300);
+        rig.tracker.bytes(100, 1000);
+        assert_eq!(rig.last().eta_ms, None, "under a second of data");
+        rig.wait(1000);
+        rig.tracker.bytes(500, 1000);
+        let event = rig.last();
+        // 400 bytes in 1.0 s through the window: 500 left at 400/s is 1.25 s.
+        assert_eq!(event.eta_ms, Some(1250));
+        assert!(event.approximate);
+        assert_eq!(event.unit, Some(Unit::Bytes));
+    }
+
+    #[test]
+    fn a_conversion_has_a_time_left_only_after_three_seconds_of_speed() {
+        let rig = Rig::new();
+        rig.tracker.stage(Stage::Converting, Some((0.0, 100.0, Unit::Seconds)));
+        rig.wait(2900);
+        rig.tracker.converting(10.0, 100.0, Some(2.0));
+        assert_eq!(rig.last().eta_ms, None);
+        rig.wait(300);
+        rig.tracker.converting(20.0, 100.0, Some(2.0));
+        assert_eq!(rig.last().eta_ms, Some(40_000), "80 seconds left at 2x");
+        assert!(rig.last().approximate);
+        rig.wait(300);
+        rig.tracker.converting(30.0, 100.0, None);
+        assert_eq!(rig.last().eta_ms, None, "no speed, no estimate");
+        assert!(!rig.last().approximate, "nothing to be approximate about");
+    }
+
+    #[test]
+    fn recording_counts_seconds_with_an_exact_time_left_and_holds_back_until_it_is_over() {
+        let rig = Rig::new();
+        rig.tracker.stage(Stage::Recording, Some((0.0, 60.0, Unit::Seconds)));
+        rig.wait(1000);
+        rig.tracker.recording(42.0, 60.0);
+        let event = rig.last();
+        assert_eq!((event.done, event.total, event.eta_ms), (Some(42.0), Some(60.0), Some(18_000)));
+        assert!(!event.approximate, "the length was chosen: the time left is exact");
+        rig.wait(1000);
+        rig.tracker.recording(61.0, 60.0);
+        assert!((rig.last().done.unwrap() - 59.8).abs() < 1e-9, "0.2 s short of the end until FFmpeg exits");
+        rig.wait(1000);
+        rig.tracker.recording(10.0, 60.0);
+        assert!((rig.last().done.unwrap() - 59.8).abs() < 1e-9, "never back");
+    }
+
+    #[test]
+    fn the_total_and_each_stage_are_timed() {
+        let rig = Rig::new();
+        rig.wait(400);
+        rig.tracker.stage(Stage::Copying, Some((0.0, 10.0, Unit::Bytes)));
+        rig.wait(9_600);
+        rig.tracker.stage(Stage::Finishing, None);
+        rig.wait(2_300);
+        let summary = rig.tracker.finish();
+        assert_eq!(summary.elapsed_ms, 12_300);
+        let named: Vec<_> = summary.stages.iter().map(|s| (s.name, s.ms)).collect();
+        assert_eq!(named, [("checking", 400), ("copying", 9_600), ("finishing", 2_300)]);
+        assert_eq!(summary.stages.iter().map(|s| s.ms).sum::<u64>(), summary.elapsed_ms);
+        assert_eq!(rig.last().elapsed_ms, 10_000, "events carry the time since the start");
+    }
+
+    #[test]
+    fn the_event_has_the_shape_the_interface_reads() {
+        let event = ProgressEvent {
+            url: "u".into(),
+            stage: Stage::Recording,
+            done: Some(1.5),
+            total: Some(60.0),
+            unit: Some(Unit::Seconds),
+            eta_ms: Some(58_500),
+            approximate: false,
+            elapsed_ms: 3_000,
+        };
+        assert_eq!(
+            serde_json::to_value(&event).unwrap(),
+            serde_json::json!({"url":"u","stage":"recording","done":1.5,"total":60.0,"unit":"seconds","etaMs":58500,"approximate":false,"elapsedMs":3000})
+        );
+        let idle = ProgressEvent { stage: Stage::Checking, done: None, total: None, unit: None, eta_ms: None, ..event };
+        let json = serde_json::to_value(&idle).unwrap();
+        assert_eq!((&json["done"], &json["total"], &json["unit"], &json["etaMs"]), (&serde_json::Value::Null, &serde_json::Value::Null, &serde_json::Value::Null, &serde_json::Value::Null));
+        for (stage, name) in [(Stage::Opening, "opening"), (Stage::Loading, "loading"), (Stage::Finishing, "finishing"), (Stage::Copying, "copying"), (Stage::Converting, "converting"), (Stage::Zipping, "zipping")] {
+            assert_eq!(serde_json::to_value(stage).unwrap(), name);
+            assert_eq!(stage.name(), name);
+        }
+    }
 }
 
 #[cfg(test)]

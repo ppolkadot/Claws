@@ -7,7 +7,7 @@ use std::{
     io::{self, BufWriter, Read, Write},
     path::{Path, PathBuf},
     sync::atomic::Ordering,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,7 @@ use crate::{
     downloader::kill_tree,
     encoder::{self, Encoder},
     error::{AppError, Result},
-    export_progress,
+    export_progress::{self, Stage, StageTime, Tracker, Unit},
     state::AppState,
     steam::{library_folders, library_project, locate_item, steam_root, ItemState},
     workshop_media::{self, MediaError, MediaFormat},
@@ -316,27 +316,11 @@ pub struct ExportOptions {
     pub length_seconds: Option<u32>,
 }
 
-#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub enum Stage {
-    Starting,
-    Copying,
-    Converting,
-    Saving,
-}
-
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct Progress {
-    url: String,
-    stage: Stage,
-    percent: Option<f64>,
-}
-
 #[derive(Serialize, Debug, PartialEq)]
 #[serde(tag = "status", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum WallpaperOutcome {
-    Saved { filename: String, path: String },
+    /// `elapsed_ms` is the whole export, `stages` the time in each part of it.
+    Saved { filename: String, path: String, elapsed_ms: u64, stages: Vec<StageTime> },
     Failed { message: String, detail: Option<String> },
     /// A video format was asked for, but the project has no video Claws can convert.
     Unsupported { message: String },
@@ -393,6 +377,14 @@ pub fn stop_for_shutdown(state: &AppState) -> Option<u32> {
     run.pid
 }
 
+/// The tracker for one export: its events go to the interface as `workshop-progress`.
+fn new_tracker(app: &AppHandle, url: &str) -> Tracker {
+    let app = app.clone();
+    Tracker::new(url, move |event| {
+        let _ = app.emit("workshop-progress", event);
+    })
+}
+
 #[tauri::command]
 pub async fn download_wallpaper(
     app: AppHandle,
@@ -404,14 +396,18 @@ pub async fn download_wallpaper(
     let options = options.unwrap_or_default();
     let id = item_id(&url)?;
     let run = RunGuard::begin(&state)?;
-    let progress = |stage: Stage, percent: Option<f64>| {
-        let _ = app.emit("workshop-progress", Progress { url: url.clone(), stage, percent });
-    };
-    progress(Stage::Starting, None);
+    let tracker = new_tracker(&app, &url);
+    let outcome = export(&app, &state, &tracker, id, format, &options).await;
+    drop(run);
+    let outcome = outcome?;
+    crate::desktop::notify_export_finished(&app, &outcome);
+    Ok(outcome)
+}
 
+/// One export, from the lookup to the published file.
+async fn export(app: &AppHandle, state: &AppState, tracker: &Tracker, id: u64, format: ExportFormat, options: &ExportOptions) -> Result<WallpaperOutcome> {
     let found = lookup(&state.steam_http, id).await.map_err(|_| AppError::msg(STEAM_UNREACHABLE))?;
     let WorkshopLookup::Wallpaper { item } = found else { return Err(not_a_wallpaper(&found)) };
-    let media = format.media();
 
     let output = PathBuf::from(state.settings.lock().unwrap().output_dir.clone());
     if !output.is_absolute() {
@@ -434,52 +430,24 @@ pub async fn download_wallpaper(
     };
 
     let title = item.title.clone();
-    let filename = if let Some(media_format) = media {
-        match convert_media(&app, &state, &project, &output, (id, &title), media_format, &options, &progress).await? {
-            SaveResult::Done(filename) => filename,
-            SaveResult::Cancelled => return Ok(WallpaperOutcome::Cancelled),
-            SaveResult::Unsupported(message) => return Ok(WallpaperOutcome::Unsupported { message }),
-            SaveResult::Failed { message, detail } => return Ok(WallpaperOutcome::Failed { message, detail }),
-        }
-    } else {
-        let measured = project.clone();
-        let needed = tauri::async_runtime::spawn_blocking(move || disk_budget::bytes_in(&measured)).await.unwrap_or(0);
-        if let Some(message) = space_shortfall(&state, &output, needed, "the download folder's drive") {
-            return Ok(WallpaperOutcome::Failed { message, detail: None });
-        }
-
-        progress(Stage::Saving, Some(0.0));
-        let export_project = project.clone();
-        let export_output = output.clone();
-        let cancel_state = app.clone();
-        let progress_app = app.clone();
-        let progress_url = url.clone();
-        let saved = tauri::async_runtime::spawn_blocking(move || {
-            use tauri::Manager;
-            let state = cancel_state.state::<AppState>();
-            let cancelled = || state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst);
-            let mut last = -1.0;
-            let report = |fraction: f64| {
-                let percent = (fraction * 100.0).floor();
-                if percent > last {
-                    last = percent;
-                    let _ = progress_app.emit(
-                        "workshop-progress",
-                        Progress { url: progress_url.clone(), stage: Stage::Saving, percent: Some(percent) },
-                    );
-                }
-            };
-            save_project(&export_project, &export_output, id, &title, report, cancelled)
-        })
-        .await?;
-        match saved {
-            Ok(Some(filename)) => filename,
-            Ok(None) => return Ok(WallpaperOutcome::Cancelled),
-            Err(error) => return Err(error),
-        }
+    let saved = match format.media() {
+        Some(media_format) => convert_media(app, state, tracker, &project, &output, (id, &title), media_format, options).await?,
+        None => zip_project(app, state, tracker, &project, &output, id, &title).await?,
     };
-    drop(run);
-    Ok(WallpaperOutcome::Saved { path: output.join(&filename).to_string_lossy().into_owned(), filename })
+    Ok(match saved {
+        SaveResult::Done(filename) => {
+            let summary = tracker.finish();
+            WallpaperOutcome::Saved {
+                path: output.join(&filename).to_string_lossy().into_owned(),
+                filename,
+                elapsed_ms: summary.elapsed_ms,
+                stages: summary.stages,
+            }
+        }
+        SaveResult::Cancelled => WallpaperOutcome::Cancelled,
+        SaveResult::Unsupported(message) => WallpaperOutcome::Unsupported { message },
+        SaveResult::Failed { message, detail } => WallpaperOutcome::Failed { message, detail },
+    })
 }
 
 /// How a ZIP or media save ended.
@@ -489,6 +457,34 @@ enum SaveResult {
     /// The project is not a video Claws can convert.
     Unsupported(String),
     Failed { message: String, detail: Option<String> },
+}
+
+/// The estimate and the free-space need are made with this much room to spare.
+const SPACE_ROOM_PERCENT: u64 = 120;
+
+/// Zips the project into the output folder, counting bytes as it goes.
+async fn zip_project(app: &AppHandle, state: &AppState, tracker: &Tracker, project: &Path, output: &Path, id: u64, title: &str) -> Result<SaveResult> {
+    let measured = project.to_path_buf();
+    let needed = tauri::async_runtime::spawn_blocking(move || disk_budget::bytes_in(&measured)).await.unwrap_or(0);
+    if let Some(message) = space_shortfall(state, output, needed / 100 * SPACE_ROOM_PERCENT, "the download folder's drive") {
+        return Ok(SaveResult::Failed { message, detail: None });
+    }
+    tracker.stage(Stage::Zipping, Some((0.0, needed as f64, Unit::Bytes)));
+    let (export_project, export_output, title) = (project.to_path_buf(), output.to_path_buf(), title.to_string());
+    let cancel_app = app.clone();
+    let tracker = tracker.clone();
+    let saved = tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let state = cancel_app.state::<AppState>();
+        let cancelled = || state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst);
+        save_project(&export_project, &export_output, id, &title, |done, total| tracker.bytes(done, total), || tracker.stage(Stage::Finishing, None), cancelled)
+    })
+    .await?;
+    match saved {
+        Ok(Some(filename)) => Ok(SaveResult::Done(filename)),
+        Ok(None) => Ok(SaveResult::Cancelled),
+        Err(error) => Err(error),
+    }
 }
 
 /// What the video is, for the formats row and the estimate.
@@ -520,21 +516,132 @@ fn video_info(video: &workshop_media::VideoProject, probe: &workshop_media::Prob
     }
 }
 
+/// The item's project folder in the user's libraries, read off the UI thread.
+async fn library_project_of(id: u64) -> Result<Option<PathBuf>> {
+    tauri::async_runtime::spawn_blocking(move || steam_root().and_then(|root| library_project(&library_folders(&root), id)))
+        .await
+        .map_err(|_| AppError::msg("Couldn't check the Steam library."))
+}
+
 /// What the library holds for this item's video: whether it can be copied, its size and length.
 /// `None` when the item has no readable video or ffprobe is not available.
 #[tauri::command]
 pub async fn wallpaper_video_info(app: AppHandle, url: String) -> Result<Option<VideoInfo>> {
     let id = item_id(&url)?;
     let Some(ffprobe) = crate::tools::find_ffprobe(&app) else { return Ok(None) };
-    let found = tauri::async_runtime::spawn_blocking(move || {
-        let project = steam_root().and_then(|root| library_project(&library_folders(&root), id))?;
-        workshop_media::video_file(&project).ok()
-    })
-    .await
-    .map_err(|_| AppError::msg("Couldn't check the Steam library."))?;
+    let Some(project) = library_project_of(id).await? else { return Ok(None) };
+    let found = tauri::async_runtime::spawn_blocking(move || workshop_media::video_file(&project).ok())
+        .await
+        .map_err(|_| AppError::msg("Couldn't check the Steam library."))?;
     let Some(video) = found else { return Ok(None) };
-    Ok(workshop_media::probe(&ffprobe, &video.path).await.map(|probe| video_info(&video, &probe)))
+    Ok(workshop_media::probe_cached(&ffprobe, &video).await.map(|probe| video_info(&video, &probe)))
 }
+
+// ---------------------------------------------------------------------------------------
+// The estimate shown before starting
+
+/// What the interface shows under the format row: `seconds` is `None` while nothing backs a
+/// guess ("Estimate after a few seconds").
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Estimate {
+    pub seconds: Option<f64>,
+    /// The time rests on a measured or assumed rate, not on a length chosen by the user.
+    pub approximate: bool,
+    pub bytes: Option<u64>,
+}
+
+/// A plain copy to a fast disk runs near this speed.
+const COPY_BYTES_PER_SECOND: f64 = 200.0 * 1_000_000.0;
+
+fn estimate_copy(bytes: u64) -> Estimate {
+    Estimate { seconds: Some(bytes as f64 / COPY_BYTES_PER_SECOND), approximate: true, bytes: Some(bytes) }
+}
+
+/// A conversion's time is the media length over the speed last measured for this kind of
+/// conversion. With no measurement there is no estimate.
+fn estimate_conversion(media_seconds: Option<f64>, speed: Option<f64>, bytes: Option<u64>) -> Estimate {
+    let seconds = match (media_seconds, speed) {
+        (Some(media), Some(speed)) if media > 0.0 && speed > 0.0 => Some(media / speed),
+        _ => None,
+    };
+    Estimate { seconds, approximate: true, bytes }
+}
+
+/// The key under which a conversion's speed is remembered: the format and the source's height
+/// rounded up to a common size.
+pub fn speed_key(format: MediaFormat, source_height: u32) -> String {
+    let bucket = [720u32, 1080, 1440, 2160].into_iter().find(|bucket| source_height <= *bucket).unwrap_or(2160);
+    format!("{}-{bucket}", format.extension())
+}
+
+/// Remembers how fast the last conversion of this kind ran, as a multiple of real time.
+fn remember_speed(state: &AppState, key: &str, speed: f64) {
+    if !speed.is_finite() || speed <= 0.0 {
+        return;
+    }
+    let mut next = state.settings.lock().unwrap().clone();
+    if next.workshop_speeds.get(key) == Some(&speed) {
+        return;
+    }
+    if next.workshop_speeds.len() >= 16 && !next.workshop_speeds.contains_key(key) {
+        return;
+    }
+    next.workshop_speeds.insert(key.to_string(), speed);
+    let kept = next.clone();
+    // Best effort: a speed that was not saved is only measured again next time.
+    let _ = crate::store::save_then(&state.settings_path(), &next, || {
+        *state.settings.lock().unwrap() = kept;
+    });
+}
+
+/// The time and size an export would take, from what is known now: nothing is run.
+#[tauri::command]
+pub async fn estimate_wallpaper_export(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    url: String,
+    format: ExportFormat,
+    options: Option<ExportOptions>,
+) -> Result<Estimate> {
+    let options = options.unwrap_or_default();
+    let id = item_id(&url)?;
+    let Some(project) = library_project_of(id).await? else {
+        return Ok(Estimate { seconds: None, approximate: true, bytes: None });
+    };
+    let Some(media) = format.media() else {
+        let bytes = tauri::async_runtime::spawn_blocking(move || disk_budget::bytes_in(&project)).await.unwrap_or(0);
+        return Ok(estimate_copy(bytes));
+    };
+    let video = tauri::async_runtime::spawn_blocking(move || workshop_media::video_file(&project).ok())
+        .await
+        .map_err(|_| AppError::msg("Couldn't check the Steam library."))?;
+    let Some(video) = video else { return Ok(Estimate { seconds: None, approximate: true, bytes: None }) };
+    let probe = match crate::tools::find_ffprobe(&app) {
+        Some(ffprobe) => workshop_media::probe_cached(&ffprobe, &video).await,
+        None => None,
+    };
+    if media == MediaFormat::Mp4 && probe.as_ref().is_some_and(|probe| probe.can_copy(&video.path)) {
+        return Ok(estimate_copy(video.bytes));
+    }
+    let Some(probe) = probe else { return Ok(Estimate { seconds: None, approximate: true, bytes: None }) };
+    let plan_length = (media == MediaFormat::Gif).then(|| workshop_media::gif_length(options.length_seconds));
+    let media_seconds = match (probe.duration, plan_length) {
+        (Some(duration), Some(length)) => Some(duration.min(f64::from(length))),
+        (Some(duration), None) => Some(duration),
+        (None, length) => length.map(f64::from),
+    };
+    let speed = state.settings.lock().unwrap().workshop_speeds.get(&speed_key(media, probe.height)).copied();
+    let bytes = (media == MediaFormat::Mp4).then_some(video.bytes);
+    Ok(estimate_conversion(media_seconds, speed, bytes))
+}
+
+/// Whether the drive that holds `folder` is below the reserve the download queue keeps.
+fn low_on_space(state: &AppState, folder: &Path) -> bool {
+    (state.free_space)(folder).is_ok_and(|free| free < disk_budget::reserve())
+}
+
+const LOW_SPACE: &str = "The drive is almost full, so Claws stopped and removed the unfinished file. Free up space, then try again.";
 
 /// The encoder for an MP4 conversion: a hardware one when the source is over 1440p (software
 /// runs 4K at about 0.84 times real time), software otherwise, which is what it always was.
@@ -553,12 +660,12 @@ async fn pick_conversion_encoder(ffmpeg: &Path, height: u32) -> Encoder {
 async fn convert_media(
     app: &AppHandle,
     state: &AppState,
+    tracker: &Tracker,
     project: &Path,
     output: &Path,
     item: (u64, &str),
     format: MediaFormat,
     options: &ExportOptions,
-    progress: &(dyn Fn(Stage, Option<f64>) + Sync),
 ) -> Result<SaveResult> {
     const NO_VIDEO: &str = "This wallpaper's project has no video that Claws can convert. Save it as a ZIP instead.";
     const UNSAFE: &str = "This wallpaper's project points to a file outside the downloaded item. Claws won't convert it; save it as a ZIP instead.";
@@ -576,7 +683,7 @@ async fn convert_media(
         return Ok(SaveResult::Failed { message: NO_FFMPEG.to_string(), detail: None });
     };
     let probe = match crate::tools::find_ffprobe(app) {
-        Some(ffprobe) => workshop_media::probe(&ffprobe, &video.path).await,
+        Some(ffprobe) => workshop_media::probe_cached(&ffprobe, &video).await,
         None => None,
     };
     let partial = output.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
@@ -584,36 +691,24 @@ async fn convert_media(
 
     if format == MediaFormat::Mp4 && probe.as_ref().is_some_and(|probe| probe.can_copy(&video.path)) {
         // The original is already the right kind of file: copy it, byte for byte.
-        if let Some(message) = space_shortfall(state, output, video.bytes, "the download folder's drive") {
+        if let Some(message) = space_shortfall(state, output, video.bytes / 100 * SPACE_ROOM_PERCENT, "the download folder's drive") {
             return Ok(SaveResult::Failed { message, detail: None });
         }
-        progress(Stage::Copying, Some(0.0));
-        let source = video.path.clone();
-        let target = partial.clone();
-        let written = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let written_by_copy = written.clone();
+        tracker.stage(Stage::Copying, Some((0.0, video.bytes as f64, Unit::Bytes)));
+        let (source, target) = (video.path.clone(), partial.clone());
         let cancel_app = app.clone();
-        let mut copy = tauri::async_runtime::spawn_blocking(move || {
+        let (counting, finishing) = (tracker.clone(), tracker.clone());
+        let copied = tauri::async_runtime::spawn_blocking(move || {
             use tauri::Manager;
             let state = cancel_app.state::<AppState>();
             let cancelled = || state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst);
-            workshop_media::copy_original(&source, &target, |done, _| written_by_copy.store(done, Ordering::Relaxed), || {}, cancelled)
-        });
-        let mut tick = tokio::time::interval(Duration::from_millis(250));
-        let copied = loop {
-            tokio::select! {
-                finished = &mut copy => break finished?,
-                _ = tick.tick() => {
-                    let percent = (written.load(Ordering::Relaxed) as f64 / video.bytes.max(1) as f64 * 100.0).floor();
-                    progress(Stage::Copying, Some(percent.min(99.0)));
-                }
-            }
-        };
+            workshop_media::copy_original(&source, &target, |done, total| counting.bytes(done, total), || finishing.stage(Stage::Finishing, None), cancelled)
+        })
+        .await?;
         return match copied {
             Ok(workshop_media::CopyOutcome::Cancelled) => Ok(SaveResult::Cancelled),
             Ok(workshop_media::CopyOutcome::Done) => {
-                let output = output.to_path_buf();
-                let title = title.to_string();
+                let (output, title) = (output.to_path_buf(), title.to_string());
                 let published = tauri::async_runtime::spawn_blocking(move || publish_media(&partial, &output, id, &title, MediaFormat::Mp4)).await?;
                 match published {
                     Ok(filename) => Ok(SaveResult::Done(filename)),
@@ -630,36 +725,46 @@ async fn convert_media(
     if format == MediaFormat::Gif {
         needed = needed.min(1024 * 1024 * 1024);
     }
-    if let Some(message) = space_shortfall(state, output, needed, "the download folder's drive") {
+    if let Some(message) = space_shortfall(state, output, needed / 100 * SPACE_ROOM_PERCENT, "the download folder's drive") {
         return Ok(SaveResult::Failed { message, detail: None });
     }
 
     let (width, height, fps) = probe.as_ref().map_or((1920, 1080, 30), |probe| (probe.width, probe.height, probe.fps.round().clamp(1.0, 240.0) as u32));
-    let mut plan = workshop_media::ConvertPlan {
+    let plan = workshop_media::ConvertPlan {
         format,
         encoder: if format == MediaFormat::Mp4 { pick_conversion_encoder(&ffmpeg, height).await } else { Encoder::X264 },
         width,
         height,
-        fps,
+        fps: fps.max(1),
         length: (format == MediaFormat::Gif).then(|| workshop_media::gif_length(options.length_seconds)),
     };
-    plan.fps = plan.fps.max(1);
     let total_seconds = plan.output_seconds(probe.as_ref().and_then(|probe| probe.duration));
 
-    progress(Stage::Converting, None);
+    tracker.stage(Stage::Converting, total_seconds.map(|total| (0.0, total, Unit::Seconds)));
+    let converting_from = tracker.elapsed();
     // Holds the engine so an install cannot replace FFmpeg while it runs.
     let _engine = state.engine.read().await;
-    let output_for_task = output.to_path_buf();
-    let title = title.to_string();
-    let mut shown = -1.0f64;
-    let shown_cell = std::sync::Mutex::new(&mut shown);
+    let low = std::sync::atomic::AtomicBool::new(false);
+    let last_space_check = std::sync::Mutex::new(Instant::now());
     let on_progress = |block: &export_progress::FfmpegProgress| {
-        let (Some(total), Some(time)) = (total_seconds, block.out_time_us) else { return };
-        let percent = (time as f64 / 1_000_000.0 / total * 100.0).floor().clamp(0.0, 99.0);
-        let mut last = shown_cell.lock().unwrap();
-        if percent > **last {
-            **last = percent;
-            progress(Stage::Converting, Some(percent));
+        if let (Some(total), Some(time)) = (total_seconds, block.out_time_us) {
+            tracker.converting(time as f64 / 1_000_000.0, total, block.speed);
+        }
+        // The drive may fill while a long conversion runs: stop before it is out of room.
+        let mut last = last_space_check.lock().unwrap();
+        if last.elapsed() >= Duration::from_secs(5) {
+            *last = Instant::now();
+            if low_on_space(state, output) {
+                low.store(true, Ordering::SeqCst);
+                let pid = {
+                    let mut run = state.workshop.lock().unwrap();
+                    run.cancelled = true;
+                    run.pid
+                };
+                if let Some(pid) = pid {
+                    kill_tree(pid, false);
+                }
+            }
         }
     };
     let converted = workshop_media::convert(
@@ -684,11 +789,17 @@ async fn convert_media(
     match converted {
         Ok(workshop_media::Outcome::Cancelled) => {
             let _ = fs::remove_file(&partial);
+            if low.load(Ordering::SeqCst) {
+                return Ok(SaveResult::Failed { message: LOW_SPACE.into(), detail: None });
+            }
             return Ok(SaveResult::Cancelled);
         }
         Ok(workshop_media::Outcome::Done) => {}
         Err(failure) => {
             let _ = fs::remove_file(&partial);
+            if low.load(Ordering::SeqCst) {
+                return Ok(SaveResult::Failed { message: LOW_SPACE.into(), detail: None });
+            }
             if cancelled() {
                 return Ok(SaveResult::Cancelled);
             }
@@ -697,8 +808,14 @@ async fn convert_media(
         }
     }
 
-    let partial_for_task = partial.clone();
-    progress(Stage::Saving, Some(0.0));
+    // What this conversion taught about speed, for the next estimate.
+    let spent = tracker.elapsed().saturating_sub(converting_from).as_secs_f64();
+    if let Some(total) = total_seconds.filter(|total| *total >= 5.0 && spent >= 3.0) {
+        remember_speed(state, &speed_key(format, height), total / spent);
+    }
+
+    tracker.stage(Stage::Finishing, None);
+    let (partial_for_task, output_for_task, title) = (partial.clone(), output.to_path_buf(), title.to_string());
     let published = tauri::async_runtime::spawn_blocking(move || publish_media(&partial_for_task, &output_for_task, id, &title, format)).await?;
     match published {
         Ok(filename) => Ok(SaveResult::Done(filename)),
@@ -839,7 +956,8 @@ fn save_project(
     output: &Path,
     id: u64,
     title: &str,
-    mut report: impl FnMut(f64),
+    mut report: impl FnMut(u64, u64),
+    on_finish: impl FnOnce(),
     cancelled: impl Fn() -> bool,
 ) -> Result<Option<String>> {
     let meta = fs::symlink_metadata(project.join("project.json"))
@@ -860,6 +978,7 @@ fn save_project(
         let mut zip = zip::ZipWriter::new(BufWriter::with_capacity(256 * 1024, file));
         let mut buffer = vec![0u8; 256 * 1024];
         let mut done = 0u64;
+        report(0, total);
         for entry in &files {
             if cancelled() {
                 return Ok(None);
@@ -884,14 +1003,13 @@ fn save_project(
                 }
                 zip.write_all(&buffer[..read])?;
                 done += read as u64;
-                if total > 0 {
-                    report(done as f64 / total as f64);
-                }
+                report(done, total);
                 if cancelled() {
                     return Ok(None);
                 }
             }
         }
+        on_finish();
         let writer = zip.finish()?;
         writer.into_inner().map_err(|e| e.into_error())?.sync_all()?;
         for copy in 0..1000 {
@@ -970,7 +1088,6 @@ pub fn sweep_partials(dir: &Path) {
 mod tests {
     use super::*;
     use std::io::Read;
-    use std::time::Instant;
     #[cfg(windows)]
     use std::process::Stdio;
     #[cfg(windows)]
@@ -1023,7 +1140,11 @@ mod tests {
         assert_eq!(serde_json::to_value(ExportFormat::Zip).unwrap(), "zip");
         assert_eq!(serde_json::to_value(ExportFormat::Mp4).unwrap(), "mp4");
         assert_eq!(serde_json::to_value(ExportFormat::Gif).unwrap(), "gif");
-        assert_eq!(serde_json::to_value(Stage::Converting).unwrap(), "converting");
+        let saved = WallpaperOutcome::Saved { filename: "f".into(), path: "p".into(), elapsed_ms: 63_000, stages: vec![StageTime { name: "copying", ms: 62_000 }] };
+        assert_eq!(
+            serde_json::to_value(saved).unwrap(),
+            serde_json::json!({"status":"saved","filename":"f","path":"p","elapsedMs":63000,"stages":[{"name":"copying","ms":62000}]})
+        );
     }
 
     #[test]
@@ -1077,10 +1198,15 @@ mod tests {
 
         let project = crate::steam::workshop_folder(&dir, 123).unwrap();
         assert_eq!(project, fs::canonicalize(dir.join("steamapps/workshop/content/431960/123")).unwrap());
-        let mut fractions = Vec::new();
-        let name = save_project(&project, &output, 123, "Fixture", |f| fractions.push(f), || false).unwrap().unwrap();
+        let mut steps: Vec<(u64, u64)> = Vec::new();
+        let mut finished = false;
+        let name = save_project(&project, &output, 123, "Fixture", |done, total| steps.push((done, total)), || finished = true, || false).unwrap().unwrap();
+        assert!(finished, "the finishing step is announced once every byte is written");
         assert_eq!(name, "Fixture (123) (1).zip");
-        assert_eq!(fractions.last().copied(), Some(1.0));
+        let total = steps.last().unwrap().1;
+        assert_eq!(steps.first(), Some(&(0, total)));
+        assert_eq!(steps.last(), Some(&(total, total)));
+        assert!(steps.windows(2).all(|pair| pair[0].0 <= pair[1].0), "never backwards");
         assert_eq!(fs::read(output.join("Fixture (123).zip")).unwrap(), b"existing");
         {
             let mut zip = zip::ZipArchive::new(File::open(output.join(&name)).unwrap()).unwrap();
@@ -1095,7 +1221,7 @@ mod tests {
         assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
 
         // Cancelled part-way: nothing new is left in the folder.
-        assert!(save_project(&project, &output, 123, "Fixture", |_| {}, || true).unwrap().is_none());
+        assert!(save_project(&project, &output, 123, "Fixture", |_, _| {}, || {}, || true).unwrap().is_none());
         assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1222,6 +1348,39 @@ mod tests {
                 eprintln!("  at {percent:>2}%: elapsed {:.2}s, predicted left {:?}, actual left {actual:.2}s", elapsed.as_secs_f64(), eta.map(|e| (e * 100.0).round() / 100.0));
             }
             fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_copy_is_estimated_from_the_size_and_a_conversion_only_from_a_measured_speed() {
+        let copy = estimate_copy(5_856_547_590);
+        assert!(copy.approximate);
+        assert!((copy.seconds.unwrap() - 29.28).abs() < 0.01, "{:?}", copy.seconds);
+        assert_eq!(copy.bytes, Some(5_856_547_590));
+
+        // No speed measured yet: no estimate, rather than a made-up one.
+        assert_eq!(estimate_conversion(Some(294.0), None, Some(5)).seconds, None);
+        assert_eq!(estimate_conversion(None, Some(2.0), None).seconds, None, "no length either");
+        assert_eq!(estimate_conversion(Some(300.0), Some(0.0), None).seconds, None);
+        let known = estimate_conversion(Some(294.0), Some(2.0), Some(7));
+        assert_eq!((known.seconds, known.approximate, known.bytes), (Some(147.0), true, Some(7)));
+    }
+
+    #[test]
+    fn a_remembered_speed_belongs_to_a_format_and_a_size_bucket() {
+        assert_eq!(speed_key(MediaFormat::Mp4, 480), "mp4-720");
+        assert_eq!(speed_key(MediaFormat::Mp4, 720), "mp4-720");
+        assert_eq!(speed_key(MediaFormat::Mp4, 1080), "mp4-1080");
+        assert_eq!(speed_key(MediaFormat::Mp4, 1081), "mp4-1440");
+        assert_eq!(speed_key(MediaFormat::Mp4, 2160), "mp4-2160");
+        assert_eq!(speed_key(MediaFormat::Gif, 4320), "gif-2160");
+    }
+
+    #[test]
+    fn the_export_event_and_outcome_describe_the_same_stages() {
+        // Every stage the tracker can announce has a name the interface knows.
+        for stage in [Stage::Checking, Stage::Opening, Stage::Loading, Stage::Recording, Stage::Finishing, Stage::Copying, Stage::Converting, Stage::Zipping] {
+            assert_eq!(serde_json::to_value(stage).unwrap(), stage.name());
         }
     }
 

@@ -463,7 +463,8 @@ let mockLegacyRemoved = false;
 /**
  * What the sample Steam library says: an id ending in 6 is installed, in 4 still downloading
  * (the bytes grow while the page is open), in 9 installed with an update pending; any other is
- * installed once "subscribed". ?engine=none shows a PC without Wallpaper Engine.
+ * installed once "subscribed". ?installed=1 makes every item installed; ?engine=none shows a PC
+ * without Wallpaper Engine.
  */
 function mockLibraryStatus(id: string) {
   const engine = new URLSearchParams(location.search).get("engine") !== "none";
@@ -472,7 +473,8 @@ function mockLibraryStatus(id: string) {
     const bytes = Math.min(31_000_000, Math.floor((Date.now() - mockPageOpened) * 6_000));
     return { ...base, found: bytes > 5_000_000, video: false, state: "downloading", bytes };
   }
-  const found = id.endsWith("6") || id.endsWith("9") || mockSubscribed.has(id);
+  const everything = new URLSearchParams(location.search).get("installed") === "1";
+  const found = everything || id.endsWith("6") || id.endsWith("9") || mockSubscribed.has(id);
   return {
     ...base,
     found,
@@ -506,6 +508,70 @@ function mockWorkshopDetails(url: string) {
   };
 }
 
+/** One progress event, with the numbers the sample run makes up (they are labelled as samples). */
+interface MockStep {
+  stage: string;
+  done?: number;
+  total?: number;
+  unit?: "seconds" | "bytes";
+  etaMs?: number;
+  approximate?: boolean;
+  bytes?: number;
+}
+
+/** Sample mode remembers a conversion speed after the first conversion, like the app does. */
+let mockSpeedKnown = false;
+const SAMPLE_VIDEO_BYTES = 5_856_547_590;
+const SAMPLE_VIDEO_SECONDS = 294.35;
+
+/**
+ * ?hold=<stage> keeps the sample export in that stage until Cancel, at the first step that has a
+ * count; ?hold=<stage>:<n> holds at its nth step (for screenshots). ?fail=1 makes the export
+ * fail part-way, as a drive that fills up would.
+ */
+const [mockHoldStage, mockHoldStep] = (new URLSearchParams(location.search).get("hold") ?? "").split(":");
+const mockFails = new URLSearchParams(location.search).get("fail") === "1";
+
+function mockEstimate(id: string, format: string) {
+  if (format === "zip") return { seconds: 0.2, approximate: true, bytes: 31_224_037 };
+  if (format === "mp4" && !id.endsWith("55")) return { seconds: SAMPLE_VIDEO_BYTES / 200_000_000, approximate: true, bytes: SAMPLE_VIDEO_BYTES };
+  // A conversion has no estimate until one has been measured.
+  return { seconds: mockSpeedKnown ? SAMPLE_VIDEO_SECONDS / 2.1 : null, approximate: true, bytes: format === "mp4" ? SAMPLE_VIDEO_BYTES : null };
+}
+
+/** The steps of a sample export, by what it does. */
+function mockSteps(id: string, format: string): MockStep[] {
+  if (format === "zip") {
+    const total = 31_224_037;
+    return [
+      { stage: "checking" },
+      ...[0, 0.2, 0.45, 0.7, 0.9].map((f, i) => ({ stage: "zipping", done: total * f, total, unit: "bytes" as const, etaMs: i < 2 ? undefined : Math.round((1 - f) * 9000), approximate: true })),
+      { stage: "finishing" },
+    ];
+  }
+  if (format === "mp4" && !id.endsWith("55")) {
+    const total = SAMPLE_VIDEO_BYTES;
+    return [
+      { stage: "checking" },
+      ...[0, 0.12, 0.35, 0.6, 0.85, 1].map((f, i) => ({ stage: "copying", done: total * f, total, unit: "bytes" as const, etaMs: i < 1 ? undefined : Math.round((1 - f) * 8000), approximate: true })),
+      { stage: "finishing" },
+    ];
+  }
+  const total = format === "gif" ? 30 : SAMPLE_VIDEO_SECONDS;
+  return [
+    { stage: "checking" },
+    ...[0, 0.05, 0.2, 0.38, 0.6, 0.85].map((f, i) => ({
+      stage: "converting",
+      done: total * f,
+      total,
+      unit: "seconds" as const,
+      etaMs: i < 2 || !mockSpeedKnown && i < 3 ? undefined : Math.round(total * (1 - f) * 600),
+      approximate: true,
+    })),
+    { stage: "finishing" },
+  ];
+}
+
 async function mockWallpaperDownload(url: string, format: string) {
   mockWallpaperCancelled = false;
   const id = new URL(url).searchParams.get("id") ?? "";
@@ -522,18 +588,46 @@ async function mockWallpaperDownload(url: string, format: string) {
       message: "This wallpaper's project has no video that Claws can convert. Save it as a ZIP instead.",
     };
   }
-  const steps: [string, number | null][] = media
-    ? [["converting", null], ["saving", 50], ["saving", 100]]
-    : [["saving", 0], ["saving", 35], ["saving", 70], ["saving", 100]];
-  for (const [stage, percent] of steps) {
+  const started = performance.now();
+  const stages: { name: string; ms: number }[] = [];
+  let last = started;
+  let current = "checking";
+  let inStage = 0;
+  for (const step of mockSteps(id, format)) {
+    inStage = step.stage === current ? inStage + 1 : 1;
     if (mockWallpaperCancelled) return { status: "cancelled" };
-    void emit("workshop-progress", { url, stage, percent });
+    if (step.stage !== current) {
+      stages.push({ name: current, ms: Math.round(performance.now() - last) });
+      last = performance.now();
+      current = step.stage;
+    }
+    void emit("workshop-progress", {
+      url,
+      stage: step.stage,
+      done: step.done ?? null,
+      total: step.total ?? null,
+      unit: step.unit ?? null,
+      etaMs: step.etaMs ?? null,
+      approximate: step.approximate ?? false,
+      elapsedMs: Math.round(performance.now() - started),
+      bytes: step.bytes ?? null,
+    });
+    const holdHere = mockHoldStep ? inStage === Number(mockHoldStep) : step.done === undefined || step.done > 0;
+    if (mockHoldStage === step.stage && holdHere) {
+      while (!mockWallpaperCancelled) await new Promise((resolve) => setTimeout(resolve, 100));
+      return { status: "cancelled" };
+    }
+    if (mockFails && step.done !== undefined && step.done > (step.total ?? 0) * 0.3) {
+      return { status: "failed", message: "The drive is almost full, so Claws stopped and removed the unfinished file. Free up space, then try again.", detail: null };
+    }
     await new Promise((resolve) => setTimeout(resolve, 700));
   }
   if (mockWallpaperCancelled) return { status: "cancelled" };
+  stages.push({ name: current, ms: Math.round(performance.now() - last) });
+  if (format === "gif" || (format === "mp4" && id.endsWith("55"))) mockSpeedKnown = true;
   const extension = media ? format : "zip";
   const filename = `Sample Wallpaper (${id}).${extension}`;
-  return { status: "saved", filename, path: `${settings.outputDir}\\${filename}` };
+  return { status: "saved", filename, path: `${settings.outputDir}\\${filename}`, elapsedMs: Math.round(performance.now() - started), stages };
 }
 
 export function installMock() {
@@ -551,6 +645,10 @@ export function installMock() {
         case "find_wallpaper_in_library": {
           const id = new URL(String(payload.url)).searchParams.get("id") ?? "";
           return mockLibraryStatus(id);
+        }
+        case "estimate_wallpaper_export": {
+          const id = new URL(String(payload.url)).searchParams.get("id") ?? "";
+          return mockEstimate(id, String(payload.format ?? "zip"));
         }
         case "wallpaper_video_info": {
           const id = new URL(String(payload.url)).searchParams.get("id") ?? "";

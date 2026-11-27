@@ -1,10 +1,24 @@
 import { api, errorMessage } from "../api";
 import { formatBytes, folderName } from "../format";
 import { store } from "../store";
-import { button, segmented, toast, type SegmentedHandle } from "../ui/components";
+import { button, confirmSheet, segmented, toast, type SegmentedHandle } from "../ui/components";
 import { h, replace } from "../ui/dom";
+import { icon } from "../ui/icons";
+import { paintJobStatus } from "../ui/job-status";
 import { group, progressBar, row, sectionTitle, setProgress } from "../ui/layout";
-import { formatChoices, GIF_SECONDS, libraryLine, missingForStart, stageText, type ExportFormat, type WorkshopSession } from "../workshop-session";
+import { progressMotion, type ProgressState } from "../ui/progress-motion";
+import {
+  estimateLine,
+  formatChoices,
+  GIF_SECONDS,
+  libraryLine,
+  longRunMessage,
+  missingForStart,
+  savedLine,
+  stageLine,
+  type ExportFormat,
+  type WorkshopSession,
+} from "../workshop-session";
 import { thumbnailEl } from "./download-shared";
 
 export interface WorkshopView {
@@ -67,6 +81,8 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
   // as MP4 (its own file when it is H.264, converted otherwise) or as a short GIF. The choices
   // are rebuilt only when they change, so the thumb never jumps.
   const formatHint = h("span", { class: "row-note" });
+  // What the choice is expected to take, in caption style, under the choice.
+  const estimate = h("span", { class: "workshop-estimate", attrs: { "aria-live": "polite" } });
   const formatControl = h("div", { class: "row-control-slot" });
   let formatKey = "";
   let formatSeg: SegmentedHandle<ExportFormat> | null = null;
@@ -81,7 +97,7 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
     formatSeg?.set(session.format);
     formatSeg?.el.querySelectorAll("button").forEach((b) => b.setAttribute("aria-disabled", session.running ? "true" : "false"));
   }
-  const formatRow = row("Save as", formatControl, formatHint);
+  const formatRow = row("Save as", formatControl, h("span", {}, formatHint, estimate));
 
   // GIF length: the first 30 or 60 seconds. A long loop makes a huge file and takes very long.
   const gifSeg = segmented<string>(
@@ -97,22 +113,31 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
   // Actions and status
   const reason = h("span", { class: "row-hint workshop-reason" });
   const saveTo = h("span", { class: "save-to" });
-  const save: HTMLButtonElement = button({ label: "Save ZIP", variant: "primary", onClick: () => start() });
+  const save: HTMLButtonElement = button({ label: "Save ZIP", variant: "primary", onClick: () => void start() });
   const cancel: HTMLButtonElement = button({ label: "Cancel", variant: "secondary", onClick: () => session.cancel() });
   const actions = h("div", { class: "actions" }, saveTo, reason, cancel, save);
+
+  // The export tracker: one status line in the Queue's style, and the 4px bar. It stays after
+  // the export ends, so the result is read where the progress was.
   const bar = progressBar(null);
-  const stageLine = h("span", { class: "row-hint", attrs: { role: "status", "aria-live": "polite" } });
-  const running = h("div", { class: "workshop-progress" }, stageLine, bar);
+  const stageText = h("span", { class: "job-status", attrs: { role: "status", "aria-live": "polite" } });
+  const running = h("div", { class: "workshop-progress", attrs: { "data-status": "running" } }, stageText, bar);
   const outcome = h("div", { class: "workshop-outcome" });
 
-  function start() {
+  async function start() {
+    // A long run asks first: it is cheap to say no now and costly to find out in ten minutes.
+    const long = session.estimate ? longRunMessage(session.estimate) : null;
+    if (long) {
+      const choice = await confirmSheet("This will take a while", long, [{ label: `Start ${session.format.toUpperCase()}`, value: "start", variant: "primary" }]);
+      if (choice !== "start") return;
+    }
     void session.start();
   }
 
   let lastOutcome = "";
   function paintOutcome() {
     const state = session.state;
-    const key = JSON.stringify(state);
+    const key = state.phase === "running" ? "running" : JSON.stringify(state);
     if (key === lastOutcome) return;
     lastOutcome = key;
     if (state.phase === "saved") {
@@ -121,7 +146,7 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
         h(
           "div",
           { class: "notice", attrs: { role: "status" } },
-          h("span", { class: "notice-text", text: `Saved ${state.filename}.` }),
+          h("span", { class: "notice-text", text: state.filename }),
           button({ label: "Show in folder", variant: "secondary", size: "small", onClick: () => void api.openOutputDir().catch((e) => toast(errorMessage(e), { tone: "error" })) }),
         ),
       );
@@ -149,8 +174,6 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
             )
           : null,
       );
-    } else if (state.phase === "cancelled") {
-      replace(outcome, h("p", { class: "footnote", attrs: { role: "status" }, text: "Cancelled." }));
     } else if (state.phase === "unsupported") {
       replace(
         outcome,
@@ -164,7 +187,7 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
             size: "small",
             onClick: () => {
               session.setFormat("zip");
-              start();
+              void start();
             },
           }),
         ),
@@ -172,6 +195,44 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
     } else {
       replace(outcome);
     }
+  }
+
+  // What the bar showed last, so a stage change or a jump snaps and a continuing one glides.
+  let shown: ProgressState | undefined;
+  let lastPhase = session.state.phase;
+  function paintTracker() {
+    const state = session.state;
+    const tracking = state.phase === "running" || state.phase === "saved" || state.phase === "failed" || state.phase === "cancelled";
+    running.hidden = !tracking;
+    if (!tracking) {
+      shown = undefined;
+      lastPhase = state.phase;
+      return;
+    }
+    const changed = lastPhase !== state.phase;
+    lastPhase = state.phase;
+    running.dataset.status = state.phase;
+    let fraction: number | null;
+    let text: string;
+    let status: string;
+    if (state.phase === "running") {
+      fraction = state.fraction;
+      text = stageLine(state.progress);
+      status = state.progress.stage;
+    } else if (state.phase === "saved") {
+      // 100% and green only now, when the file is in the folder.
+      fraction = 1;
+      text = savedLine(state.path, state.elapsedMs);
+      status = "saved";
+    } else {
+      fraction = session.lastFraction ?? 0;
+      text = state.phase === "cancelled" ? "Cancelled" : "Didn't finish";
+      status = state.phase;
+    }
+    paintJobStatus(stageText, text, state.phase === "saved", changed, () => icon("check", 12));
+    const next: ProgressState = { status, progress: fraction ?? 0, progressKnown: fraction !== null };
+    setProgress(bar, fraction, progressMotion(shown, next, document.hidden));
+    shown = next;
   }
 
   function paint() {
@@ -187,6 +248,8 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
           : session.format === "mp4"
             ? "Converts the wallpaper's video with FFmpeg; the project itself isn't kept."
             : "A silent looping GIF; the project itself isn't kept.";
+    estimate.textContent = busy ? "" : estimateLine(session.estimate);
+    estimate.hidden = !estimate.textContent;
     gifRow.hidden = !session.videoAvailable || session.format !== "gif";
     gifSeg.set(String(session.gifSeconds));
     gifSeg.el.querySelectorAll("button").forEach((b) => b.setAttribute("aria-disabled", busy ? "true" : "false"));
@@ -208,11 +271,7 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
     if (saveLabel) saveLabel.textContent = `Save ${session.format.toUpperCase()}`;
     cancel.hidden = !busy;
 
-    running.hidden = !busy;
-    if (session.state.phase === "running") {
-      stageLine.textContent = stageText(session.state.stage, session.state.percent, session.format);
-      setProgress(bar, session.state.percent === null ? null : session.state.percent / 100);
-    }
+    paintTracker();
     paintOutcome();
   }
 
@@ -220,6 +279,7 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
   const off = [session.on(paint), store.on("settings", paint)];
   paint();
   if (!session.library) void session.checkLibrary();
+  else void session.refreshEstimate();
   return {
     el,
     dispose: () => off.forEach((stop) => stop()),

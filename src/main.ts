@@ -9,7 +9,7 @@ import type { WorkshopProgress } from "./workshop-session";
 import { api, onEvent, errorMessage, type Job, type JobEvent, type JobRemoved, type JobsAdded, type ToolProgress } from "./api";
 import { store } from "./store";
 import { StartupEvents, StatusTransitions } from "./queue-events";
-import { sameTaskbarState, taskbarState, type TaskbarState } from "./queue-summary";
+import { sameTaskbarState, taskbarState, withExport, type TaskbarState } from "./queue-summary";
 import { h } from "./ui/dom";
 import { toast } from "./ui/components";
 import { installSprings } from "./ui/motion";
@@ -78,7 +78,10 @@ async function start() {
   });
 
   await onEvent<ToolProgress>("tool-progress", (progress) => store.setToolProgress(progress));
-  await onEvent<WorkshopProgress>("workshop-progress", (progress) => store.workshop?.progress(progress));
+  await onEvent<WorkshopProgress>("workshop-progress", (progress) => {
+    store.workshop?.progress(progress);
+    store.emit("workshop");
+  });
   await onEvent<string>("notice", (message) => toast(message, { tone: "error" }));
   notices.forEach((message) => toast(message, { tone: "error" }));
 
@@ -137,7 +140,7 @@ async function start() {
     let taskbarTimer = 0;
     const paintTaskbar = () => {
       taskbarTimer = 0;
-      const next = taskbarState(store.jobs.values());
+      const next = withExport(taskbarState(store.jobs.values()), store.workshop?.activity ?? null);
       if (sameTaskbarState(shown, next)) return;
       shown = next;
       const status = next.status === "none" ? ProgressBarStatus.None : next.status === "indeterminate" ? ProgressBarStatus.Indeterminate : ProgressBarStatus.Normal;
@@ -152,6 +155,7 @@ async function start() {
     };
     store.on("job", scheduleTaskbar);
     store.on("jobs", scheduleTaskbar);
+    store.on("workshop", scheduleTaskbar);
     scheduleTaskbar();
   }
 

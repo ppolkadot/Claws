@@ -271,6 +271,27 @@ pub async fn probe(ffprobe: &Path, input: &Path) -> Option<Probe> {
     status.success().then(|| parse_probe(&bytes)).flatten()
 }
 
+/// Probes the declared video, remembering the answer for a file that has not changed (the
+/// estimate asks again on every choice the user makes).
+pub async fn probe_cached(ffprobe: &Path, video: &VideoProject) -> Option<Probe> {
+    use std::{collections::HashMap, sync::OnceLock};
+    type Key = (PathBuf, u64, u64);
+    static CACHE: OnceLock<Mutex<HashMap<Key, Probe>>> = OnceLock::new();
+    let modified = fs::metadata(&video.path).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let key: Key = (video.path.clone(), video.bytes, modified);
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(known) = cache.lock().unwrap().get(&key) {
+        return Some(known.clone());
+    }
+    let probe = probe(ffprobe, &video.path).await?;
+    let mut known = cache.lock().unwrap();
+    if known.len() >= 32 {
+        known.clear();
+    }
+    known.insert(key, probe.clone());
+    Some(probe)
+}
+
 // ---------------------------------------------------------------------------------------
 // Saving the original
 

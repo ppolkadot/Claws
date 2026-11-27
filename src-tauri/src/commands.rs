@@ -166,6 +166,9 @@ pub fn save_settings(
 ) -> Result<SavedSettings> {
     // The interface always edits current-format settings.
     settings.schema_version = crate::settings::SETTINGS_SCHEMA;
+    // The remembered conversion speeds are the backend's own: a save from a window that read
+    // them earlier must not bring back an older measurement.
+    settings.workshop_speeds = state.settings.lock().unwrap().workshop_speeds.clone();
     settings.validate()?;
     // Disk and memory under one lock, so two saves cannot leave them disagreeing.
     store::save_then(&state.settings_path(), &settings, || {

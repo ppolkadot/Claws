@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { sameTaskbarState, summarize, taskbarState } from "../../.test-build/queue-summary.js";
+import { sameTaskbarState, summarize, taskbarState, withExport } from "../../.test-build/queue-summary.js";
 
 const job = (status, extra = {}) => ({ status, speed: null, eta: null, progressKnown: false, progressEstimated: false, downloadedBytes: null, totalBytes: null, ...extra });
 const transfer = (downloaded, total, extra = {}) => job("downloading", { progressKnown: true, downloadedBytes: downloaded, totalBytes: total, ...extra });
@@ -84,4 +84,23 @@ test("the summary line says at most three things: transfers, pace and failures",
   assert.deepEqual(summaryParts(summarize([job("downloading")]), speed, eta), ["1 downloading"]);
   assert.deepEqual(summaryParts(summarize([job("paused"), job("paused"), job("failed"), job("queued")]), speed, eta), ["2 paused", "1 failed"]);
   assert.deepEqual(summaryParts(summarize([job("processing"), job("completed")]), speed, eta), []);
+});
+
+test("a running Wallpaper Engine export drives the taskbar when nothing else does", () => {
+  const none = { status: "none" };
+  assert.deepEqual(withExport(none, null), none);
+  assert.deepEqual(withExport(none, { running: false, fraction: 0.5 }), none, "a finished export shows nothing");
+  assert.deepEqual(withExport(none, { running: true, fraction: null }), { status: "indeterminate" }, "a stage that counts nothing is indeterminate");
+  assert.deepEqual(withExport(none, { running: true, fraction: 0.384 }), { status: "normal", progress: 38 });
+  assert.deepEqual(withExport(none, { running: true, fraction: 7 }), { status: "normal", progress: 100 }, "never past 100%");
+  assert.deepEqual(withExport(none, { running: true, fraction: -1 }), { status: "normal", progress: 0 });
+});
+
+test("beside downloads the export is averaged in only when both are counted", () => {
+  const downloads = { status: "normal", progress: 80 };
+  assert.deepEqual(withExport(downloads, { running: true, fraction: 0.4 }), { status: "normal", progress: 60 });
+  assert.deepEqual(withExport(downloads, { running: true, fraction: null }), { status: "indeterminate" });
+  assert.deepEqual(withExport({ status: "indeterminate" }, { running: true, fraction: 0.4 }), { status: "indeterminate" });
+  assert.deepEqual(withExport(downloads, null), downloads);
+  assert.ok(sameTaskbarState(withExport({ status: "none" }, { running: true, fraction: 0.5 }), { status: "normal", progress: 50 }));
 });

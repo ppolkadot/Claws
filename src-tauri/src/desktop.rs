@@ -43,6 +43,30 @@ pub fn finished_notice(job: &crate::downloader::Job) -> Option<(&'static str, St
 
 pub fn notify_finished(app: &AppHandle, job: &crate::downloader::Job) {
     let Some((title, body)) = finished_notice(job) else { return };
+    deliver_notice(app, title, body);
+}
+
+/// An export is worth a notification only when it took long enough to walk away from.
+pub const EXPORT_NOTICE_AFTER_MS: u64 = 30_000;
+
+/// The notice for a finished Wallpaper Engine export, when it took over 30 seconds.
+pub fn export_notice(outcome: &crate::workshop::WallpaperOutcome) -> Option<(&'static str, String)> {
+    match outcome {
+        crate::workshop::WallpaperOutcome::Saved { filename, elapsed_ms, .. } if *elapsed_ms >= EXPORT_NOTICE_AFTER_MS => {
+            Some(("Wallpaper saved", filename.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// Notifies about a finished export under the same rules as a finished download: only when
+/// enabled, and only while Claws is hidden, minimized or behind another window.
+pub fn notify_export_finished(app: &AppHandle, outcome: &crate::workshop::WallpaperOutcome) {
+    let Some((title, body)) = export_notice(outcome) else { return };
+    deliver_notice(app, title, body);
+}
+
+fn deliver_notice(app: &AppHandle, title: &'static str, body: String) {
     let enabled = app.state::<AppState>().settings.lock().unwrap().notify_when_done;
     let (visible, focused, minimized) = match app.get_webview_window("main") {
         Some(window) => (
@@ -224,6 +248,16 @@ mod notice_tests {
             "filePath": null, "error": null, "createdAt": 1
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn a_wallpaper_export_is_news_only_after_thirty_seconds_and_only_when_saved() {
+        use crate::workshop::WallpaperOutcome;
+        let saved = |elapsed_ms| WallpaperOutcome::Saved { filename: "Ocean (1).mp4".into(), path: "p".into(), elapsed_ms, stages: Vec::new() };
+        assert_eq!(export_notice(&saved(30_000)), Some(("Wallpaper saved", "Ocean (1).mp4".to_string())));
+        assert_eq!(export_notice(&saved(29_999)), None, "a short export finished while the user watched");
+        assert_eq!(export_notice(&WallpaperOutcome::Cancelled), None);
+        assert_eq!(export_notice(&WallpaperOutcome::Failed { message: "m".into(), detail: None }), None);
     }
 
     #[test]

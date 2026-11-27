@@ -90,6 +90,8 @@ type Topic =
   | "focusLink"
   | "tools"
   | "toolProgress"
+  /** The Wallpaper Engine export changed (progress, finished); the taskbar follows it. */
+  | "workshop"
   /** A batch of links started or was cleared; see `store.batch`. */
   | "batch"
   /** One row of the batch changed (detail: the row). */

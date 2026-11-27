@@ -5,11 +5,19 @@ import {
   WorkshopSession,
   downloadFraction,
   formatChoices,
+  BAR_CAP,
+  barFraction,
+  estimateLine,
+  etaText,
   libraryLine,
+  longRunMessage,
   lookupProblem,
   missingForStart,
   offersVideo,
-  stageText,
+  savedLine,
+  stageFraction,
+  stageLine,
+  tookText,
 } from "../../.test-build/workshop-session.js";
 import { isWorkshopLink } from "../../.test-build/workshop-link.js";
 
@@ -28,11 +36,12 @@ function deps(overrides = {}) {
     deps: {
       download: async (...args) => {
         calls.push(["download", ...args]);
-        return { status: "saved", filename: "Ocean (123).zip", path: "C:\\out\\Ocean (123).zip" };
+        return { status: "saved", filename: "Ocean (123).zip", path: "C:\\out\\Ocean (123).zip", elapsedMs: 1000, stages: [] };
       },
       cancel: async () => void calls.push(["cancel"]),
       findInLibrary: async () => library(),
       videoInfo: async () => null,
+      estimate: async () => ({ seconds: null, approximate: true, bytes: null }),
       describeError: (error) => String(error?.message ?? error),
       ...overrides,
     },
@@ -71,15 +80,6 @@ test("the export says what is missing before it can start", () => {
   assert.equal(missingForStart(library({ found: true, state: "downloading", bytes: 10 })), "Steam is still downloading it.");
 });
 
-test("stage text names the step, the format and its percentage", () => {
-  assert.equal(stageText("starting", null), "Starting…");
-  assert.equal(stageText("converting", null, "mp4"), "Converting the video with FFmpeg…");
-  assert.equal(stageText("copying", 38.2), "Copying the video… 38%");
-  assert.equal(stageText("saving", 100), "Saving the ZIP… 100%");
-  assert.equal(stageText("saving", 42.6, "mp4"), "Saving the MP4… 43%");
-  assert.equal(stageText("saving", 5, "gif"), "Saving the GIF… 5%");
-});
-
 test("an export sends the link and the chosen format, from the Steam library only", async () => {
   const { calls, deps: d } = deps({ findInLibrary: async () => library({ found: true, video: true, state: "installed" }) });
   const session = new WorkshopSession(URL_A, item, d);
@@ -88,7 +88,7 @@ test("an export sends the link and the chosen format, from the Steam library onl
   session.setFormat("mp4");
   await session.start();
   assert.deepEqual(calls[0], ["download", URL_A, "mp4", {}]);
-  assert.deepEqual(session.state, { phase: "saved", filename: "Ocean (123).zip", path: "C:\\out\\Ocean (123).zip" });
+  assert.deepEqual(session.state, { phase: "saved", filename: "Ocean (123).zip", path: "C:\\out\\Ocean (123).zip", elapsedMs: 1000, stages: [] });
   assert.equal("source" in session, false, "there is no other source");
 });
 
@@ -138,21 +138,153 @@ test("an unsupported video export offers the ZIP fallback and clears it on a for
   assert.equal(session.format, "zip");
 });
 
+/** A progress event as the backend sends it. */
+function event(overrides = {}) {
+  return { url: URL_A, stage: "checking", done: null, total: null, unit: null, etaMs: null, approximate: false, elapsedMs: 0, ...overrides };
+}
+
 test("progress applies only to its own running export", async () => {
   let finish;
   const { deps: d } = deps({ download: () => new Promise((resolve) => (finish = resolve)) });
   const session = new WorkshopSession(URL_A, item, d);
-  session.progress({ url: URL_A, stage: "converting", percent: null });
+  session.progress(event({ stage: "converting" }));
   assert.equal(session.state.phase, "ready", "nothing is running yet");
   const done = session.start();
   assert.ok(session.running);
-  session.progress({ url: "https://steamcommunity.com/sharedfiles/filedetails/?id=999", stage: "saving", percent: 50 });
-  assert.equal(session.state.stage, "starting");
-  session.progress({ url: URL_A, stage: "saving", percent: 50 });
-  assert.deepEqual(session.state, { phase: "running", stage: "saving", percent: 50 });
+  assert.equal(session.state.progress.stage, "checking", "an export starts by checking");
+  session.progress(event({ url: "https://steamcommunity.com/sharedfiles/filedetails/?id=999", stage: "zipping", done: 5, total: 10, unit: "bytes" }));
+  assert.equal(session.state.progress.stage, "checking");
+  session.progress(event({ stage: "zipping", done: 5, total: 10, unit: "bytes", etaMs: 4000, approximate: true }));
+  assert.equal(session.state.progress.stage, "zipping");
+  assert.equal(session.state.fraction, 0.5);
   finish({ status: "failed", message: "Steam went away.", detail: "tail" });
   await done;
   assert.deepEqual(session.state, { phase: "failed", message: "Steam went away.", detail: "tail" });
+  assert.equal(session.lastFraction, 0.5, "the bar turns red where it stopped");
+});
+
+test("a saved export keeps its total time and the time in each stage", async () => {
+  const stages = [{ name: "checking", ms: 400 }, { name: "copying", ms: 9600 }, { name: "finishing", ms: 2300 }];
+  const { deps: d } = deps({ download: async () => ({ status: "saved", filename: "A (1).mp4", path: "C:\\out\\A (1).mp4", elapsedMs: 12300, stages }) });
+  const session = new WorkshopSession(URL_A, item, d);
+  await session.start();
+  assert.deepEqual(session.state, { phase: "saved", filename: "A (1).mp4", path: "C:\\out\\A (1).mp4", elapsedMs: 12300, stages });
+});
+
+test("the taskbar is told what a running export counts", async () => {
+  let finish;
+  const { deps: d } = deps({ download: () => new Promise((resolve) => (finish = resolve)) });
+  const session = new WorkshopSession(URL_A, item, d);
+  assert.deepEqual(session.activity, { running: false, fraction: null });
+  const done = session.start();
+  assert.deepEqual(session.activity, { running: true, fraction: null }, "checking counts nothing");
+  session.progress(event({ stage: "copying", done: 25, total: 100, unit: "bytes" }));
+  assert.deepEqual(session.activity, { running: true, fraction: 0.25 });
+  finish({ status: "cancelled" });
+  await done;
+  assert.deepEqual(session.activity, { running: false, fraction: null });
+});
+
+test("the bar never goes backwards, never passes its cap and holds while finishing", () => {
+  const at = (previous, overrides) => barFraction(previous, event(overrides));
+  assert.equal(at(null, { stage: "checking" }), null);
+  assert.equal(at(null, { stage: "opening" }), null);
+  assert.equal(at(null, { stage: "loading" }), null);
+  assert.equal(at(null, { stage: "recording", done: 0, total: 60, unit: "seconds" }), 0);
+  assert.equal(at(0, { stage: "recording", done: 30, total: 60, unit: "seconds" }), 0.5);
+  assert.equal(at(0.5, { stage: "recording", done: 10, total: 60, unit: "seconds" }), 0.5, "a lower reading is ignored");
+  assert.equal(at(0.5, { stage: "recording", done: 60, total: 60, unit: "seconds" }), BAR_CAP, "100% is for the saved file");
+  assert.equal(at(0.5, { stage: "copying", done: 200, total: 100, unit: "bytes" }), BAR_CAP);
+  assert.equal(at(0.9, { stage: "finishing" }), 0.9, "finishing holds the last value");
+  assert.equal(at(null, { stage: "finishing" }), null, "and the sheen if there was none");
+  assert.equal(at(0.4, { stage: "converting", done: null, total: null }), null, "a stage with nothing to count shows the sheen");
+  assert.equal(at(0, { stage: "converting", done: 5, total: 0, unit: "seconds" }), null, "no length, no fraction");
+  assert.equal(stageFraction(event({ stage: "finishing", done: 1, total: 1 })), null);
+  assert.equal(stageFraction(event({ stage: "copying", done: -5, total: 10 })), 0);
+});
+
+test("the status line says what is happening, in the Queue's style", () => {
+  const line = (overrides) => stageLine(event(overrides));
+  assert.equal(line({ stage: "checking" }), "Checking the wallpaper…");
+  assert.equal(line({ stage: "opening" }), "Opening in Wallpaper Engine…");
+  assert.equal(line({ stage: "loading" }), "Loading the scene…");
+  assert.equal(line({ stage: "finishing" }), "Finishing the file…");
+  assert.equal(
+    line({ stage: "recording", done: 42, total: 60, unit: "seconds", etaMs: 18_000, bytes: 163_577_856 }),
+    "Recording 0:42 of 1:00  ·  156 MB  ·  18s left",
+  );
+  assert.equal(line({ stage: "recording", done: 0, total: 60, unit: "seconds", etaMs: 60_000 }), "Recording 0:00 of 1:00  ·  1:00 left", "an exact time left has no 'about'");
+  assert.equal(line({ stage: "recording" }), "Recording…");
+  assert.equal(
+    line({ stage: "copying", done: 2_791_728_742, total: 5_856_547_590, unit: "bytes", etaMs: 4_000, approximate: true }),
+    "Copying 2.6 of 5.5 GB  ·  about 4s left",
+  );
+  assert.equal(line({ stage: "copying", done: 0, total: 5_856_547_590, unit: "bytes" }), "Copying 0.0 of 5.5 GB");
+  assert.equal(line({ stage: "converting", done: 111.9, total: 294.35, unit: "seconds", etaMs: 190_000, approximate: true }), "Converting 38%  ·  about 3:10 left");
+  assert.equal(line({ stage: "converting", done: 1, total: 294.35, unit: "seconds" }), "Converting 0%", "no time left until it can be backed");
+  assert.equal(line({ stage: "converting" }), "Converting…");
+  assert.equal(line({ stage: "zipping", done: 16, total: 25, unit: "bytes", etaMs: 12_000, approximate: true }), "Saving the ZIP 64%  ·  about 12s left");
+  assert.equal(line({ stage: "zipping" }), "Saving the ZIP…");
+  // Parts are joined by two spaces, a middle dot and two spaces, as in Queue rows.
+  assert.ok(line({ stage: "converting", done: 50, total: 100, etaMs: 5000, approximate: true }).includes("  ·  "));
+});
+
+test("the time left is 'about' only when it rests on a measured rate", () => {
+  assert.equal(etaText(null, true), "");
+  assert.equal(etaText(4_000, true), "about 4s left");
+  assert.equal(etaText(4_000, false), "4s left");
+  assert.equal(etaText(190_000, true), "about 3:10 left");
+  assert.equal(etaText(0, false), "1s left", "never '0s left'");
+  assert.equal(etaText(-5, false), "");
+  assert.equal(etaText(Number.NaN, false), "");
+});
+
+test("a finished export says where it went and how long it took", () => {
+  assert.equal(savedLine("C:\\Users\\Sam\\Videos\\Ocean (1).mp4", 63_000), "Saved to Sam\\Videos  ·  took 1:03");
+  assert.equal(savedLine("D:\\Wallpapers\\Ocean (1).zip", 400), "Saved to D:\\Wallpapers  ·  took 0:01", "never less than a second");
+  assert.equal(savedLine("C:\\Videos\\x.mp4", 3_723_000), "Saved to C:\\Videos  ·  took 1:02:03");
+  assert.equal(tookText(62_500), "took 1:03");
+});
+
+test("the estimate before starting is a time and a size, or an honest 'after a few seconds'", () => {
+  assert.equal(estimateLine(null), "");
+  assert.equal(estimateLine({ seconds: null, approximate: true, bytes: null }), "Estimate after a few seconds");
+  assert.equal(estimateLine({ seconds: 64, approximate: false, bytes: 241_172_480 }), "About 1:04  ·  about 230 MB");
+  assert.equal(estimateLine({ seconds: 0.2, approximate: true, bytes: null }), "About 0:01");
+  assert.equal(estimateLine({ seconds: 29.3, approximate: true, bytes: 5_856_547_590 }), "About 0:29  ·  about 5.45 GB");
+});
+
+test("only a long estimate asks for confirmation first", () => {
+  assert.equal(longRunMessage({ seconds: null, approximate: true, bytes: null }), null);
+  assert.equal(longRunMessage({ seconds: 600, approximate: true, bytes: null }), null, "ten minutes exactly is not over ten minutes");
+  assert.match(longRunMessage({ seconds: 4_680, approximate: true, bytes: null }), /about 1:18:00/);
+});
+
+test("the estimate follows the choice, and a stale answer is dropped", async () => {
+  const asked = [];
+  const resolvers = [];
+  const { deps: d } = deps({
+    findInLibrary: async () => library({ found: true, video: true, state: "installed" }),
+    estimate: (url, format, options) => new Promise((resolve) => {
+      asked.push([format, options]);
+      resolvers.push(resolve);
+    }),
+  });
+  const session = new WorkshopSession(URL_A, item, d);
+  await session.checkLibrary();
+  assert.deepEqual(asked, [["mp4", {}]], "asked once the library has the video");
+  session.setFormat("gif");
+  assert.deepEqual(asked[1], ["gif", { lengthSeconds: 30 }]);
+  // The answer for MP4 arrives after the user chose GIF: it is not shown.
+  resolvers[0]({ seconds: 1, approximate: true, bytes: null });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(session.estimate, null);
+  resolvers[1]({ seconds: 99, approximate: true, bytes: null });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(session.estimate, { seconds: 99, approximate: true, bytes: null });
+  session.setGifSeconds(60);
+  assert.equal(session.estimate, null, "a new choice clears the old answer");
+  assert.deepEqual(asked[2], ["gif", { lengthSeconds: 60 }]);
 });
 
 test("cancel asks the backend only while running; errors become failures", async () => {

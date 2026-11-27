@@ -106,6 +106,81 @@ function fakeBar() {
   };
 }
 
+// These run first on purpose: setProgress keeps one module-wide batch of snapped bars, and a
+// test that never runs its frames would leave later ones looking snapped for good.
+// ----- the Wallpaper Engine export tracker's bar -----
+
+/** Draws one tracker state the way views/workshop.ts does, and returns what the bar looks like. */
+async function drawTracker(bar, previous, next) {
+  const { setProgress } = await import("../../.test-build/ui/layout.js");
+  const { progressMotion } = await import("../../.test-build/ui/progress-motion.js");
+  setProgress(bar, next.progressKnown ? next.progress : null, progressMotion(previous, next, false));
+  return { snapped: bar.classes.has("bar-snap"), sheen: bar.classes.has("indeterminate"), shown: Number(bar.props.get("--p") ?? 0) };
+}
+
+test("a recording's bar sheens while it opens and loads, snaps into the count, then glides forward only", async () => {
+  const frames = [];
+  globalThis.requestAnimationFrame = (run) => frames.push(run);
+  const flush = () => { while (frames.length) frames.shift()(); };
+  const bar = fakeBar();
+  const state = (status, progress, known = true) => ({ status, progress, progressKnown: known });
+  let previous;
+  const run = [
+    state("checking", 0, false),
+    state("opening", 0, false),
+    state("loading", 0, false),
+    state("recording", 0, true),
+    state("recording", 0.2, true),
+    state("recording", 0.5, true),
+    state("recording", 0.98, true),
+    state("finishing", 0.98, true),
+    state("saved", 1, true),
+  ];
+  const seen = [];
+  for (const next of run) {
+    const drawn = await drawTracker(bar, previous, next);
+    seen.push({ ...drawn, status: next.status });
+    previous = next;
+    flush();
+  }
+  const by = (status, index = 0) => seen.filter((s) => s.status === status)[index];
+  assert.ok(by("checking").sheen && by("opening").sheen && by("loading").sheen, "no number, no fill");
+  assert.ok(by("recording", 0).snapped && !by("recording", 0).sheen, "leaving the sheen snaps");
+  assert.ok(!by("recording", 1).snapped && !by("recording", 2).snapped && !by("recording", 3).snapped, "a continuing count glides");
+  assert.ok(by("finishing").snapped, "a stage change snaps, so nothing lags behind the real state");
+  assert.equal(by("finishing").shown, 0.98, "finishing holds the last value");
+  assert.ok(by("saved").snapped && by("saved").shown === 1, "100% only when saved");
+  const shown = seen.filter((s) => !s.sheen).map((s) => s.shown);
+  assert.deepEqual(shown, [...shown].sort((a, b) => a - b), "the bar never slides back");
+});
+
+test("a lower value inside one stage snaps; the bar is never drawn sliding back", async () => {
+  const frames = [];
+  globalThis.requestAnimationFrame = (run) => frames.push(run);
+  const bar = fakeBar();
+  const copying = (progress) => ({ status: "copying", progress, progressKnown: true });
+  await drawTracker(bar, undefined, copying(0.6));
+  while (frames.length) frames.shift()();
+  const back = await drawTracker(bar, copying(0.6), copying(0.3));
+  assert.ok(back.snapped, "an impossible regression is shown at once, not as a slide");
+  while (frames.length) frames.shift()();
+});
+
+test("a hidden window snaps the tracker's bar", async () => {
+  const frames = [];
+  globalThis.requestAnimationFrame = (run) => frames.push(run);
+  const { setProgress } = await import("../../.test-build/ui/layout.js");
+  const { progressMotion } = await import("../../.test-build/ui/progress-motion.js");
+  const bar = fakeBar();
+  const a = { status: "converting", progress: 0.2, progressKnown: true };
+  const b = { status: "converting", progress: 0.3, progressKnown: true };
+  setProgress(bar, 0.2, "snap");
+  while (frames.length) frames.shift()();
+  setProgress(bar, 0.3, progressMotion(a, b, true));
+  assert.ok(bar.classes.has("bar-snap"));
+  while (frames.length) frames.shift()();
+});
+
 test("a snap turns the bar's transition off for exactly the frame that shows the new value", async () => {
   const frames = [];
   globalThis.requestAnimationFrame = (run) => frames.push(run);

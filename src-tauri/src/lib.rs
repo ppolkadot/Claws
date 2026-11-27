@@ -23,6 +23,7 @@ mod lifecycle_tests;
 mod links;
 mod probe;
 mod queue_writer;
+mod scene_pkg;
 mod settings;
 mod signature;
 mod spotify;
@@ -194,6 +195,7 @@ pub fn run() {
             workshop::workshop_item_details,
             workshop::find_wallpaper_in_library,
             workshop::wallpaper_video_info,
+            workshop::estimate_wallpaper_export,
             workshop::download_wallpaper,
             workshop::cancel_wallpaper_download,
         ])

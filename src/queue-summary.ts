@@ -85,6 +85,26 @@ export function taskbarState(jobs: Iterable<SummaryJob>): TaskbarState {
   return { status: "normal", progress: Math.round((received / expected) * 100) };
 }
 
+/** A running Wallpaper Engine export, as the taskbar sees it. */
+export interface ExportActivity {
+  running: boolean;
+  /** How far along, 0 to 1; null when the stage counts nothing (the sheen). */
+  fraction: number | null;
+}
+
+/**
+ * The taskbar button with a running export added. With nothing else running, the export's own
+ * fraction shows (or the indeterminate bar while it counts nothing). Beside running downloads
+ * the two are averaged when both are counted, and the bar is indeterminate when either is not.
+ */
+export function withExport(downloads: TaskbarState, activity: ExportActivity | null): TaskbarState {
+  if (!activity?.running) return downloads;
+  const own: TaskbarState = activity.fraction === null ? { status: "indeterminate" } : { status: "normal", progress: Math.round(Math.min(1, Math.max(0, activity.fraction)) * 100) };
+  if (downloads.status === "none") return own;
+  if (downloads.status === "indeterminate" || own.status === "indeterminate") return { status: "indeterminate" };
+  return { status: "normal", progress: Math.round((downloads.progress + own.progress) / 2) };
+}
+
 export function sameTaskbarState(a: TaskbarState, b: TaskbarState): boolean {
   return a.status === b.status && (a.status !== "normal" || (b.status === "normal" && a.progress === b.progress));
 }

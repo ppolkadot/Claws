@@ -126,6 +126,11 @@ impl RunPlan<'_> {
     }
 }
 
+/// The free space a running export must not drop below: the margin every job keeps.
+pub fn reserve() -> u64 {
+    MIN_MARGIN
+}
+
 pub fn margin(additional: u64) -> u64 {
     MIN_MARGIN.max(additional / 10)
 }

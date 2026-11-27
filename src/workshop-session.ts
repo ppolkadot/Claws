@@ -1,3 +1,5 @@
+import { clock, folderName, formatBytes, formatBytesOf, formatDuration, formatEta } from "./format.js";
+
 /**
  * One Wallpaper Engine item on the Download screen: the export while it runs, and how it
  * ended. The project always comes from the user's own Steam library. Kept in the store, so
@@ -26,16 +28,33 @@ export type WorkshopLookup =
 /** ZIP saves the whole project; MP4 and GIF are converted from a video wallpaper. */
 export type ExportFormat = "zip" | "mp4" | "gif";
 
-export type WorkshopStage = "starting" | "copying" | "converting" | "saving";
+export type WorkshopStage = "checking" | "opening" | "loading" | "recording" | "finishing" | "copying" | "converting" | "zipping";
 
-export interface WorkshopProgress {
+/** The `workshop-progress` event. A number is there only when the backend can stand behind it. */
+export interface ExportProgress {
   url: string;
   stage: WorkshopStage;
-  percent: number | null;
+  done: number | null;
+  total: number | null;
+  unit: "seconds" | "bytes" | null;
+  /** Milliseconds left; null when there is no estimate. */
+  etaMs: number | null;
+  /** The time left rests on a measured rate, so it is shown as "about". */
+  approximate: boolean;
+  elapsedMs: number;
+  /** Recording: the size of the video so far. */
+  bytes?: number | null;
+}
+
+export type WorkshopProgress = ExportProgress;
+
+export interface StageTime {
+  name: string;
+  ms: number;
 }
 
 export type WallpaperOutcome =
-  | { status: "saved"; filename: string; path: string }
+  | { status: "saved"; filename: string; path: string; elapsedMs: number; stages: StageTime[] }
   | { status: "failed"; message: string; detail: string | null }
   | { status: "unsupported"; message: string }
   | { status: "cancelled" };
@@ -81,8 +100,8 @@ export const GIF_SECONDS = [30, 60] as const;
 
 export type WorkshopState =
   | { phase: "ready" }
-  | { phase: "running"; stage: WorkshopStage; percent: number | null }
-  | { phase: "saved"; filename: string; path: string }
+  | { phase: "running"; progress: ExportProgress; /** What the bar shows: null is the sheen. */ fraction: number | null }
+  | { phase: "saved"; filename: string; path: string; elapsedMs: number; stages: StageTime[] }
   | { phase: "failed"; message: string; detail: string | null }
   /** The chosen video format does not fit this project; saving the ZIP still works. */
   | { phase: "unsupported"; message: string }
@@ -93,6 +112,7 @@ export interface WorkshopDeps {
   cancel(): Promise<void>;
   findInLibrary(url: string, timeUpdated: number | null): Promise<LibraryStatus>;
   videoInfo(url: string): Promise<VideoInfo | null>;
+  estimate(url: string, format: ExportFormat, options: ExportOptions): Promise<ExportEstimate>;
   describeError(error: unknown): string;
 }
 
@@ -110,19 +130,101 @@ export function lookupProblem(found: WorkshopLookup): string | null {
   }
 }
 
-/** The status line while an export runs. */
-export function stageText(stage: WorkshopStage, percent: number | null, format: ExportFormat = "zip"): string {
-  const pct = percent === null ? "" : ` ${Math.round(percent)}%`;
-  switch (stage) {
-    case "starting":
-      return "Starting…";
+/** What the export is expected to take, shown under the format choice before it starts. */
+export interface ExportEstimate {
+  seconds: number | null;
+  approximate: boolean;
+  bytes: number | null;
+}
+
+/** While running, the bar never shows more than this: 100% is for the saved file. */
+export const BAR_CAP = 0.99;
+
+/** done over total, within 0 to 1; null when the stage counts nothing or is only finishing. */
+export function stageFraction(p: ExportProgress): number | null {
+  if (p.stage === "finishing") return null;
+  if (p.done === null || p.total === null || !(p.total > 0) || !Number.isFinite(p.done)) return null;
+  return Math.min(1, Math.max(0, p.done / p.total));
+}
+
+/**
+ * What the bar shows next. A counted stage shows its fraction, never below what was already
+ * shown and never past `BAR_CAP`. Finishing holds the last value rather than going back to
+ * the sheen; a stage with nothing to count shows the sheen.
+ */
+export function barFraction(previous: number | null, p: ExportProgress): number | null {
+  if (p.stage === "finishing") return previous;
+  const fraction = stageFraction(p);
+  if (fraction === null) return null;
+  return Math.min(BAR_CAP, Math.max(previous ?? 0, fraction));
+}
+
+/** "about 3:10 left", "18s left", or "" when there is no estimate. */
+export function etaText(etaMs: number | null, approximate: boolean): string {
+  if (etaMs === null || !Number.isFinite(etaMs) || etaMs < 0) return "";
+  return `${approximate ? "about " : ""}${formatEta(etaMs / 1000)}`;
+}
+
+const SEPARATOR = "  ·  ";
+
+/** The status line while an export runs: the stage, the count, and the time left. */
+export function stageLine(p: ExportProgress): string {
+  const left = etaText(p.etaMs, p.approximate);
+  const counted = stageFraction(p);
+  const percent = counted === null ? null : `${Math.round(counted * 100)}%`;
+  const join = (...parts: (string | null | undefined)[]) => parts.filter(Boolean).join(SEPARATOR);
+  switch (p.stage) {
+    case "checking":
+      return "Checking the wallpaper…";
+    case "opening":
+      return "Opening in Wallpaper Engine…";
+    case "loading":
+      return "Loading the scene…";
+    case "finishing":
+      return "Finishing the file…";
+    case "recording": {
+      const counting = p.done !== null && p.total !== null ? `Recording ${clock(p.done)} of ${clock(p.total)}` : "Recording…";
+      return join(counting, p.bytes ? formatBytes(p.bytes) : null, left);
+    }
     case "copying":
-      return `Copying the video…${pct}`;
+      return join(p.done !== null && p.total !== null ? `Copying ${formatBytesOf(p.done, p.total)}` : "Copying…", left);
     case "converting":
-      return "Converting the video with FFmpeg…";
-    case "saving":
-      return format === "zip" ? `Saving the ZIP…${pct}` : `Saving the ${format.toUpperCase()}…${pct}`;
+      return join(percent ? `Converting ${percent}` : "Converting…", left);
+    case "zipping":
+      return join(percent ? `Saving the ZIP ${percent}` : "Saving the ZIP…", left);
   }
+}
+
+/** "took 1:03": the whole export, never less than a second. */
+export function tookText(elapsedMs: number): string {
+  return `took ${formatDuration(Math.max(1, Math.round(elapsedMs / 1000)))}`;
+}
+
+/** The folder part of a saved file's path. */
+function folderOf(path: string): string {
+  return path.replace(/[\\/][^\\/]*$/, "");
+}
+
+/** "Saved to Videos  ·  took 1:03". */
+export function savedLine(path: string, elapsedMs: number): string {
+  return `Saved to ${folderName(folderOf(path))}${SEPARATOR}${tookText(elapsedMs)}`;
+}
+
+/** The estimate under the format choice: the time, and the size when it is known. */
+export function estimateLine(estimate: ExportEstimate | null): string {
+  if (!estimate) return "";
+  if (estimate.seconds === null) return "Estimate after a few seconds";
+  const time = `About ${clock(Math.max(1, estimate.seconds))}`;
+  return [time, estimate.bytes ? `about ${formatBytes(estimate.bytes)}` : null].filter(Boolean).join(SEPARATOR);
+}
+
+/** Whether an export over this long is the kind that gets a confirmation first (GIF). */
+export const CONFIRM_AFTER_SECONDS = 10 * 60;
+
+/** The sentence for the confirmation sheet when an estimate runs long. */
+export function longRunMessage(estimate: ExportEstimate): string | null {
+  if (estimate.seconds === null || estimate.seconds <= CONFIRM_AFTER_SECONDS) return null;
+  return `This is expected to take about ${clock(estimate.seconds)}. You can keep using Claws while it runs, and cancel at any time.`;
 }
 
 /** Video projects can be saved as MP4 or GIF; every other project only as its ZIP. */
@@ -186,6 +288,11 @@ export class WorkshopSession {
   /** What the video is, read once the library has it. */
   video: VideoInfo | null = null;
   state: WorkshopState = { phase: "ready" };
+  /** What the bar last showed, kept after a failure or a cancel (the bar turns red there). */
+  lastFraction: number | null = null;
+  /** What the chosen format is expected to take; null until asked. */
+  estimate: ExportEstimate | null = null;
+  private estimateTicket = 0;
   private chosenFormat: ExportFormat | null = null;
   /** GIF length in seconds. */
   gifSeconds: number = GIF_SECONDS[0];
@@ -238,13 +345,39 @@ export class WorkshopSession {
       }
     }
     this.changed();
+    if (this.estimate === null) void this.refreshEstimate();
+  }
+
+  /** The options that go with the chosen format. */
+  get options(): ExportOptions {
+    return this.format === "gif" ? { lengthSeconds: this.gifSeconds } : {};
+  }
+
+  /**
+   * Asks the backend what the chosen format is expected to take. An answer for a choice the
+   * user has since changed is dropped.
+   */
+  async refreshEstimate(): Promise<void> {
+    if (!this.library?.found || this.running) return;
+    const ticket = ++this.estimateTicket;
+    let estimate: ExportEstimate | null;
+    try {
+      estimate = await this.deps.estimate(this.url, this.format, this.options);
+    } catch {
+      estimate = null;
+    }
+    if (ticket !== this.estimateTicket) return;
+    this.estimate = estimate;
+    this.changed();
   }
 
   setGifSeconds(seconds: number) {
     if (this.running || this.gifSeconds === seconds || !GIF_SECONDS.some((option) => option === seconds)) return;
     this.gifSeconds = seconds;
+    this.estimate = null;
     if (this.state.phase !== "ready") this.state = { phase: "ready" };
     this.changed();
+    void this.refreshEstimate();
   }
 
   /** Switches the export format, clearing an old outcome so the panel starts fresh. */
@@ -252,8 +385,10 @@ export class WorkshopSession {
     if (this.running || (format !== "zip" && !this.videoAvailable)) return;
     if (this.chosenFormat === format) return;
     this.chosenFormat = format;
+    this.estimate = null;
     if (this.state.phase !== "ready") this.state = { phase: "ready" };
     this.changed();
+    void this.refreshEstimate();
   }
 
   /** After "Subscribe in Steam": checks the library until the project appears. */
@@ -290,17 +425,23 @@ export class WorkshopSession {
   async start(): Promise<void> {
     if (this.running) return;
     this.stopWatching();
-    this.state = { phase: "running", stage: "starting", percent: null };
+    this.estimateTicket += 1;
+    this.lastFraction = null;
+    this.state = {
+      phase: "running",
+      fraction: null,
+      progress: { url: this.url, stage: "checking", done: null, total: null, unit: null, etaMs: null, approximate: false, elapsedMs: 0 },
+    };
     this.changed();
     let outcome: WallpaperOutcome;
     try {
-      outcome = await this.deps.download(this.url, this.format, this.format === "gif" ? { lengthSeconds: this.gifSeconds } : {});
+      outcome = await this.deps.download(this.url, this.format, this.options);
     } catch (error) {
       outcome = { status: "failed", message: this.deps.describeError(error), detail: null };
     }
     this.state =
       outcome.status === "saved"
-        ? { phase: "saved", filename: outcome.filename, path: outcome.path }
+        ? { phase: "saved", filename: outcome.filename, path: outcome.path, elapsedMs: outcome.elapsedMs, stages: outcome.stages }
         : outcome.status === "failed"
           ? { phase: "failed", message: outcome.message, detail: outcome.detail }
           : outcome.status === "unsupported"
@@ -316,8 +457,15 @@ export class WorkshopSession {
   /** A `workshop-progress` event from the backend. */
   progress(event: WorkshopProgress) {
     if (event.url !== this.url || this.state.phase !== "running") return;
-    this.state = { phase: "running", stage: event.stage, percent: event.percent };
+    const fraction = barFraction(this.state.fraction, event);
+    this.lastFraction = fraction;
+    this.state = { phase: "running", progress: event, fraction };
     this.changed();
+  }
+
+  /** What the taskbar button shows for this export: nothing, the sheen (null) or a fraction. */
+  get activity(): { running: boolean; fraction: number | null } {
+    return this.state.phase === "running" ? { running: true, fraction: this.state.fraction } : { running: false, fraction: null };
   }
 
   dispose() {
