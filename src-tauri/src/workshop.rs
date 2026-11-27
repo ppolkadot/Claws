@@ -348,11 +348,42 @@ pub enum WallpaperOutcome {
 /// Marks the one export as running until dropped.
 struct RunGuard<'a>(&'a AppState);
 
+const STALE_WINDOW: &str = "The previous recording window is still open. Close Wallpaper Engine's pop-out window and try again.";
+
 impl<'a> RunGuard<'a> {
     fn begin(state: &'a AppState) -> Result<Self> {
+        Self::begin_with(state, |engine, title| workshop_record::close_window(engine, title, Duration::ZERO))
+    }
+
+    fn begin_with(state: &'a AppState, close: impl FnOnce(&Path, &str) -> bool) -> Result<Self> {
+        let stale = {
+            let run = state.workshop.lock().unwrap();
+            if run.active {
+                return Err(AppError::msg(RUNNING));
+            }
+            if state.shutting_down.load(Ordering::SeqCst) {
+                return Err(AppError::msg("Claws is closing."));
+            }
+            run.window.clone()
+        };
+        if let Some((engine, title)) = stale {
+            if !close(&engine, &title) {
+                return Err(AppError::msg(STALE_WINDOW));
+            }
+            let mut run = state.workshop.lock().unwrap();
+            if run.active {
+                return Err(AppError::msg(RUNNING));
+            }
+            if run.window.as_ref().is_some_and(|entry| entry.0 == engine && entry.1 == title) {
+                run.window = None;
+            }
+        }
         let mut run = state.workshop.lock().unwrap();
-        if run.active || run.window.is_some() {
+        if run.active {
             return Err(AppError::msg(RUNNING));
+        }
+        if run.window.is_some() {
+            return Err(AppError::msg(STALE_WINDOW));
         }
         if let Some(partial) = &run.partial {
             if !remove_owned_partial(partial) {
@@ -1700,6 +1731,32 @@ mod tests {
         assert!(elapsed < Duration::from_secs(8), "timed out too late: {elapsed:?}");
         assert!(!partial.exists());
         assert!(state.workshop.lock().unwrap().partial.is_none());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stale_recording_window_is_rechecked_and_cleared_or_rejected() {
+        use tauri::Manager;
+        let dir = crate::download_tests::temp_dir("export-stale-window");
+        let app = tauri::test::mock_builder().build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
+        let writer = crate::downloader::start_queue_writer(app.handle());
+        app.manage(AppState::new(dir.clone(), Default::default(), Vec::new(), Vec::new(), writer, false));
+        let state = app.state::<AppState>();
+        let stale = (PathBuf::from(r"C:\no such folder\wallpaper64.exe"), "Claws stale window".to_string());
+        state.workshop.lock().unwrap().window = Some(stale.clone());
+
+        let Err(err) = RunGuard::begin_with(&state, |_, _| false) else { panic!("still-open window must reject") };
+        assert!(err.to_string().contains("still open"), "{err}");
+        {
+            let run = state.workshop.lock().unwrap();
+            assert!(!run.active);
+            assert_eq!(run.window.as_ref(), Some(&stale));
+        }
+
+        let guard = RunGuard::begin(&state).expect("gone stale window is cleared and begin succeeds");
+        assert!(state.workshop.lock().unwrap().active);
+        assert!(state.workshop.lock().unwrap().window.is_none());
+        drop(guard);
         let _ = fs::remove_dir_all(dir);
     }
 
