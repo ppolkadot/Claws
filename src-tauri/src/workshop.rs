@@ -417,7 +417,7 @@ pub fn wait_for_export_cleanup(state: &AppState) {
             return;
         }
         if Instant::now() >= deadline {
-            eprintln!("Claws couldn't remove an unfinished wallpaper file because it is still in use.");
+            eprintln!("Claws couldn't remove an unfinished wallpaper file.");
             return;
         }
         std::thread::sleep(Duration::from_millis(50));
