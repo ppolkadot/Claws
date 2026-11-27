@@ -1456,7 +1456,7 @@ dependencies = [
 
 [[package]]
 name = "glib"
-version = "0.18.5"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5"
 dependencies = [
@@ -1479,7 +1479,7 @@ dependencies = [
 
 [[package]]
 name = "glib-macros"
-version = "0.18.5"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb0228f477c0900c880fd78c8759b95c7636dbd7842707f49e132378aa2acdc"
 dependencies = [
