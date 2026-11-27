@@ -18,9 +18,11 @@ use crate::{
     disk_budget,
     download_files::{is_link, move_no_replace},
     downloader::kill_tree,
+    encoder::{self, Encoder},
     error::{AppError, Result},
+    export_progress,
     state::AppState,
-    steam::{library_folders, library_project, steam_root},
+    steam::{library_folders, library_project, locate_item, steam_root, ItemState},
     workshop_media::{self, MediaError, MediaFormat},
     AppHandle,
 };
@@ -247,22 +249,35 @@ pub fn open_workshop_item(app: AppHandle, url: String) -> Result<()> {
 pub struct LibraryStatus {
     /// Steam is installed for this Windows user.
     pub steam: bool,
+    /// Wallpaper Engine is installed in one of Steam's libraries.
+    pub wallpaper_engine: bool,
     /// The item's project is in a Steam library.
     pub found: bool,
     /// True only when the installed project declares a supported video file.
     pub video: bool,
+    /// What Steam says about it: installed, downloading (with the bytes on disk) or with an
+    /// update pending. Flattened: `state`, and `bytes` while downloading.
+    #[serde(flatten)]
+    pub item: ItemState,
 }
 
+/// `time_updated` is the update time Valve's public details give for the item; a library copy
+/// older than that has an update waiting in Steam.
 #[tauri::command]
-pub async fn find_wallpaper_in_library(url: String) -> Result<LibraryStatus> {
+pub async fn find_wallpaper_in_library(url: String, time_updated: Option<i64>) -> Result<LibraryStatus> {
     let id = item_id(&url)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(root) = steam_root() else { return LibraryStatus { steam: false, found: false, video: false } };
-        let project = library_project(&library_folders(&root), id);
+        let Some(root) = steam_root() else {
+            return LibraryStatus { steam: false, wallpaper_engine: false, found: false, video: false, item: ItemState::NotInstalled };
+        };
+        let libraries = library_folders(&root);
+        let located = locate_item(&libraries, id, time_updated);
         LibraryStatus {
             steam: true,
-            found: project.is_some(),
-            video: project.as_deref().is_some_and(|path| crate::workshop_media::video_file(path).is_ok()),
+            wallpaper_engine: crate::steam::wallpaper_engine_exe(&libraries, &root).is_some(),
+            found: located.project.is_some(),
+            video: located.project.as_deref().is_some_and(|path| workshop_media::video_file(path).is_ok()),
+            item: located.state,
         }
     })
     .await
@@ -292,10 +307,20 @@ impl ExportFormat {
     }
 }
 
+/// What a video export may be asked for beyond its format. Every field is optional and bounded
+/// where it is used.
+#[derive(Deserialize, Default, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ExportOptions {
+    /// GIF: how many seconds from the start (default 30, at most 60).
+    pub length_seconds: Option<u32>,
+}
+
 #[derive(Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum Stage {
     Starting,
+    Copying,
     Converting,
     Saving,
 }
@@ -369,7 +394,14 @@ pub fn stop_for_shutdown(state: &AppState) -> Option<u32> {
 }
 
 #[tauri::command]
-pub async fn download_wallpaper(app: AppHandle, state: State<'_, AppState>, url: String, format: ExportFormat) -> Result<WallpaperOutcome> {
+pub async fn download_wallpaper(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    url: String,
+    format: ExportFormat,
+    options: Option<ExportOptions>,
+) -> Result<WallpaperOutcome> {
+    let options = options.unwrap_or_default();
     let id = item_id(&url)?;
     let run = RunGuard::begin(&state)?;
     let progress = |stage: Stage, percent: Option<f64>| {
@@ -403,7 +435,7 @@ pub async fn download_wallpaper(app: AppHandle, state: State<'_, AppState>, url:
 
     let title = item.title.clone();
     let filename = if let Some(media_format) = media {
-        match convert_media(&app, &state, &project, &output, (id, &title), media_format, &progress).await? {
+        match convert_media(&app, &state, &project, &output, (id, &title), media_format, &options, &progress).await? {
             SaveResult::Done(filename) => filename,
             SaveResult::Cancelled => return Ok(WallpaperOutcome::Cancelled),
             SaveResult::Unsupported(message) => return Ok(WallpaperOutcome::Unsupported { message }),
@@ -459,8 +491,65 @@ enum SaveResult {
     Failed { message: String, detail: Option<String> },
 }
 
-/// Converts the project's declared video with the managed FFmpeg and publishes the result.
-/// The project is only read; nothing in it is run. `item` is its Workshop id and title.
+/// What the video is, for the formats row and the estimate.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoInfo {
+    /// The original file can be saved as it is: 8-bit H.264 in an MP4 (labelled "original").
+    /// Otherwise MP4 is converted.
+    pub copyable: bool,
+    pub codec: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub duration_seconds: Option<f64>,
+    pub bytes: u64,
+    pub has_audio: bool,
+}
+
+fn video_info(video: &workshop_media::VideoProject, probe: &workshop_media::Probe) -> VideoInfo {
+    VideoInfo {
+        copyable: probe.can_copy(&video.path),
+        codec: probe.video_codec.clone(),
+        width: probe.width,
+        height: probe.height,
+        fps: probe.fps,
+        duration_seconds: probe.duration,
+        bytes: video.bytes,
+        has_audio: probe.audio_codec.is_some(),
+    }
+}
+
+/// What the library holds for this item's video: whether it can be copied, its size and length.
+/// `None` when the item has no readable video or ffprobe is not available.
+#[tauri::command]
+pub async fn wallpaper_video_info(app: AppHandle, url: String) -> Result<Option<VideoInfo>> {
+    let id = item_id(&url)?;
+    let Some(ffprobe) = crate::tools::find_ffprobe(&app) else { return Ok(None) };
+    let found = tauri::async_runtime::spawn_blocking(move || {
+        let project = steam_root().and_then(|root| library_project(&library_folders(&root), id))?;
+        workshop_media::video_file(&project).ok()
+    })
+    .await
+    .map_err(|_| AppError::msg("Couldn't check the Steam library."))?;
+    let Some(video) = found else { return Ok(None) };
+    Ok(workshop_media::probe(&ffprobe, &video.path).await.map(|probe| video_info(&video, &probe)))
+}
+
+/// The encoder for an MP4 conversion: a hardware one when the source is over 1440p (software
+/// runs 4K at about 0.84 times real time), software otherwise, which is what it always was.
+async fn pick_conversion_encoder(ffmpeg: &Path, height: u32) -> Encoder {
+    if height <= encoder::SOFTWARE_MAX_HEIGHT {
+        return Encoder::X264;
+    }
+    let working = encoder::available(ffmpeg).await;
+    encoder::ORDER.into_iter().find(|candidate| candidate.hardware() && working.contains(candidate)).unwrap_or(Encoder::X264)
+}
+
+/// Saves the project's declared video and publishes the result. An H.264 MP4 is copied as it
+/// is; anything else is converted with the managed FFmpeg. The project is only read; nothing
+/// in it is run. `item` is its Workshop id and title.
+#[allow(clippy::too_many_arguments)]
 async fn convert_media(
     app: &AppHandle,
     state: &AppState,
@@ -468,6 +557,7 @@ async fn convert_media(
     output: &Path,
     item: (u64, &str),
     format: MediaFormat,
+    options: &ExportOptions,
     progress: &(dyn Fn(Stage, Option<f64>) + Sync),
 ) -> Result<SaveResult> {
     const NO_VIDEO: &str = "This wallpaper's project has no video that Claws can convert. Save it as a ZIP instead.";
@@ -485,23 +575,98 @@ async fn convert_media(
     let Some(ffmpeg) = crate::tools::find_ffmpeg(app) else {
         return Ok(SaveResult::Failed { message: NO_FFMPEG.to_string(), detail: None });
     };
-    let needed = video.bytes.saturating_mul(format.space_factor());
+    let probe = match crate::tools::find_ffprobe(app) {
+        Some(ffprobe) => workshop_media::probe(&ffprobe, &video.path).await,
+        None => None,
+    };
+    let partial = output.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
+    let cancelled = || state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst);
+
+    if format == MediaFormat::Mp4 && probe.as_ref().is_some_and(|probe| probe.can_copy(&video.path)) {
+        // The original is already the right kind of file: copy it, byte for byte.
+        if let Some(message) = space_shortfall(state, output, video.bytes, "the download folder's drive") {
+            return Ok(SaveResult::Failed { message, detail: None });
+        }
+        progress(Stage::Copying, Some(0.0));
+        let source = video.path.clone();
+        let target = partial.clone();
+        let written = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let written_by_copy = written.clone();
+        let cancel_app = app.clone();
+        let mut copy = tauri::async_runtime::spawn_blocking(move || {
+            use tauri::Manager;
+            let state = cancel_app.state::<AppState>();
+            let cancelled = || state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst);
+            workshop_media::copy_original(&source, &target, |done, _| written_by_copy.store(done, Ordering::Relaxed), || {}, cancelled)
+        });
+        let mut tick = tokio::time::interval(Duration::from_millis(250));
+        let copied = loop {
+            tokio::select! {
+                finished = &mut copy => break finished?,
+                _ = tick.tick() => {
+                    let percent = (written.load(Ordering::Relaxed) as f64 / video.bytes.max(1) as f64 * 100.0).floor();
+                    progress(Stage::Copying, Some(percent.min(99.0)));
+                }
+            }
+        };
+        return match copied {
+            Ok(workshop_media::CopyOutcome::Cancelled) => Ok(SaveResult::Cancelled),
+            Ok(workshop_media::CopyOutcome::Done) => {
+                let output = output.to_path_buf();
+                let title = title.to_string();
+                let published = tauri::async_runtime::spawn_blocking(move || publish_media(&partial, &output, id, &title, MediaFormat::Mp4)).await?;
+                match published {
+                    Ok(filename) => Ok(SaveResult::Done(filename)),
+                    Err(_) if cancelled() => Ok(SaveResult::Cancelled),
+                    Err(error) => Err(error),
+                }
+            }
+            Err(_) if cancelled() => Ok(SaveResult::Cancelled),
+            Err(error) => Ok(SaveResult::Failed { message: format!("Couldn't copy the wallpaper's video ({error}). Save it as a ZIP instead."), detail: None }),
+        };
+    }
+
+    let mut needed = video.bytes.saturating_mul(format.space_factor());
+    if format == MediaFormat::Gif {
+        needed = needed.min(1024 * 1024 * 1024);
+    }
     if let Some(message) = space_shortfall(state, output, needed, "the download folder's drive") {
         return Ok(SaveResult::Failed { message, detail: None });
     }
 
+    let (width, height, fps) = probe.as_ref().map_or((1920, 1080, 30), |probe| (probe.width, probe.height, probe.fps.round().clamp(1.0, 240.0) as u32));
+    let mut plan = workshop_media::ConvertPlan {
+        format,
+        encoder: if format == MediaFormat::Mp4 { pick_conversion_encoder(&ffmpeg, height).await } else { Encoder::X264 },
+        width,
+        height,
+        fps,
+        length: (format == MediaFormat::Gif).then(|| workshop_media::gif_length(options.length_seconds)),
+    };
+    plan.fps = plan.fps.max(1);
+    let total_seconds = plan.output_seconds(probe.as_ref().and_then(|probe| probe.duration));
+
     progress(Stage::Converting, None);
     // Holds the engine so an install cannot replace FFmpeg while it runs.
     let _engine = state.engine.read().await;
-    let partial = output.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
-    let cancelled = || state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst);
     let output_for_task = output.to_path_buf();
     let title = title.to_string();
+    let mut shown = -1.0f64;
+    let shown_cell = std::sync::Mutex::new(&mut shown);
+    let on_progress = |block: &export_progress::FfmpegProgress| {
+        let (Some(total), Some(time)) = (total_seconds, block.out_time_us) else { return };
+        let percent = (time as f64 / 1_000_000.0 / total * 100.0).floor().clamp(0.0, 99.0);
+        let mut last = shown_cell.lock().unwrap();
+        if percent > **last {
+            **last = percent;
+            progress(Stage::Converting, Some(percent));
+        }
+    };
     let converted = workshop_media::convert(
         &ffmpeg,
         &video.path,
         &partial,
-        format,
+        &plan,
         |pid| {
             let mut current = state.workshop.lock().unwrap();
             if current.cancelled || state.shutting_down.load(Ordering::SeqCst) {
@@ -512,6 +677,7 @@ async fn convert_media(
             }
         },
         &cancelled,
+        &on_progress,
     )
     .await;
     state.workshop.lock().unwrap().pid = None;
@@ -533,10 +699,7 @@ async fn convert_media(
 
     let partial_for_task = partial.clone();
     progress(Stage::Saving, Some(0.0));
-    let published = tauri::async_runtime::spawn_blocking(move || {
-        publish_media(&partial_for_task, &output_for_task, id, &title, format)
-    })
-    .await?;
+    let published = tauri::async_runtime::spawn_blocking(move || publish_media(&partial_for_task, &output_for_task, id, &title, format)).await?;
     match published {
         Ok(filename) => Ok(SaveResult::Done(filename)),
         Err(_) if cancelled() => Ok(SaveResult::Cancelled),
@@ -807,8 +970,9 @@ pub fn sweep_partials(dir: &Path) {
 mod tests {
     use super::*;
     use std::io::Read;
+    use std::time::Instant;
     #[cfg(windows)]
-    use std::{process::Stdio, time::Instant};
+    use std::process::Stdio;
     #[cfg(windows)]
     use tokio::{process::Command, time::timeout};
 
@@ -989,7 +1153,7 @@ mod tests {
         let video = workshop_media::video_file(&project).unwrap();
         for (format, expected) in [(MediaFormat::Mp4, "Loop (9) (1).mp4"), (MediaFormat::Gif, "Loop (9).gif")] {
             let partial = output.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
-            let done = workshop_media::convert(&ffmpeg, &video.path, &partial, format, |_| true, &|| false).await;
+            let done = workshop_media::convert(&ffmpeg, &video.path, &partial, &workshop_media::ConvertPlan::basic(format), |_| true, &|| false, &|_| {}).await;
             assert_eq!(done, Ok(workshop_media::Outcome::Done), "{format:?}");
             let name = publish_media(&partial, &output, 9, "Loop", format).unwrap();
             assert_eq!(name, expected);
@@ -999,6 +1163,66 @@ mod tests {
         let leftovers = fs::read_dir(&output).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with(PARTIAL_PREFIX)).count();
         assert_eq!(leftovers, 0, "no partial file may remain");
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Live, read only on the Steam library: set `CLAWS_TEST_LIBRARY_VIDEO` to one or more Workshop
+    /// item ids separated by `;`. For each, reports what Steam says about it, what ffprobe says
+    /// about its video and, when the original can be copied, copies it into a temporary folder
+    /// with the real progress code and prints how well the time left predicted the copy.
+    #[tokio::test]
+    async fn copies_real_library_videos_when_given() {
+        let Some(ids) = std::env::var_os("CLAWS_TEST_LIBRARY_VIDEO") else { return };
+        let Some(tools) = crate::download_tests::ffmpeg_dir() else { panic!("needs the managed ffprobe") };
+        let ffprobe = tools.join(format!("ffprobe{}", std::env::consts::EXE_SUFFIX));
+        let root = steam_root().expect("Steam is installed");
+        let libraries = library_folders(&root);
+        for id in ids.to_string_lossy().split(';').filter(|id| !id.is_empty()) {
+            let id: u64 = id.parse().expect("an item id");
+            let located = crate::steam::locate_item(&libraries, id, None);
+            eprintln!("item {id}: {:?}", located.state);
+            let project = located.project.expect("the item is in the library");
+            let video = workshop_media::video_file(&project).expect("a video project");
+            let probe = workshop_media::probe(&ffprobe, &video.path).await.expect("ffprobe reads it");
+            eprintln!("  {} bytes, {}x{} {} {:.1} fps, {:?}s, audio {:?}, container {}", video.bytes, probe.width, probe.height, probe.video_codec, probe.fps, probe.duration, probe.audio_codec, probe.format_name);
+            let copyable = probe.can_copy(&video.path);
+            eprintln!("  copyable: {copyable}");
+            if !copyable {
+                continue;
+            }
+            let dir = crate::download_tests::temp_dir("live-copy");
+            let partial = dir.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
+            let started = Instant::now();
+            let mut samples: Vec<(Duration, u64)> = Vec::new();
+            let source = video.path.clone();
+            let target = partial.clone();
+            let outcome = tokio::task::spawn_blocking(move || {
+                let clock = Instant::now();
+                let result = workshop_media::copy_original(&source, &target, |done, _| samples.push((clock.elapsed(), done)), || {}, || false);
+                (result, samples)
+            })
+            .await
+            .unwrap();
+            let (result, samples) = outcome;
+            assert_eq!(result.unwrap(), workshop_media::CopyOutcome::Done);
+            let total = started.elapsed();
+            assert_eq!(fs::metadata(&partial).unwrap().len(), video.bytes);
+            eprintln!("  copied in {:.2}s ({:.0} MB/s)", total.as_secs_f64(), video.bytes as f64 / total.as_secs_f64() / 1e6);
+            // How well would the time left have predicted the copy? Replay the samples.
+            let finish = samples.last().unwrap().0;
+            for percent in [10u64, 25, 50, 75, 90] {
+                let target_done = video.bytes * percent / 100;
+                let Some(at) = samples.iter().position(|(_, done)| *done >= target_done) else { continue };
+                let mut window = export_progress::RateWindow::new(Duration::from_secs(3));
+                for (elapsed, done) in &samples[..=at] {
+                    window.push(*elapsed, *done);
+                }
+                let (elapsed, done) = samples[at];
+                let eta = export_progress::eta_from_rate(done, video.bytes, window.rate(), elapsed, Duration::from_secs(1));
+                let actual = finish.saturating_sub(elapsed).as_secs_f64();
+                eprintln!("  at {percent:>2}%: elapsed {:.2}s, predicted left {:?}, actual left {actual:.2}s", elapsed.as_secs_f64(), eta.map(|e| (e * 100.0).round() / 100.0));
+            }
+            fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]

@@ -460,6 +460,28 @@ const mockSubscribed = new Set<string>();
 let mockWallpaperCancelled = false;
 let mockLegacyRemoved = false;
 
+/**
+ * What the sample Steam library says: an id ending in 6 is installed, in 4 still downloading
+ * (the bytes grow while the page is open), in 9 installed with an update pending; any other is
+ * installed once "subscribed". ?engine=none shows a PC without Wallpaper Engine.
+ */
+function mockLibraryStatus(id: string) {
+  const engine = new URLSearchParams(location.search).get("engine") !== "none";
+  const base = { steam: true, wallpaperEngine: engine };
+  if (id.endsWith("4")) {
+    const bytes = Math.min(31_000_000, Math.floor((Date.now() - mockPageOpened) * 6_000));
+    return { ...base, found: bytes > 5_000_000, video: false, state: "downloading", bytes };
+  }
+  const found = id.endsWith("6") || id.endsWith("9") || mockSubscribed.has(id);
+  return {
+    ...base,
+    found,
+    video: found && mockWallpaperType(id) === "Video",
+    state: !found ? "notInstalled" : id.endsWith("9") ? "updatePending" : "installed",
+  };
+}
+const mockPageOpened = Date.now();
+
 /** The sample item type: video for ids ending in 5 or 8, scene otherwise. */
 function mockWallpaperType(id: string): string {
   return id.endsWith("5") || id.endsWith("8") ? "Video" : "Scene";
@@ -528,8 +550,23 @@ export function installMock() {
           return mockWorkshopDetails(String(payload.url));
         case "find_wallpaper_in_library": {
           const id = new URL(String(payload.url)).searchParams.get("id") ?? "";
-          const found = id.endsWith("6") || mockSubscribed.has(id);
-          return { steam: true, found, video: found && mockWallpaperType(id) === "Video" };
+          return mockLibraryStatus(id);
+        }
+        case "wallpaper_video_info": {
+          const id = new URL(String(payload.url)).searchParams.get("id") ?? "";
+          if (!mockLibraryStatus(id).video) return null;
+          // Sample mode: ids ending in 55 are HEVC (converted); the other videos are H.264 (copied).
+          const hevc = id.endsWith("55");
+          return {
+            copyable: !hevc,
+            codec: hevc ? "hevc" : "h264",
+            width: 3840,
+            height: 2160,
+            fps: 60,
+            durationSeconds: 294.35,
+            bytes: 5_600_000_000,
+            hasAudio: false,
+          };
         }
         case "open_workshop_item": {
           // Sample mode: "subscribing" puts the item in the library a few seconds later.

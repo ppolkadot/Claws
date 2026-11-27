@@ -7,7 +7,7 @@ import type { JobEvent, JobRemoved, JobsAdded } from "./queue-events.js";
 import type { Resolution, VideoPreset } from "./resolution.js";
 import type { KeptRecord, KeptRepairReport, KeptRevealResult } from "./kept-files.js";
 import type { TranscriptFormat } from "./transcript-options.js";
-import type { ExportFormat, LibraryStatus, WallpaperOutcome, WorkshopLookup } from "./workshop-session.js";
+import type { ExportFormat, ExportOptions, LibraryStatus, VideoInfo, WallpaperOutcome, WorkshopLookup } from "./workshop-session.js";
 
 export type { DownloadEstimate, DragOutcome, JobEvent, JobRemoved, JobsAdded, KeptRecord, KeptRepairReport, KeptRevealResult, Resolution, TranscriptFormat, VideoPreset };
 
@@ -313,8 +313,9 @@ export const api = {
   openWorkshopItem: (url: string) => invoke<void>("open_workshop_item", { url }),
   legacyFiles: () => invoke<{ bytes: number } | null>("legacy_files"),
   removeLegacyFiles: () => invoke<void>("remove_legacy_files"),
-  findWallpaperInLibrary: (url: string) => invoke<LibraryStatus>("find_wallpaper_in_library", { url }),
-  downloadWallpaper: (url: string, format: ExportFormat) => invoke<WallpaperOutcome>("download_wallpaper", { url, format }),
+  findWallpaperInLibrary: (url: string, timeUpdated: number | null) => invoke<LibraryStatus>("find_wallpaper_in_library", { url, timeUpdated }),
+  wallpaperVideoInfo: (url: string) => invoke<VideoInfo | null>("wallpaper_video_info", { url }),
+  downloadWallpaper: (url: string, format: ExportFormat, options: ExportOptions) => invoke<WallpaperOutcome>("download_wallpaper", { url, format, options }),
   cancelWallpaperDownload: () => invoke<void>("cancel_wallpaper_download"),
   resolveSpotify: (url: string) => invoke<SpotifyResolution>("resolve_spotify_track", { url }),
   searchSpotify: (track: SpotifyTrack, query: string) => invoke<YouTubeCandidate[]>("search_spotify_matches", { track, query }),

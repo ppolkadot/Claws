@@ -103,6 +103,15 @@ pub fn find_ffmpeg(app: &AppHandle) -> Option<PathBuf> {
     on_path("ffmpeg").cloned()
 }
 
+/// ffprobe, which ships in the same build as FFmpeg and sits beside it.
+pub fn find_ffprobe(app: &AppHandle) -> Option<PathBuf> {
+    let beside = find_ffmpeg(app)?.parent()?.join("ffprobe.exe");
+    if beside.is_file() {
+        return Some(beside);
+    }
+    which::which("ffprobe").ok()
+}
+
 fn managed_deno(app: &AppHandle) -> Option<PathBuf> {
     let managed = app.state::<AppState>().bin_dir().join("deno.exe");
     managed.is_file().then_some(managed)

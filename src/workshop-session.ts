@@ -1,7 +1,8 @@
 /**
  * One Wallpaper Engine item on the Download screen: the export while it runs, and how it
- * ended. The project always comes from the user's own Steam library. Kept in the store, so leaving Download and coming back
- * shows a running export as it is. No DOM here; views/workshop.ts draws it.
+ * ended. The project always comes from the user's own Steam library. Kept in the store, so
+ * leaving Download and coming back shows a running export as it is. No DOM here;
+ * views/workshop.ts draws it.
  */
 
 export interface WorkshopItem {
@@ -25,7 +26,7 @@ export type WorkshopLookup =
 /** ZIP saves the whole project; MP4 and GIF are converted from a video wallpaper. */
 export type ExportFormat = "zip" | "mp4" | "gif";
 
-export type WorkshopStage = "starting" | "converting" | "saving";
+export type WorkshopStage = "starting" | "copying" | "converting" | "saving";
 
 export interface WorkshopProgress {
   url: string;
@@ -39,14 +40,44 @@ export type WallpaperOutcome =
   | { status: "unsupported"; message: string }
   | { status: "cancelled" };
 
-export interface LibraryStatus {
+/** What Steam says about the item: installed, still downloading (bytes on disk), or updated since. */
+export type LibraryItemState =
+  | { state: "notInstalled" }
+  | { state: "installed" }
+  | { state: "downloading"; bytes: number }
+  | { state: "updatePending" };
+
+export type LibraryStatus = {
   /** Steam is installed for this Windows user. */
   steam: boolean;
+  /** Wallpaper Engine is installed in one of Steam's libraries. */
+  wallpaperEngine: boolean;
   /** The item's project is in a Steam library. */
   found: boolean;
   /** The local manifest names a supported video file. */
   video: boolean;
+} & LibraryItemState;
+
+/** What the video is: whether the original can be saved as it is, and its size and length. */
+export interface VideoInfo {
+  /** 8-bit H.264 in an MP4: "MP4 (original)" copies it. Otherwise MP4 is converted. */
+  copyable: boolean;
+  codec: string;
+  width: number;
+  height: number;
+  fps: number;
+  durationSeconds: number | null;
+  bytes: number;
+  hasAudio: boolean;
 }
+
+/** What a video export may be asked for beyond its format. */
+export interface ExportOptions {
+  /** GIF: seconds from the start (30 by default, 60 at most). */
+  lengthSeconds?: number;
+}
+
+export const GIF_SECONDS = [30, 60] as const;
 
 export type WorkshopState =
   | { phase: "ready" }
@@ -58,9 +89,10 @@ export type WorkshopState =
   | { phase: "cancelled" };
 
 export interface WorkshopDeps {
-  download(url: string, format: ExportFormat): Promise<WallpaperOutcome>;
+  download(url: string, format: ExportFormat, options: ExportOptions): Promise<WallpaperOutcome>;
   cancel(): Promise<void>;
-  findInLibrary(url: string): Promise<LibraryStatus>;
+  findInLibrary(url: string, timeUpdated: number | null): Promise<LibraryStatus>;
+  videoInfo(url: string): Promise<VideoInfo | null>;
   describeError(error: unknown): string;
 }
 
@@ -84,6 +116,8 @@ export function stageText(stage: WorkshopStage, percent: number | null, format: 
   switch (stage) {
     case "starting":
       return "Starting…";
+    case "copying":
+      return `Copying the video…${pct}`;
     case "converting":
       return "Converting the video with FFmpeg…";
     case "saving":
@@ -100,7 +134,47 @@ export function offersVideo(item: WorkshopItem): boolean {
 export function missingForStart(library: LibraryStatus | null): string | null {
   if (library && !library.steam) return "Steam isn't installed for this Windows user.";
   if (!library?.found) return "Subscribe in Steam first.";
+  if (library.state === "downloading") return "Steam is still downloading it.";
   return null;
+}
+
+/** How far Steam's download is, as a fraction below 1 (the size Valve lists is not exact). */
+export function downloadFraction(library: LibraryStatus | null, fileSize: number | null): number | null {
+  if (library?.state !== "downloading" || !fileSize || fileSize <= 0) return null;
+  return Math.min(0.99, Math.max(0, library.bytes / fileSize));
+}
+
+/** The one line that says where the item stands in Steam. */
+export function libraryLine(library: LibraryStatus | null, fileSize: number | null, watching: boolean): string {
+  if (!library) return "Checking…";
+  if (!library.steam) return "Claws needs Steam with Wallpaper Engine installed on this PC, and nothing else.";
+  if (!library.found && library.state !== "downloading" && !library.wallpaperEngine) {
+    return "Wallpaper Engine isn't installed in your Steam library. Claws needs Steam with Wallpaper Engine, and nothing else.";
+  }
+  const fraction = downloadFraction(library, fileSize);
+  if (library.state === "downloading") return fraction === null ? "Steam is downloading it…" : `Steam is downloading it… ${Math.round(fraction * 100)}%`;
+  if (!library.found) return watching ? "Waiting for Steam to download it…" : "Not in your library yet.";
+  if (library.state === "updatePending") return "Steam has an update for this wallpaper. Claws will save the version you have.";
+  return library.video ? "Video found in your Steam library." : "Project found. Claws can save a ZIP. MP4 and GIF need a standalone video.";
+}
+
+export interface FormatChoice {
+  value: ExportFormat;
+  label: string;
+  title: string;
+}
+
+/** The formats a video wallpaper offers. MP4 says whether it saves the original or converts. */
+export function formatChoices(videoAvailable: boolean, video: VideoInfo | null): FormatChoice[] {
+  const zip: FormatChoice = { value: "zip", label: "ZIP", title: "The whole project, as Steam downloaded it" };
+  if (!videoAvailable) return [zip];
+  return [
+    zip,
+    video?.copyable
+      ? { value: "mp4", label: "MP4 (original)", title: "The wallpaper's own video file, saved unchanged" }
+      : { value: "mp4", label: "MP4 (converted)", title: "H.264 video with its audio, converted so it plays anywhere" },
+    { value: "gif", label: "GIF", title: "A silent looping GIF of the first seconds, at most 720p" },
+  ];
 }
 
 /** How often, and for how long, a subscription in Steam is waited for. */
@@ -109,8 +183,12 @@ export const LIBRARY_WAIT_MS = 10 * 60 * 1000;
 
 export class WorkshopSession {
   library: LibraryStatus | null = null;
+  /** What the video is, read once the library has it. */
+  video: VideoInfo | null = null;
   state: WorkshopState = { phase: "ready" };
   private chosenFormat: ExportFormat | null = null;
+  /** GIF length in seconds. */
+  gifSeconds: number = GIF_SECONDS[0];
   /** Polling the Steam library after the user went to subscribe. */
   watching = false;
   private watchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -145,13 +223,27 @@ export class WorkshopSession {
     for (const listener of [...this.listeners]) listener();
   }
 
-  /** Reads the Steam library once. */
+  /** Reads the Steam library once, and what the video is the first time it is there. */
   async checkLibrary(): Promise<void> {
     try {
-      this.library = await this.deps.findInLibrary(this.url);
+      this.library = await this.deps.findInLibrary(this.url, this.item.timeUpdated);
     } catch {
-      this.library = { steam: false, found: false, video: false };
+      this.library = { steam: false, wallpaperEngine: false, found: false, video: false, state: "notInstalled" };
     }
+    if (this.library.found && this.library.video && !this.video) {
+      try {
+        this.video = await this.deps.videoInfo(this.url);
+      } catch {
+        this.video = null;
+      }
+    }
+    this.changed();
+  }
+
+  setGifSeconds(seconds: number) {
+    if (this.running || this.gifSeconds === seconds || !GIF_SECONDS.some((option) => option === seconds)) return;
+    this.gifSeconds = seconds;
+    if (this.state.phase !== "ready") this.state = { phase: "ready" };
     this.changed();
   }
 
@@ -188,7 +280,9 @@ export class WorkshopSession {
       if (!this.watching) return;
       await this.checkLibrary();
       if (!this.watching) return;
-      if (this.library?.found || Date.now() > this.watchUntil) this.stopWatching();
+      // Steam may still be writing the item after its folder appears: wait for it to finish.
+      const done = this.library?.found === true && this.library.state !== "downloading";
+      if (done || Date.now() > this.watchUntil) this.stopWatching();
       else this.scheduleWatch();
     }, LIBRARY_POLL_MS);
   }
@@ -200,7 +294,7 @@ export class WorkshopSession {
     this.changed();
     let outcome: WallpaperOutcome;
     try {
-      outcome = await this.deps.download(this.url, this.format);
+      outcome = await this.deps.download(this.url, this.format, this.format === "gif" ? { lengthSeconds: this.gifSeconds } : {});
     } catch (error) {
       outcome = { status: "failed", message: this.deps.describeError(error), detail: null };
     }

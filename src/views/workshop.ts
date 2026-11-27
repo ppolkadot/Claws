@@ -1,10 +1,10 @@
 import { api, errorMessage } from "../api";
 import { formatBytes, folderName } from "../format";
 import { store } from "../store";
-import { button, segmented, toast } from "../ui/components";
+import { button, segmented, toast, type SegmentedHandle } from "../ui/components";
 import { h, replace } from "../ui/dom";
 import { group, progressBar, row, sectionTitle, setProgress } from "../ui/layout";
-import { missingForStart, stageText, type ExportFormat, type WorkshopSession } from "../workshop-session";
+import { formatChoices, GIF_SECONDS, libraryLine, missingForStart, stageText, type ExportFormat, type WorkshopSession } from "../workshop-session";
 import { thumbnailEl } from "./download-shared";
 
 export interface WorkshopView {
@@ -63,22 +63,36 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
   const stopWatching = button({ label: "Stop waiting", variant: "plain", size: "small", onClick: () => session.stopWatching() });
   const libraryRow = row("Steam library", h("div", { class: "inline" }, libraryText, subscribe, viewInSteam, stopWatching));
 
-  // Format. ZIP keeps the project and works for every item; a video project can also be
-  // converted with FFmpeg to a playable MP4 or a GIF.
-  const formatSeg = segmented<ExportFormat>(
-    "Save as",
-    [
-      { value: "zip", label: "ZIP", title: "The whole project, as Steam downloaded it" },
-      { value: "mp4", label: "MP4", title: "H.264 video with its audio, playable anywhere" },
-      { value: "gif", label: "GIF", title: "A silent looping GIF" },
-    ],
-    session.format,
-    (next) => session.setFormat(next),
-  );
+  // Format. ZIP keeps the project and works for every item. A video project can also be saved
+  // as MP4 (its own file when it is H.264, converted otherwise) or as a short GIF. The choices
+  // are rebuilt only when they change, so the thumb never jumps.
   const formatHint = h("span", { class: "row-note" });
-  const formatRow = row("Save as", formatSeg.el, formatHint);
+  const formatControl = h("div", { class: "row-control-slot" });
+  let formatKey = "";
+  let formatSeg: SegmentedHandle<ExportFormat> | null = null;
+  function paintFormats() {
+    const choices = formatChoices(session.videoAvailable, session.video);
+    const key = choices.map((choice) => `${choice.value}:${choice.label}`).join("|");
+    if (key !== formatKey) {
+      formatKey = key;
+      formatSeg = segmented<ExportFormat>("Save as", choices, session.format, (next) => session.setFormat(next));
+      replace(formatControl, formatSeg.el);
+    }
+    formatSeg?.set(session.format);
+    formatSeg?.el.querySelectorAll("button").forEach((b) => b.setAttribute("aria-disabled", session.running ? "true" : "false"));
+  }
+  const formatRow = row("Save as", formatControl, formatHint);
 
-  const options = group(libraryRow, formatRow);
+  // GIF length: the first 30 or 60 seconds. A long loop makes a huge file and takes very long.
+  const gifSeg = segmented<string>(
+    "GIF length",
+    GIF_SECONDS.map((seconds) => ({ value: String(seconds), label: `${seconds} s` })),
+    String(session.gifSeconds),
+    (next) => session.setGifSeconds(Number(next)),
+  );
+  const gifRow = row("GIF length", gifSeg.el, "The first seconds of the loop, at most 720p.");
+
+  const options = group(libraryRow, formatRow, gifRow);
 
   // Actions and status
   const reason = h("span", { class: "row-hint workshop-reason" });
@@ -164,26 +178,23 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
     const busy = session.running;
     const library = session.library;
     formatRow.hidden = !session.videoAvailable;
-    formatSeg.set(session.format);
-    formatSeg.el.querySelectorAll("button").forEach((b) => ((b as HTMLButtonElement).disabled = busy));
+    paintFormats();
     formatHint.textContent =
       session.format === "zip"
         ? "Keeps the whole project, as Steam downloaded it."
-        : "Converts the wallpaper's video with FFmpeg; the project itself isn't kept.";
+        : session.format === "mp4" && session.video?.copyable
+          ? "Saves the wallpaper's own video file, unchanged."
+          : session.format === "mp4"
+            ? "Converts the wallpaper's video with FFmpeg; the project itself isn't kept."
+            : "A silent looping GIF; the project itself isn't kept.";
+    gifRow.hidden = !session.videoAvailable || session.format !== "gif";
+    gifSeg.set(String(session.gifSeconds));
+    gifSeg.el.querySelectorAll("button").forEach((b) => b.setAttribute("aria-disabled", busy ? "true" : "false"));
 
-    libraryText.textContent = !library
-      ? "Checking…"
-      : !library.steam
-        ? "Claws needs Steam with Wallpaper Engine installed on this PC, and nothing else."
-        : library.found
-          ? library.video
-            ? "Video found in your Steam library."
-            : "Project found. Claws can save a ZIP. MP4 and GIF need a standalone video."
-          : session.watching
-            ? "Waiting for Steam to download it…"
-            : "Not in your library yet.";
-    subscribe.hidden = !library?.steam || library.found || session.watching;
-    viewInSteam.hidden = !library || library.steam;
+    libraryText.textContent = libraryLine(library, session.item.fileSize, session.watching);
+    const waiting = library !== null && library.steam && !library.found && library.state !== "downloading";
+    subscribe.hidden = !library || !waiting || session.watching || !library.wallpaperEngine;
+    viewInSteam.hidden = !library || (library.steam && (library.found || library.wallpaperEngine || library.state === "downloading"));
     stopWatching.hidden = !session.watching;
 
     const missing = missingForStart(library);

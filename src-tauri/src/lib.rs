@@ -10,8 +10,10 @@ mod download_tests;
 mod download_files;
 mod download_policy;
 mod downloader;
+mod encoder;
 mod error;
 mod estimate;
+mod export_progress;
 mod file_drag;
 mod history;
 mod history_mutation;
@@ -191,6 +193,7 @@ pub fn run() {
             workshop::open_workshop_item,
             workshop::workshop_item_details,
             workshop::find_wallpaper_in_library,
+            workshop::wallpaper_video_info,
             workshop::download_wallpaper,
             workshop::cancel_wallpaper_download,
         ])
