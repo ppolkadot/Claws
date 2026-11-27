@@ -1020,7 +1020,7 @@ async fn record_media(
             detail: None,
         });
     }
-    let Some(chosen) = encoder::pick_tested(&ffmpeg, &working, size.width, size.height, fps, &on_spawn).await else {
+    let Some(chosen) = encoder::pick_tested(&ffmpeg, &working, size.width, size.height, fps, &on_spawn, &cancelled).await else {
         if cancelled() { return Ok(SaveResult::Cancelled); }
         return Ok(SaveResult::Failed { message: "This PC has no video encoder that can record at that size.".into(), detail: None });
     };

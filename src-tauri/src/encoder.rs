@@ -134,6 +134,7 @@ fn probe_args(encoder: Encoder) -> Vec<String> {
 }
 
 /// Probe candidates at the requested capture dimensions, trying the next one on failure.
+#[cfg(test)]
 async fn pick_tested_with<F, Fut>(working: &[Encoder], height: u32, fps: u32, mut test: F) -> Option<Encoder>
 where F: FnMut(Encoder) -> Fut, Fut: std::future::Future<Output = bool> {
     for encoder in ORDER {
@@ -144,39 +145,51 @@ where F: FnMut(Encoder) -> Fut, Fut: std::future::Future<Output = bool> {
     None
 }
 
-pub async fn pick_tested(ffmpeg: &Path, working: &[Encoder], width: u32, height: u32, fps: u32, on_spawn: &(dyn Fn(Option<u32>) -> bool + Sync)) -> Option<Encoder> {
-    let aborted = std::sync::atomic::AtomicBool::new(false);
-    pick_tested_with(working, height, fps, |encoder| {
-        let aborted = &aborted;
-        async move {
-            if aborted.load(std::sync::atomic::Ordering::Relaxed) {
-                return false;
-            }
-            let source = format!("color=c=black:s={width}x{height}:r={fps}");
-            let mut args: Vec<String> = ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", &source, "-frames:v", "2"].map(str::to_string).into();
-            args.extend(encoder.args(width, height, fps));
-            args.extend(["-f", "null", "-"].map(str::to_string));
-            let mut command = Command::new(ffmpeg);
-            command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
-            #[cfg(windows)]
-            command.creation_flags(0x0800_0000);
-            let Ok(mut child) = command.spawn() else { return false };
-            let pid = child.id();
-            if !on_spawn(pid) {
-                aborted.store(true, std::sync::atomic::Ordering::Relaxed);
-                if let Some(pid) = pid { crate::downloader::kill_tree(pid, true); }
-                let _ = child.kill().await;
-                return false;
-            }
-            let result = tokio::time::timeout(Duration::from_secs(20), child.wait()).await;
-            if result.is_err() {
-                if let Some(pid) = pid { crate::downloader::kill_tree(pid, true); }
-                let _ = child.kill().await;
-            }
-            on_spawn(None);
-            matches!(result, Ok(Ok(status)) if status.success())
+pub async fn pick_tested(
+    ffmpeg: &Path,
+    working: &[Encoder],
+    width: u32,
+    height: u32,
+    fps: u32,
+    on_spawn: &(dyn Fn(Option<u32>) -> bool + Sync),
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Option<Encoder> {
+    for encoder in ORDER {
+        if cancelled() {
+            return None;
         }
-    }).await
+        if !encoder.handles(height, fps) || (encoder != Encoder::X264 && !working.contains(&encoder)) {
+            continue;
+        }
+        let source = format!("color=c=black:s={width}x{height}:r={fps}");
+        let mut args: Vec<String> = ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", &source, "-frames:v", "2"].map(str::to_string).into();
+        args.extend(encoder.args(width, height, fps));
+        args.extend(["-f", "null", "-"].map(str::to_string));
+        let mut command = Command::new(ffmpeg);
+        command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000);
+        let Ok(mut child) = command.spawn() else { continue };
+        let pid = child.id();
+        if !on_spawn(pid) {
+            if let Some(pid) = pid { crate::downloader::kill_tree(pid, true); }
+            let _ = child.kill().await;
+            return None;
+        }
+        let result = tokio::time::timeout(Duration::from_secs(20), child.wait()).await;
+        if result.is_err() {
+            if let Some(pid) = pid { crate::downloader::kill_tree(pid, true); }
+            let _ = child.kill().await;
+        }
+        on_spawn(None);
+        if cancelled() {
+            return None;
+        }
+        if matches!(result, Ok(Ok(status)) if status.success()) {
+            return Some(encoder);
+        }
+    }
+    None
 }
 
 /// Which encoders this FFmpeg can really use on this PC, in probe order. Each is tried with a
@@ -266,11 +279,53 @@ mod tests {
         let Some(tools) = crate::download_tests::ffmpeg_dir() else { return };
         let ffmpeg = tools.join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX));
         let events = Mutex::new(Vec::new());
-        let chosen = pick_tested(&ffmpeg, &[], 640, 360, 30, &|pid| { events.lock().unwrap().push(pid); true }).await;
+        let chosen = pick_tested(&ffmpeg, &[], 640, 360, 30, &|pid| { events.lock().unwrap().push(pid); true }, &|| false).await;
         assert_eq!(chosen, Some(Encoder::X264));
         let events = events.lock().unwrap();
         assert!(events.first().is_some_and(Option::is_some));
         assert_eq!(events.last(), Some(&None));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn cancelling_during_tested_encoder_probe_does_not_spawn_next_candidate() {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        let dir = crate::download_tests::temp_dir("pick-tested-cancel");
+        let script = dir.join("slow-ffmpeg.cmd");
+        std::fs::write(&script, "@echo off\r\nping -n 30 127.0.0.1 >nul\r\n").unwrap();
+
+        let spawned = Arc::new(Mutex::new(Vec::<u32>::new()));
+        let flag = Arc::new(AtomicBool::new(false));
+        let (spawned_task, flag_task, script_task) = (spawned.clone(), flag.clone(), script.clone());
+        let task = tokio::spawn(async move {
+            pick_tested(
+                &script_task,
+                &[Encoder::Nvenc, Encoder::Amf],
+                1920,
+                1080,
+                30,
+                &|pid| {
+                    if let Some(pid) = pid {
+                        spawned_task.lock().unwrap().push(pid);
+                    }
+                    true
+                },
+                &|| flag_task.load(Ordering::SeqCst),
+            ).await
+        });
+
+        let wait_start = std::time::Instant::now();
+        while spawned.lock().unwrap().is_empty() && wait_start.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+        let first_pid = *spawned.lock().unwrap().first().expect("candidate 1 spawned");
+        flag.store(true, Ordering::SeqCst);
+        crate::downloader::kill_tree(first_pid, true);
+
+        let chosen = tokio::time::timeout(Duration::from_secs(5), task).await.expect("probe stopped promptly").unwrap();
+        assert_eq!(chosen, None);
+        assert_eq!(spawned.lock().unwrap().len(), 1, "candidate 2 must not be spawned after cancel");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
