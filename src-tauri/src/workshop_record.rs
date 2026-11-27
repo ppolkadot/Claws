@@ -520,6 +520,16 @@ fn fail(message: impl Into<String>, detail: impl Into<String>) -> RecordFailure 
     RecordFailure { message: message.into(), detail: detail.into() }
 }
 
+async fn read_capture_blocks<R: tokio::io::AsyncRead + Unpin>(stdout: R, mut on_block: impl FnMut(&FfmpegProgress)) {
+    let mut reader = tokio::io::BufReader::new(stdout);
+    let mut line = Vec::new();
+    let mut parser = ProgressParser::default();
+    while let Some(truncated) = crate::bounded_io::read_line_capped(&mut reader, &mut line, 4096).await {
+        if truncated { continue; }
+        if let Some(block) = parser.push(&String::from_utf8_lossy(&line)) { on_block(&block); }
+    }
+}
+
 /// How often the poll loops look: window, cancel and free space.
 const POLL: Duration = Duration::from_millis(100);
 /// FFmpeg reporting nothing for this long, once it has started, means it is stuck.
@@ -638,14 +648,8 @@ async fn record_inner(request: &RecordRequest<'_>) -> Result<Recorded, RecordFai
     let totals = Mutex::new((0u64, 0u64)); // frames, repeated frames
     let low = std::sync::atomic::AtomicBool::new(false);
     let reading = async {
-        use tokio::io::AsyncBufReadExt;
-        let mut lines = tokio::io::BufReader::new(stdout).lines();
-        let mut parser = ProgressParser::default();
         let mut recording_since: Option<Instant> = None;
-        while let Ok(Some(line)) = lines.next_line().await {
-            let Some(block) = parser.push(&line) else { continue };
-            report(&block, length, &mut recording_since, tracker, &last_report, &totals);
-        }
+        read_capture_blocks(stdout, |block| report(block, length, &mut recording_since, tracker, &last_report, &totals)).await;
     };
     let supervising = async {
         let mut last_space = Instant::now();
@@ -828,10 +832,17 @@ pub async fn has_gfxcapture(ffmpeg: &Path) -> bool {
     command.args(["-hide_banner", "-filters"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    let found = match tokio::time::timeout(Duration::from_secs(20), command.output()).await {
-        Ok(Ok(output)) => String::from_utf8_lossy(&output.stdout[..output.stdout.len().min(512 * 1024)]).contains("gfxcapture"),
-        _ => false,
-    };
+    let found = if let Ok(mut child) = command.spawn() {
+        if let Some(stdout) = child.stdout.take() {
+            let result = tokio::time::timeout(Duration::from_secs(20), async {
+                let bytes = crate::bounded_io::read_capped(stdout, 512 * 1024).await.ok()?;
+                let status = child.wait().await.ok()?;
+                (status.success() && String::from_utf8_lossy(&bytes).contains("gfxcapture")).then_some(())
+            }).await;
+            if !matches!(result, Ok(Some(()))) { let _ = child.kill().await; }
+            matches!(result, Ok(Some(())))
+        } else { let _ = child.kill().await; false }
+    } else { false };
     cache.lock().unwrap().insert(ffmpeg.to_path_buf(), found);
     found
 }
@@ -866,6 +877,15 @@ mod tests {
         assert_eq!(check_engine(Some(exe.clone()), |_| true).unwrap().exe, exe);
         assert!(EngineProblem::NotInstalled.message().contains("Steam library"));
         assert!(EngineProblem::NotGenuine.message().contains("signature"));
+    }
+
+    #[tokio::test]
+    async fn recording_progress_discards_overlong_lines_and_reads_the_next_block() {
+        let mut input = vec![b'x'; 1024 * 1024];
+        input.extend_from_slice(b"\nframe=42\nprogress=continue\n");
+        let mut frames = Vec::new();
+        read_capture_blocks(&input[..], |block| frames.push(block.frame)).await;
+        assert_eq!(frames, [Some(42)]);
     }
 
     #[test]
