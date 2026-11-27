@@ -351,11 +351,11 @@ struct RunGuard<'a>(&'a AppState);
 const STALE_WINDOW: &str = "The previous recording window is still open. Close Wallpaper Engine's pop-out window and try again.";
 
 impl<'a> RunGuard<'a> {
-    fn begin(state: &'a AppState) -> Result<Self> {
-        Self::begin_with(state, |engine, title| workshop_record::close_window(engine, title, Duration::ZERO))
+    async fn begin(state: &'a AppState) -> Result<Self> {
+        Self::begin_with(state, |engine, title| workshop_record::close_window(engine, title, Duration::ZERO)).await
     }
 
-    fn begin_with(state: &'a AppState, close: impl FnOnce(&Path, &str) -> bool) -> Result<Self> {
+    async fn begin_with(state: &'a AppState, close: impl FnOnce(&Path, &str) -> bool + Send + 'static) -> Result<Self> {
         let stale = {
             let run = state.workshop.lock().unwrap();
             if run.active {
@@ -366,21 +366,26 @@ impl<'a> RunGuard<'a> {
             }
             run.window.clone()
         };
-        if let Some((engine, title)) = stale {
-            if !close(&engine, &title) {
+        let closed_stale = if let Some((engine, title)) = stale {
+            let (check_engine, check_title) = (engine.clone(), title.clone());
+            let closed = tauri::async_runtime::spawn_blocking(move || close(&check_engine, &check_title))
+                .await
+                .map_err(|_| AppError::msg(STALE_WINDOW))?;
+            if !closed {
                 return Err(AppError::msg(STALE_WINDOW));
             }
-            let mut run = state.workshop.lock().unwrap();
-            if run.active {
-                return Err(AppError::msg(RUNNING));
-            }
-            if run.window.as_ref().is_some_and(|entry| entry.0 == engine && entry.1 == title) {
-                run.window = None;
-            }
-        }
+            Some((engine, title))
+        } else {
+            None
+        };
         let mut run = state.workshop.lock().unwrap();
         if run.active {
             return Err(AppError::msg(RUNNING));
+        }
+        if let Some((engine, title)) = closed_stale {
+            if run.window.as_ref().is_some_and(|entry| entry.0 == engine && entry.1 == title) {
+                run.window = None;
+            }
         }
         if run.window.is_some() {
             return Err(AppError::msg(STALE_WINDOW));
@@ -530,7 +535,7 @@ pub async fn download_wallpaper(
 ) -> Result<WallpaperOutcome> {
     let options = options.unwrap_or_default();
     let id = item_id(&url)?;
-    let run = RunGuard::begin(&state)?;
+    let run = RunGuard::begin(&state).await?;
     let tracker = new_tracker(&app, &url);
     let outcome = export(&app, &state, &tracker, id, format, &options).await;
     drop(run);
@@ -1707,15 +1712,15 @@ mod tests {
         assert!(recording_note(10.0, true).unwrap().contains("repeats"));
     }
 
-    #[test]
-    fn shutdown_cancellation_refuses_publish_and_owner_removes_partial() {
+    #[tokio::test]
+    async fn shutdown_cancellation_refuses_publish_and_owner_removes_partial() {
         use tauri::Manager;
         let dir = crate::download_tests::temp_dir("export-owner");
         let app = tauri::test::mock_builder().build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
         let writer = crate::downloader::start_queue_writer(app.handle());
         app.manage(AppState::new(dir.clone(), Default::default(), Vec::new(), Vec::new(), writer, false));
         let state = app.state::<AppState>();
-        let guard = RunGuard::begin(&state).unwrap();
+        let guard = RunGuard::begin(&state).await.unwrap();
         let partial = dir.join("owned.partial");
         let target = dir.join("saved.mp4");
         assert!(register_partial(&state, &partial));
@@ -1729,8 +1734,8 @@ mod tests {
     }
 
     #[cfg(windows)]
-    #[test]
-    fn locked_partial_is_retained_for_shutdown_retry() {
+    #[tokio::test]
+    async fn locked_partial_is_retained_for_shutdown_retry() {
         use std::os::windows::fs::OpenOptionsExt;
         use tauri::Manager;
         let dir = crate::download_tests::temp_dir("export-locked-partial");
@@ -1738,7 +1743,7 @@ mod tests {
         let writer = crate::downloader::start_queue_writer(app.handle());
         app.manage(AppState::new(dir.clone(), Default::default(), Vec::new(), Vec::new(), writer, false));
         let state = app.state::<AppState>();
-        let guard = RunGuard::begin(&state).unwrap();
+        let guard = RunGuard::begin(&state).await.unwrap();
         let partial = dir.join("locked.partial");
         fs::write(&partial, b"data").unwrap();
         assert!(register_partial(&state, &partial));
@@ -1777,8 +1782,8 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
-    #[test]
-    fn stale_recording_window_is_rechecked_and_cleared_or_rejected() {
+    #[tokio::test]
+    async fn stale_recording_window_is_rechecked_and_cleared_or_rejected() {
         use tauri::Manager;
         let dir = crate::download_tests::temp_dir("export-stale-window");
         let app = tauri::test::mock_builder().build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
@@ -1788,7 +1793,11 @@ mod tests {
         let stale = (PathBuf::from(r"C:\no such folder\wallpaper64.exe"), "Claws stale window".to_string());
         state.workshop.lock().unwrap().window = Some(stale.clone());
 
-        let Err(err) = RunGuard::begin_with(&state, |_, _| false) else { panic!("still-open window must reject") };
+        let caller_thread = std::thread::current().id();
+        let Err(err) = RunGuard::begin_with(&state, move |_, _| {
+            assert_ne!(std::thread::current().id(), caller_thread, "stale-window close must run off the async thread");
+            false
+        }).await else { panic!("still-open window must reject") };
         assert!(err.to_string().contains("still open"), "{err}");
         {
             let run = state.workshop.lock().unwrap();
@@ -1796,7 +1805,7 @@ mod tests {
             assert_eq!(run.window.as_ref(), Some(&stale));
         }
 
-        let guard = RunGuard::begin(&state).expect("gone stale window is cleared and begin succeeds");
+        let guard = RunGuard::begin(&state).await.expect("gone stale window is cleared and begin succeeds");
         assert!(state.workshop.lock().unwrap().active);
         assert!(state.workshop.lock().unwrap().window.is_none());
         drop(guard);
@@ -2122,7 +2131,7 @@ mod tests {
             let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<export_progress::ProgressEvent>::new()));
             let sink = events.clone();
             let tracker = Tracker::new("live", move |event| sink.lock().unwrap().push(event));
-            let guard = RunGuard::begin(&state).expect("no other export is running");
+            let guard = RunGuard::begin(&state).await.expect("no other export is running");
             let started = Instant::now();
             let outcome = export(app.handle(), &state, &tracker, id, format, &options).await.expect("the export ends in an outcome");
             drop(guard);
@@ -2235,7 +2244,7 @@ mod tests {
         }
 
         // 1. has_gfxcapture_tracked registers PID, gets killed promptly on cancel, and does not cache false.
-        let _guard = RunGuard::begin(&state).unwrap();
+        let _guard = RunGuard::begin(&state).await.unwrap();
         let app_for_task = app.handle().clone();
         let gfx_path = gfx_probe.clone();
         let task = tokio::spawn(async move {
@@ -2260,7 +2269,7 @@ mod tests {
         assert!(workshop_record::has_gfxcapture(&gfx_probe).await);
 
         // 2. encoder::available_tracked registers PID, stops on cancel without waiting through all encoders.
-        let _guard = RunGuard::begin(&state).unwrap();
+        let _guard = RunGuard::begin(&state).await.unwrap();
         let app_for_task = app.handle().clone();
         let enc_path = enc_probe.clone();
         let task = tokio::spawn(async move {
@@ -2281,7 +2290,7 @@ mod tests {
         drop(_guard);
 
         // 3. probe_cached_tracked registers PID and kills child promptly on cancel.
-        let _guard = RunGuard::begin(&state).unwrap();
+        let _guard = RunGuard::begin(&state).await.unwrap();
         let app_for_task = app.handle().clone();
         let probe_path = media_probe.clone();
         let video = workshop_media::VideoProject { path: video_file, bytes: 14 };
@@ -2315,7 +2324,7 @@ mod tests {
         let writer = crate::downloader::start_queue_writer(app.handle());
         app.manage(AppState::new(dir.clone(), Default::default(), Vec::new(), Vec::new(), writer, false));
         let state = app.state::<AppState>();
-        let _guard = RunGuard::begin(&state).unwrap();
+        let _guard = RunGuard::begin(&state).await.unwrap();
 
         let engine = workshop_record::Engine { exe: PathBuf::from(r"C:\no such folder\wallpaper64.exe") };
         let tracker = Tracker::new("test", |_| {});
