@@ -427,8 +427,8 @@ pub fn close_window(engine: &Path, title: &str, grace: Duration) -> bool {
 }
 
 /// Keeps Wallpaper Engine's recording window from outliving the export: whatever way the work
-/// ends, dropping the guard closes it. `announce` tells the rest of Claws which window is open
-/// (so a shutdown can close it too) and, with `None`, that it is gone.
+/// ends, dropping the guard closes it. `open` publishes the window when launch happens;
+/// `announce(None)` tells the rest of Claws once it is closed.
 pub struct WindowGuard<'a> {
     engine: PathBuf,
     title: String,
@@ -440,7 +440,6 @@ pub struct WindowGuard<'a> {
 
 impl<'a> WindowGuard<'a> {
     pub fn new(engine: &Path, title: &str, announce: &'a (dyn Fn(Option<&str>) + Sync)) -> Self {
-        announce(Some(title));
         Self { engine: engine.to_path_buf(), title: title.to_string(), announce, closed: false, opened: None }
     }
 
@@ -942,9 +941,9 @@ mod tests {
         let mut guard = WindowGuard::new(Path::new("engine"), "title", &announce);
         guard.opened();
         assert!(!guard.close_now_with(|_, _, grace| { assert!(grace > Duration::from_secs(14)); false }));
-        assert_eq!(announcements.lock().unwrap().as_slice(), &[Some("title".to_owned())]);
+        assert!(announcements.lock().unwrap().is_empty());
         assert!(guard.close_now_with(|_, _, _| true));
-        assert_eq!(announcements.lock().unwrap().as_slice(), &[Some("title".to_owned()), None]);
+        assert_eq!(announcements.lock().unwrap().as_slice(), &[None]);
     }
 
     #[cfg(windows)]
@@ -1222,14 +1221,14 @@ mod tests {
             let _guard = WindowGuard::new(engine, "Claws a", &announce);
             // The scope ends as an early return, a failure or a cancel would end it.
         }
-        assert_eq!(*events.lock().unwrap(), [Some("Claws a".to_string()), None]);
+        assert_eq!(*events.lock().unwrap(), [None]);
         events.lock().unwrap().clear();
         {
             let mut guard = WindowGuard::new(engine, "Claws b", &announce);
             assert!(guard.close_now(), "nothing to close counts as closed");
             assert!(guard.close_now(), "closing again does nothing more");
         }
-        assert_eq!(*events.lock().unwrap(), [Some("Claws b".to_string()), None], "announced gone once");
+        assert_eq!(*events.lock().unwrap(), [None], "announced gone once");
         // A panic unwinding through the scope still closes it.
         events.lock().unwrap().clear();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1237,7 +1236,7 @@ mod tests {
             panic!("the recording blew up");
         }));
         assert!(result.is_err());
-        assert_eq!(*events.lock().unwrap(), [Some("Claws c".to_string()), None]);
+        assert_eq!(*events.lock().unwrap(), [None]);
     }
 
     #[test]
@@ -1318,11 +1317,7 @@ mod tests {
         let sink = events.clone();
         let tracker = Tracker::new("live", move |event| sink.lock().unwrap().push(event));
         let titles = Mutex::new(Vec::<String>::new());
-        let announce = |title: Option<&str>| {
-            if let Some(title) = title {
-                titles.lock().unwrap().push(title.to_string());
-            }
-        };
+        let announce = |_title: Option<&str>| {};
         let cancelled = || false;
         let on_spawn = |_pid: Option<u32>| true;
         let low_space = || drive_full;
@@ -1340,7 +1335,11 @@ mod tests {
             on_spawn: &on_spawn,
             low_space: &low_space,
             announce: &announce,
-            open: &|_, args| engine_command(&engine.exe, args).map(|_| true),
+            open: &|title, args| {
+                engine_command(&engine.exe, args)?;
+                titles.lock().unwrap().push(title.to_string());
+                Ok(true)
+            },
         };
         let started = Instant::now();
         let outcome = record(&request).await?;
@@ -1504,11 +1503,7 @@ mod tests {
                     }
                     true
                 };
-                let announce = |title: Option<&str>| {
-                    if let Some(title) = title {
-                        titles.lock().unwrap().push(title.to_string());
-                    }
-                };
+                let announce = |_title: Option<&str>| {};
                 let low_space = || false;
                 let request = RecordRequest {
                     ffmpeg: &ffmpeg,
@@ -1524,7 +1519,11 @@ mod tests {
                     on_spawn: &on_spawn,
                     low_space: &low_space,
                     announce: &announce,
-                    open: &|_, args| engine_command(&engine.exe, args).map(|_| true),
+                    open: &|title, args| {
+                        engine_command(&engine.exe, args)?;
+                        titles.lock().unwrap().push(title.to_string());
+                        Ok(true)
+                    },
                 };
                 record(&request).await
             })

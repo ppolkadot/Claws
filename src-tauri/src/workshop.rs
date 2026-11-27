@@ -2281,4 +2281,58 @@ mod tests {
 
         let _ = fs::remove_dir_all(dir);
     }
+
+    #[tokio::test]
+    async fn shutdown_before_open_does_not_record_window_or_wait() {
+        use tauri::Manager;
+        let dir = crate::download_tests::temp_dir("shutdown-before-open");
+        let project_json = dir.join("project.json");
+        fs::write(&project_json, r#"{"type":"scene"}"#).unwrap();
+        let app = tauri::test::mock_builder().build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
+        let writer = crate::downloader::start_queue_writer(app.handle());
+        app.manage(AppState::new(dir.clone(), Default::default(), Vec::new(), Vec::new(), writer, false));
+        let state = app.state::<AppState>();
+        let _guard = RunGuard::begin(&state).unwrap();
+
+        let engine = workshop_record::Engine { exe: PathBuf::from(r"C:\no such folder\wallpaper64.exe") };
+        let tracker = Tracker::new("test", |_| {});
+        let partial = dir.join("recording.partial");
+        let cancelled = || is_cancelled(&state);
+        let on_spawn = |pid| track_pid(&state, pid);
+        let low_space = || false;
+        let announce = |window: Option<&str>| {
+            state.workshop.lock().unwrap().window = window.map(|title| (engine.exe.clone(), title.to_string()));
+        };
+        let shutdown_elapsed = std::sync::Mutex::new(None);
+        let request = workshop_record::RecordRequest {
+            ffmpeg: Path::new("ffmpeg"),
+            ffprobe: None,
+            engine: &engine,
+            project_json: &project_json,
+            partial: &partial,
+            capture: workshop_record::Capture { width: 1280, height: 720, fps: 30, kind: workshop_record::CaptureKind::Picture },
+            pre_roll: 2,
+            moves: false,
+            tracker: &tracker,
+            cancelled: &cancelled,
+            on_spawn: &on_spawn,
+            low_space: &low_space,
+            announce: &announce,
+            open: &|title, _args| {
+                assert!(state.workshop.lock().unwrap().window.is_none(), "WindowGuard::new must not announce before open");
+                let started = Instant::now();
+                stop_for_shutdown(&state);
+                close_recording_window(&state);
+                *shutdown_elapsed.lock().unwrap() = Some(started.elapsed());
+                start_recording_window(&state.workshop, &state.shutting_down, &engine.exe, title, || panic!("must not launch after shutdown"))
+            },
+        };
+        let outcome = workshop_record::record(&request).await;
+        assert_eq!(outcome, Ok(workshop_record::Recorded::Cancelled));
+        let elapsed = shutdown_elapsed.lock().unwrap().expect("open hook ran");
+        assert!(elapsed < Duration::from_secs(2), "close_recording_window waited too long: {elapsed:?}");
+        assert!(state.workshop.lock().unwrap().window.is_none());
+        drop(_guard);
+        let _ = fs::remove_dir_all(dir);
+    }
 }
