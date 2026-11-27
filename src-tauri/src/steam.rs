@@ -2,7 +2,7 @@
 //! Wallpaper Engine Workshop items inside them. Everything here only reads; Claws never writes
 //! into a Steam folder.
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -244,6 +244,8 @@ pub struct WorkshopManifest {
     pub installed: HashMap<u64, InstalledItem>,
     /// The newest update time Steam has seen for an item, from `WorkshopItemDetails`.
     pub latest: HashMap<u64, i64>,
+    pub needs_download: HashSet<u64>,
+    pub needs_update: HashSet<u64>,
 }
 
 fn text<'a>(fields: &'a [(String, Vdf)], name: &str) -> Option<&'a str> {
@@ -272,8 +274,21 @@ pub fn parse_workshop_manifest(source: &str) -> WorkshopManifest {
     for items in blocks {
         for (key, value) in items {
             let (Ok(id), Vdf::Block(fields)) = (key.parse::<u64>(), value) else { continue };
+            if text(fields, "NeedsDownload").is_some_and(|v| v != "0" && !v.is_empty()) { manifest.needs_download.insert(id); }
+            if text(fields, "NeedsUpdate").is_some_and(|v| v != "0" && !v.is_empty()) { manifest.needs_update.insert(id); }
             if let Some(latest) = text(fields, "latest_timeupdated").and_then(|v| v.parse().ok()) {
                 manifest.latest.insert(id, latest);
+            }
+        }
+    }
+    for (key, target) in [("NeedsDownload", &mut manifest.needs_download), ("NeedsUpdate", &mut manifest.needs_update)] {
+        let mut blocks = Vec::new();
+        find_blocks(&entries, key, &mut blocks);
+        for items in blocks {
+            for (id, value) in items {
+                if let Ok(id) = id.parse::<u64>() {
+                    if !matches!(value, Vdf::Text(value) if value == "0" || value.is_empty()) { target.insert(id); }
+                }
             }
         }
     }
@@ -281,20 +296,13 @@ pub fn parse_workshop_manifest(source: &str) -> WorkshopManifest {
 }
 
 /// The state of an item that has a project folder.
-fn state_with_project(downloading: Option<u64>, installed: Option<&InstalledItem>, latest: Option<i64>, valve: Option<i64>, on_disk: u64) -> ItemState {
-    if let Some(bytes) = downloading {
-        return ItemState::Downloading { bytes };
-    }
-    let Some(installed) = installed else {
-        // A project Steam has not listed as installed is one it is still writing.
-        return ItemState::Downloading { bytes: on_disk };
-    };
+fn state_with_project(downloading: Option<u64>, installed: Option<&InstalledItem>, latest: Option<i64>, valve: Option<i64>, needs_download: bool, needs_update: bool, on_disk: u64) -> ItemState {
+    if let Some(bytes) = downloading { return ItemState::Downloading { bytes }; }
+    if needs_download { return ItemState::Downloading { bytes: on_disk }; }
     let newest = valve.into_iter().chain(latest).max();
-    if newest.is_some_and(|newest| newest > installed.time_updated) {
+    if needs_update || installed.is_some_and(|entry| newest.is_some_and(|newest| newest > entry.time_updated)) {
         ItemState::UpdatePending
-    } else {
-        ItemState::Installed
-    }
+    } else { ItemState::Installed }
 }
 
 /// Bytes under a folder: files only, no link followed, bounded in depth and entries.
@@ -310,11 +318,12 @@ pub(crate) fn bytes_below(folder: &Path) -> u64 {
             if *seen > 200_000 {
                 break;
             }
-            let Ok(kind) = entry.file_type() else { continue };
+            let Ok(kind) = fs::symlink_metadata(entry.path()) else { continue };
+            if is_link(&kind) { continue; }
             if kind.is_dir() {
                 total = total.saturating_add(walk(&entry.path(), depth + 1, seen));
             } else if kind.is_file() {
-                total = total.saturating_add(entry.metadata().map(|m| m.len()).unwrap_or(0));
+                total = total.saturating_add(kind.len());
             }
         }
         total
@@ -331,7 +340,13 @@ pub struct LocatedItem {
 }
 
 fn plain_dir(path: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir() && !is_link(&meta))
+    let mut current = PathBuf::new();
+    for part in path.components() {
+        current.push(part.as_os_str());
+        if matches!(part, std::path::Component::Prefix(_)) { continue; }
+        if !fs::symlink_metadata(&current).is_ok_and(|meta| meta.is_dir() && !is_link(&meta)) { return false; }
+    }
+    true
 }
 
 /// Looks the item up in every library: its project folder, Steam's manifest and the folder
@@ -341,21 +356,20 @@ pub fn locate_item(libraries: &[PathBuf], id: u64, valve_updated: Option<i64>) -
     for library in libraries {
         let workshop = library.join("steamapps").join("workshop");
         let downloads = workshop.join("downloads").join(APP_ID.to_string()).join(id.to_string());
-        let downloading = plain_dir(&downloads).then(|| bytes_below(&downloads));
+        let downloading = plain_dir(&downloads).then(|| bytes_below(&downloads)).filter(|bytes| *bytes > 0);
+        let manifest = read_text_capped(&workshop.join(format!("appworkshop_{APP_ID}.acf")))
+            .map(|text| parse_workshop_manifest(&text)).unwrap_or_default();
         let project = workshop_folder(library, id)
             .ok()
             .filter(|folder| fs::symlink_metadata(folder.join("project.json")).is_ok_and(|m| m.is_file() && !is_link(&m)));
         let Some(project) = project else {
             if downloading_only.is_none() {
-                downloading_only = downloading;
+                downloading_only = downloading.or_else(|| manifest.needs_download.contains(&id).then_some(0));
             }
             continue;
         };
-        let manifest = read_text_capped(&workshop.join(format!("appworkshop_{APP_ID}.acf")))
-            .map(|text| parse_workshop_manifest(&text))
-            .unwrap_or_default();
-        let on_disk = bytes_below(&project);
-        let state = state_with_project(downloading, manifest.installed.get(&id), manifest.latest.get(&id).copied(), valve_updated, on_disk);
+        let on_disk = if manifest.needs_download.contains(&id) { bytes_below(&project) } else { 0 };
+        let state = state_with_project(downloading, manifest.installed.get(&id), manifest.latest.get(&id).copied(), valve_updated, manifest.needs_download.contains(&id), manifest.needs_update.contains(&id), on_disk);
         return LocatedItem { project: Some(project), state };
     }
     LocatedItem {
@@ -573,9 +587,9 @@ mod tests {
         fs::write(update.join("part"), vec![0u8; 300]).unwrap();
         assert_eq!(locate_item(&libs, 123, None).state, ItemState::Downloading { bytes: 300 });
 
-        // A project Steam has not listed as installed counts as still downloading.
+        // Missing item metadata alone does not prove an active download.
         add_project(&dir, 555, 64);
-        assert!(matches!(locate_item(&libs, 555, None).state, ItemState::Downloading { bytes } if bytes >= 64));
+        assert_eq!(locate_item(&libs, 555, None).state, ItemState::Installed);
         assert_eq!(locate_item(&libs, 999, None), LocatedItem { project: None, state: ItemState::NotInstalled });
         fs::remove_dir_all(dir).unwrap();
     }
@@ -586,8 +600,37 @@ mod tests {
         add_project(&dir, 123, 10);
         let found = locate_item(std::slice::from_ref(&dir), 123, None);
         assert!(found.project.is_some());
-        assert!(matches!(found.state, ItemState::Downloading { .. }), "not listed as installed: not proven complete");
+        assert_eq!(found.state, ItemState::Installed, "unknown metadata does not prove downloading");
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn item_specific_download_and_update_hints_affect_the_state() {
+        let dir = library("steam-state-hints");
+        add_project(&dir, 123, 10);
+        let manifest = dir.join("steamapps/workshop/appworkshop_431960.acf");
+        fs::write(&manifest, r#""AppWorkshop" { "WorkshopItemDetails" { "123" { "NeedsDownload" "1" } } }"#).unwrap();
+        assert!(matches!(locate_item(std::slice::from_ref(&dir), 123, None).state, ItemState::Downloading { .. }));
+        fs::write(&manifest, r#""AppWorkshop" { "WorkshopItemDetails" { "123" { "NeedsUpdate" "1" } } }"#).unwrap();
+        assert_eq!(locate_item(std::slice::from_ref(&dir), 123, None).state, ItemState::UpdatePending);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn linked_download_ancestor_is_not_followed() {
+        let dir = library("linked-download-path");
+        let target = library("linked-download-target");
+        let child = target.join("431960/123");
+        fs::create_dir_all(&child).unwrap();
+        fs::write(child.join("part"), b"data").unwrap();
+        let link = dir.join("steamapps/workshop/downloads");
+        if std::os::windows::fs::symlink_dir(&target, &link).is_ok() {
+            assert_eq!(locate_item(std::slice::from_ref(&dir), 123, None).state, ItemState::NotInstalled);
+            fs::remove_dir(link).unwrap();
+        } else { eprintln!("skipped: creating a directory symlink requires permission"); }
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(target);
     }
 
     #[test]

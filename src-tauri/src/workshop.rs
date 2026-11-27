@@ -504,10 +504,15 @@ async fn export(app: &AppHandle, state: &AppState, tracker: &Tracker, id: u64, f
     })
     .await??;
 
-    let project = tauri::async_runtime::spawn_blocking(move || steam_root().and_then(|root| library_project(&library_folders(&root), id)))
-        .await
-        .map_err(|_| AppError::msg("Couldn't check the Steam library."))?;
-    let Some(project) = project else {
+    let located = tauri::async_runtime::spawn_blocking(move || steam_root().map(|root| locate_item(&library_folders(&root), id, item.time_updated)))
+        .await.map_err(|_| AppError::msg("Couldn't check the Steam library."))?;
+    let Some(located) = located else {
+        return Ok(WallpaperOutcome::Failed { message: "Steam's library could not be found.".into(), detail: None });
+    };
+    if matches!(located.state, ItemState::Downloading { .. }) {
+        return Ok(WallpaperOutcome::Failed { message: "Steam is still downloading this wallpaper. Wait for it to finish, then try again.".into(), detail: None });
+    }
+    let Some(project) = located.project else {
         return Ok(WallpaperOutcome::Failed {
             message: "This wallpaper isn't in your Steam library yet. Subscribe to it in Steam, wait for Steam to download it, then try again.".into(),
             detail: None,
