@@ -864,15 +864,22 @@ pub async fn estimate_wallpaper_export(
         return Ok(estimate_copy(video.bytes));
     }
     let Some(probe) = probe else { return Ok(Estimate { seconds: None, approximate: true, bytes: None }) };
-    let plan_length = (media == MediaFormat::Gif).then(|| workshop_media::gif_length(options.length_seconds));
-    let media_seconds = match (probe.duration, plan_length) {
-        (Some(duration), Some(length)) => Some(duration.min(f64::from(length))),
-        (Some(duration), None) => Some(duration),
-        (None, length) => length.map(f64::from),
-    };
-    let speed = state.settings.lock().unwrap().workshop_speeds.get(&speed_key(media, probe.height)).copied();
-    let bytes = (media == MediaFormat::Mp4).then_some(video.bytes);
-    Ok(estimate_conversion(media_seconds, speed, bytes))
+    let speeds = state.settings.lock().unwrap().workshop_speeds.clone();
+    Ok(estimate_probe_conversion(&probe, media, video.bytes, options.length_seconds, &speeds))
+}
+
+fn estimate_probe_conversion(
+    probe: &workshop_media::Probe,
+    media: MediaFormat,
+    video_bytes: u64,
+    length_seconds: Option<u32>,
+    speeds: &std::collections::BTreeMap<String, f64>,
+) -> Estimate {
+    let plan_length = (media == MediaFormat::Gif).then(|| workshop_media::gif_length(length_seconds));
+    let media_seconds = workshop_media::output_seconds(probe.duration, plan_length);
+    let speed = speeds.get(&speed_key(media, probe.height)).copied();
+    let bytes = (media == MediaFormat::Mp4).then_some(video_bytes);
+    estimate_conversion(media_seconds, speed, bytes)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2039,6 +2046,22 @@ mod tests {
         assert_eq!(estimate_conversion(Some(300.0), Some(0.0), None).seconds, None);
         let known = estimate_conversion(Some(294.0), Some(2.0), Some(7));
         assert_eq!((known.seconds, known.approximate, known.bytes), (Some(147.0), true, Some(7)));
+
+        // Unknown GIF duration: never invent an estimate from the 30/60 s cap.
+        let unknown_gif_probe = workshop_media::Probe {
+            video_codec: "h264".into(),
+            pix_fmt: "yuv420p".into(),
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            duration: None,
+            audio_codec: None,
+            format_name: "matroska,webm".into(),
+            frames: None,
+        };
+        let speeds = std::collections::BTreeMap::from([("gif-1080".to_string(), 2.0)]);
+        assert_eq!(estimate_probe_conversion(&unknown_gif_probe, MediaFormat::Gif, 5_000, Some(30), &speeds).seconds, None);
+        assert_eq!(estimate_probe_conversion(&unknown_gif_probe, MediaFormat::Gif, 5_000, None, &speeds).seconds, None);
     }
 
     #[test]

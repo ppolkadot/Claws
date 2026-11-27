@@ -345,8 +345,8 @@ impl Tracker {
         self.send(&mut inner, Some(shown), Some(total_seconds), Some(Unit::Seconds), eta, true, None);
     }
 
-    /// Recording: seconds since FFmpeg's first captured frame, of the length chosen. The time
-    /// left is exact. It stops 0.2 s short of the end until FFmpeg itself has finished.
+    /// Recording: seconds since FFmpeg's estimated first captured frame, of the length chosen.
+    /// The time left is approximate. It stops 0.2 s short of the end until FFmpeg itself has finished.
     pub fn recording(&self, seconds_since_first_frame: f64, length: f64, bytes: Option<u64>) {
         let mut inner = self.inner.lock().unwrap();
         if !self.due(&inner) {

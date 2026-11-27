@@ -471,6 +471,15 @@ pub struct ConvertPlan {
     pub length: Option<u32>,
 }
 
+/// The seconds of source the output covers, for progress and estimates.
+pub fn output_seconds(source: Option<f64>, length: Option<u32>) -> Option<f64> {
+    match (source, length) {
+        (Some(duration), Some(length)) => Some(duration.min(f64::from(length))),
+        (Some(duration), None) => Some(duration),
+        (None, _) => None,
+    }
+}
+
 impl ConvertPlan {
     /// A plan with software encoding and no cut, for a source whose size is not known.
     #[cfg(test)]
@@ -480,11 +489,7 @@ impl ConvertPlan {
 
     /// The seconds of source the output covers, for the progress fraction.
     pub fn output_seconds(&self, source: Option<f64>) -> Option<f64> {
-        match (source, self.length) {
-            (Some(duration), Some(length)) => Some(duration.min(f64::from(length))),
-            (Some(duration), None) => Some(duration),
-            (None, _) => None,
-        }
+        output_seconds(source, self.length)
     }
 }
 

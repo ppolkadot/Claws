@@ -595,7 +595,7 @@ function mockSteps(id: string, format: string, options?: unknown): MockStep[] {
     const steps: MockStep[] = [{ stage: "checking" }, { stage: "opening" }, { stage: "loading" }];
     for (const share of [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.93]) {
       const done = length * share;
-      steps.push({ stage: "recording", done, total: length, unit: "seconds", etaMs: Math.round((length - done) * 1000), bytes: Math.round(done * 2_600_000) });
+      steps.push({ stage: "recording", done, total: length, unit: "seconds", etaMs: Math.round((length - done) * 1000), approximate: true, bytes: Math.round(done * 2_600_000) });
     }
     return [...steps, { stage: "finishing" }];
   }
