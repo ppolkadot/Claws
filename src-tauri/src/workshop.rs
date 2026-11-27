@@ -465,6 +465,23 @@ pub async fn download_wallpaper(
     Ok(outcome)
 }
 
+fn path_within(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let normalize = |p: &Path| {
+            let raw = p.to_string_lossy().replace('/', "\\").to_lowercase();
+            let raw = if let Some(unc) = raw.strip_prefix(r"\\?\unc\") { format!(r"\\{unc}") }
+                else { raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string() };
+            raw.trim_end_matches('\\').to_string()
+        };
+        let path = normalize(path);
+        let root = normalize(root);
+        path == root || path.strip_prefix(&root).is_some_and(|rest| rest.starts_with('\\'))
+    }
+    #[cfg(not(windows))]
+    { path.starts_with(root) }
+}
+
 /// Resolve the existing ancestor before creating anything, preserving a missing suffix.
 fn destination_outside_libraries(destination: &Path, libraries: &[PathBuf]) -> io::Result<bool> {
     if !destination.is_absolute() || destination.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
@@ -480,8 +497,13 @@ fn destination_outside_libraries(destination: &Path, libraries: &[PathBuf]) -> i
     let mut resolved = fs::canonicalize(ancestor)?;
     for part in missing.into_iter().rev() { resolved.push(part); }
     for library in libraries {
-        let root = fs::canonicalize(library)?;
-        if resolved.starts_with(root) { return Ok(false); }
+        if path_within(destination, library) { return Ok(false); }
+        match fs::canonicalize(library) {
+            Ok(root) if path_within(&resolved, &root) => return Ok(false),
+            Ok(_) => {},
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+            Err(error) => return Err(error),
+        }
     }
     Ok(true)
 }
@@ -1601,6 +1623,14 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_library_comparison_handles_case_and_extended_unc_paths() {
+        assert!(path_within(Path::new(r"c:\steam\workshop"), Path::new(r"C:\Steam")));
+        assert!(!path_within(Path::new(r"C:\Steam-old"), Path::new(r"C:\Steam")));
+        assert!(path_within(Path::new(r"\\?\UNC\server\share\library\item"), Path::new(r"\\server\share\library")));
+    }
+
     #[test]
     fn steam_library_destinations_are_rejected_before_creation() {
         let dir = crate::download_tests::temp_dir("destination-safety");
@@ -1614,7 +1644,10 @@ mod tests {
         fs::write(&partial, b"keep").unwrap();
         sweep_partials_in_libraries(&steamapps, std::slice::from_ref(&library));
         assert!(partial.exists(), "startup sweep must leave Steam files alone");
-        assert!(destination_outside_libraries(&dir.join("elsewhere"), &[library]).unwrap());
+        assert!(destination_outside_libraries(&dir.join("elsewhere"), std::slice::from_ref(&library)).unwrap());
+        let offline = dir.join("offline-library");
+        assert!(destination_outside_libraries(&dir.join("elsewhere"), std::slice::from_ref(&offline)).unwrap());
+        assert!(!destination_outside_libraries(&offline.join("new"), &[offline]).unwrap());
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1949,7 +1982,7 @@ mod tests {
         for file in [&ours, &other, &video] {
             fs::write(file, b"x").unwrap();
         }
-        sweep_partials(&dir);
+        sweep_partials_in_libraries(&dir, &[]);
         assert!(!ours.exists());
         assert!(other.exists() && video.exists());
         fs::remove_dir_all(dir).unwrap();
