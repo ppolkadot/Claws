@@ -495,6 +495,23 @@ pub fn stop_for_shutdown(state: &AppState) -> Option<u32> {
     run.pid
 }
 
+fn is_cancelled(state: &AppState) -> bool {
+    state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst)
+}
+
+fn track_pid(state: &AppState, pid: Option<u32>) -> bool {
+    let mut current = state.workshop.lock().unwrap();
+    if pid.is_none() {
+        current.pid = None;
+        true
+    } else if current.cancelled || state.shutting_down.load(Ordering::SeqCst) {
+        false
+    } else {
+        current.pid = pid;
+        true
+    }
+}
+
 /// The tracker for one export: its events go to the interface as `workshop-progress`.
 fn new_tracker(app: &AppHandle, url: &str) -> Tracker {
     let app = app.clone();
@@ -942,22 +959,41 @@ async fn record_media(
 ) -> Result<SaveResult> {
     const NO_FFMPEG: &str = "Recording a wallpaper needs FFmpeg. Install it in Settings, then try again.";
     let (id, title) = item;
+    let cancelled = || is_cancelled(state);
+    let on_spawn = |pid| track_pid(state, pid);
+    if cancelled() {
+        return Ok(SaveResult::Cancelled);
+    }
     let Some(ffmpeg) = crate::tools::find_ffmpeg(app) else {
         return Ok(SaveResult::Failed { message: NO_FFMPEG.to_string(), detail: None });
     };
-    if !workshop_record::has_gfxcapture(&ffmpeg).await {
+    let Some(capturer) = workshop_record::has_gfxcapture_tracked(&ffmpeg, &on_spawn, &cancelled).await else {
+        return Ok(SaveResult::Cancelled);
+    };
+    if !capturer {
         return Ok(SaveResult::Failed { message: "This FFmpeg can't capture a window. Update FFmpeg in Settings → Tools, then try again.".into(), detail: None });
+    }
+    if cancelled() {
+        return Ok(SaveResult::Cancelled);
     }
     let engine = match tauri::async_runtime::spawn_blocking(workshop_record::find_engine).await? {
         Ok(engine) => engine,
         Err(problem) => return Ok(SaveResult::Failed { message: problem.message().to_string(), detail: None }),
     };
+    if cancelled() {
+        return Ok(SaveResult::Cancelled);
+    }
     let (kind, scene, problem) = inspect_project(project).await?;
     if problem.is_some() {
         return Ok(SaveResult::Failed { message: UNREADABLE_SCENE.to_string(), detail: None });
     }
+    if cancelled() {
+        return Ok(SaveResult::Cancelled);
+    }
     let authored = scene.as_ref().map_or(scene_pkg::Authored::Perspective, |scene| scene.authored);
-    let working = encoder::available(&ffmpeg).await;
+    let Some(working) = encoder::available_tracked(&ffmpeg, &on_spawn, &cancelled).await else {
+        return Ok(SaveResult::Cancelled);
+    };
     let works = |candidate: Encoder| working.contains(&candidate);
     let sizes = workshop_record::size_options(authored, crate::win_window::display(), &works);
     let size = match workshop_record::choose_size(&sizes, options.height) {
@@ -972,14 +1008,8 @@ async fn record_media(
             detail: None,
         });
     }
-    let probe_spawn = |pid: Option<u32>| {
-        let mut current = state.workshop.lock().unwrap();
-        if pid.is_none() { current.pid = None; true }
-        else if current.cancelled || state.shutting_down.load(Ordering::SeqCst) { false }
-        else { current.pid = pid; true }
-    };
-    let Some(chosen) = encoder::pick_tested(&ffmpeg, &working, size.width, size.height, fps, &probe_spawn).await else {
-        if state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst) { return Ok(SaveResult::Cancelled); }
+    let Some(chosen) = encoder::pick_tested(&ffmpeg, &working, size.width, size.height, fps, &on_spawn).await else {
+        if cancelled() { return Ok(SaveResult::Cancelled); }
         return Ok(SaveResult::Failed { message: "This PC has no video encoder that can record at that size.".into(), detail: None });
     };
     let length = options.length_seconds.unwrap_or(workshop_record::DEFAULT_LENGTH).clamp(1, workshop_record::MAX_LENGTH);
@@ -997,19 +1027,6 @@ async fn record_media(
     };
     let partial = output.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
     if !register_partial(state, &partial) { return Ok(SaveResult::Cancelled); }
-    let cancelled = || state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst);
-    let on_spawn = |pid: Option<u32>| {
-        let mut current = state.workshop.lock().unwrap();
-        if pid.is_none() {
-            current.pid = None;
-            true
-        } else if current.cancelled || state.shutting_down.load(Ordering::SeqCst) {
-            false
-        } else {
-            current.pid = pid;
-            true
-        }
-    };
     let low_space = || low_on_space(state, output);
     let announce = |window: Option<&str>| {
         state.workshop.lock().unwrap().window = window.map(|title| (engine.exe.clone(), title.to_string()));
@@ -1097,12 +1114,21 @@ const LOW_SPACE: &str = "The drive is almost full, so Claws stopped and removed 
 
 /// The encoder for an MP4 conversion: a hardware one when the source is over 1440p (software
 /// runs 4K at about 0.84 times real time), software otherwise, which is what it always was.
-async fn pick_conversion_encoder(ffmpeg: &Path, height: u32) -> Encoder {
-    if height <= encoder::SOFTWARE_MAX_HEIGHT {
-        return Encoder::X264;
+/// Returns `None` when cancelled while probing.
+async fn pick_conversion_encoder(
+    ffmpeg: &Path,
+    height: u32,
+    on_spawn: &(dyn Fn(Option<u32>) -> bool + Sync),
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Option<Encoder> {
+    if cancelled() {
+        return None;
     }
-    let working = encoder::available(ffmpeg).await;
-    encoder::ORDER.into_iter().find(|candidate| candidate.hardware() && working.contains(candidate)).unwrap_or(Encoder::X264)
+    if height <= encoder::SOFTWARE_MAX_HEIGHT {
+        return Some(Encoder::X264);
+    }
+    let working = encoder::available_tracked(ffmpeg, on_spawn, cancelled).await?;
+    Some(encoder::ORDER.into_iter().find(|candidate| candidate.hardware() && working.contains(candidate)).unwrap_or(Encoder::X264))
 }
 
 /// Saves the project's declared video and publishes the result. An H.264 MP4 is copied as it
@@ -1124,6 +1150,11 @@ async fn convert_media(
     const NO_FFMPEG: &str = "Converting a wallpaper needs FFmpeg. Install it in Settings, then try again.";
 
     let (id, title) = item;
+    let cancelled = || is_cancelled(state);
+    let on_spawn = |pid| track_pid(state, pid);
+    if cancelled() {
+        return Ok(SaveResult::Cancelled);
+    }
     let measured = project.to_path_buf();
     let checked = tauri::async_runtime::spawn_blocking(move || workshop_media::video_file(&measured)).await?;
     let video = match checked {
@@ -1131,16 +1162,21 @@ async fn convert_media(
         Err(MediaError::Unsupported) => return Ok(SaveResult::Unsupported(NO_VIDEO.to_string())),
         Err(MediaError::Unsafe) => return Ok(SaveResult::Failed { message: UNSAFE.to_string(), detail: None }),
     };
+    if cancelled() {
+        return Ok(SaveResult::Cancelled);
+    }
     let Some(ffmpeg) = crate::tools::find_ffmpeg(app) else {
         return Ok(SaveResult::Failed { message: NO_FFMPEG.to_string(), detail: None });
     };
     let probe = match crate::tools::find_ffprobe(app) {
-        Some(ffprobe) => workshop_media::probe_cached(&ffprobe, &video).await,
+        Some(ffprobe) => workshop_media::probe_cached_tracked(&ffprobe, &video, &on_spawn).await,
         None => None,
     };
+    if cancelled() {
+        return Ok(SaveResult::Cancelled);
+    }
     let partial = output.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
     if !register_partial(state, &partial) { return Ok(SaveResult::Cancelled); }
-    let cancelled = || state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst);
 
     if format == MediaFormat::Mp4 && probe.as_ref().is_some_and(|probe| probe.can_copy(&video.path)) {
         // The original is already the right kind of file: copy it, byte for byte.
@@ -1188,9 +1224,17 @@ async fn convert_media(
     }
 
     let (width, height, fps) = probe.as_ref().map_or((1920, 1080, 30), |probe| (probe.width, probe.height, probe.fps.round().clamp(1.0, 240.0) as u32));
+    let encoder = if format == MediaFormat::Mp4 {
+        let Some(encoder) = pick_conversion_encoder(&ffmpeg, height, &on_spawn, &cancelled).await else {
+            return Ok(SaveResult::Cancelled);
+        };
+        encoder
+    } else {
+        Encoder::X264
+    };
     let plan = workshop_media::ConvertPlan {
         format,
-        encoder: if format == MediaFormat::Mp4 { pick_conversion_encoder(&ffmpeg, height).await } else { Encoder::X264 },
+        encoder,
         width,
         height,
         fps: fps.max(1),
@@ -1230,15 +1274,7 @@ async fn convert_media(
         &video.path,
         &partial,
         &plan,
-        |pid| {
-            let mut current = state.workshop.lock().unwrap();
-            if current.cancelled || state.shutting_down.load(Ordering::SeqCst) {
-                false
-            } else {
-                current.pid = pid;
-                true
-            }
-        },
+        on_spawn,
         &cancelled,
         &on_progress,
     )
@@ -2154,5 +2190,95 @@ mod tests {
         let status = timeout(Duration::from_secs(10), child.wait()).await.expect("stopped").unwrap();
         assert!(!status.success());
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn cancelling_during_preflight_probe_kills_the_child_promptly() {
+        use tauri::Manager;
+        let dir = crate::download_tests::temp_dir("preflight-cancel");
+        let app = tauri::test::mock_builder().build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
+        let writer = crate::downloader::start_queue_writer(app.handle());
+        app.manage(AppState::new(dir.clone(), Default::default(), Vec::new(), Vec::new(), writer, false));
+        let state = app.state::<AppState>();
+
+        let gfx_probe = dir.join("fake-ffmpeg-gfx.cmd");
+        let enc_probe = dir.join("fake-ffmpeg-enc.cmd");
+        let media_probe = dir.join("fake-ffprobe.cmd");
+        let video_file = dir.join("sample.mp4");
+        fs::write(&video_file, b"not-a-real-mp4").unwrap();
+        for script in [&gfx_probe, &enc_probe, &media_probe] {
+            fs::write(script, "@echo off\r\nping -n 30 127.0.0.1 >nul\r\n").unwrap();
+        }
+
+        // 1. has_gfxcapture_tracked registers PID, gets killed promptly on cancel, and does not cache false.
+        let _guard = RunGuard::begin(&state).unwrap();
+        let app_for_task = app.handle().clone();
+        let gfx_path = gfx_probe.clone();
+        let task = tokio::spawn(async move {
+            let state = app_for_task.state::<AppState>();
+            workshop_record::has_gfxcapture_tracked(&gfx_path, &|pid| track_pid(&state, pid), &|| is_cancelled(&state)).await
+        });
+        let wait_pid = Instant::now();
+        while state.workshop.lock().unwrap().pid.is_none() && wait_pid.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+        assert!(state.workshop.lock().unwrap().pid.is_some(), "gfxcapture probe PID must be registered");
+        let cancel_started = Instant::now();
+        cancel_wallpaper_download(app.state());
+        let res = timeout(Duration::from_secs(5), task).await.expect("gfxcapture probe stopped promptly").unwrap();
+        assert_eq!(res, None);
+        assert!(cancel_started.elapsed() < Duration::from_secs(5));
+        assert!(state.workshop.lock().unwrap().pid.is_none());
+        drop(_guard);
+
+        // Replace with a fast script outputting gfxcapture: proves the cancelled run did not poison the cache.
+        fs::write(&gfx_probe, "@echo off\r\necho gfxcapture\r\n").unwrap();
+        assert!(workshop_record::has_gfxcapture(&gfx_probe).await);
+
+        // 2. encoder::available_tracked registers PID, stops on cancel without waiting through all encoders.
+        let _guard = RunGuard::begin(&state).unwrap();
+        let app_for_task = app.handle().clone();
+        let enc_path = enc_probe.clone();
+        let task = tokio::spawn(async move {
+            let state = app_for_task.state::<AppState>();
+            encoder::available_tracked(&enc_path, &|pid| track_pid(&state, pid), &|| is_cancelled(&state)).await
+        });
+        let wait_pid = Instant::now();
+        while state.workshop.lock().unwrap().pid.is_none() && wait_pid.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+        assert!(state.workshop.lock().unwrap().pid.is_some(), "encoder probe PID must be registered");
+        let cancel_started = Instant::now();
+        cancel_wallpaper_download(app.state());
+        let res = timeout(Duration::from_secs(5), task).await.expect("encoder probe stopped promptly").unwrap();
+        assert_eq!(res, None);
+        assert!(cancel_started.elapsed() < Duration::from_secs(5));
+        assert!(state.workshop.lock().unwrap().pid.is_none());
+        drop(_guard);
+
+        // 3. probe_cached_tracked registers PID and kills child promptly on cancel.
+        let _guard = RunGuard::begin(&state).unwrap();
+        let app_for_task = app.handle().clone();
+        let probe_path = media_probe.clone();
+        let video = workshop_media::VideoProject { path: video_file, bytes: 14 };
+        let task = tokio::spawn(async move {
+            let state = app_for_task.state::<AppState>();
+            workshop_media::probe_cached_tracked(&probe_path, &video, &|pid| track_pid(&state, pid)).await
+        });
+        let wait_pid = Instant::now();
+        while state.workshop.lock().unwrap().pid.is_none() && wait_pid.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+        assert!(state.workshop.lock().unwrap().pid.is_some(), "ffprobe PID must be registered");
+        let cancel_started = Instant::now();
+        cancel_wallpaper_download(app.state());
+        let res = timeout(Duration::from_secs(5), task).await.expect("ffprobe stopped promptly").unwrap();
+        assert_eq!(res, None);
+        assert!(cancel_started.elapsed() < Duration::from_secs(5));
+        assert!(state.workshop.lock().unwrap().pid.is_none());
+        drop(_guard);
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

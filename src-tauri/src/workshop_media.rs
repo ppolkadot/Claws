@@ -287,6 +287,7 @@ impl Probe {
 
 /// Runs ffprobe on the declared file: one local input, its own container as the demuxer, and
 /// a bounded reply. `None` when ffprobe cannot read it.
+#[cfg(test)]
 pub async fn probe(ffprobe: &Path, input: &Path) -> Option<Probe> {
     run_probe(ffprobe, input, demuxer(input), &|_| true).await
 }
@@ -316,12 +317,18 @@ async fn run_probe(ffprobe: &Path, input: &Path, demuxer: Option<&'static str>, 
     #[cfg(windows)]
     command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let mut child = command.spawn().ok()?;
-    if !on_spawn(child.id()) { let _ = child.kill().await; return None; }
+    let pid = child.id();
+    if !on_spawn(pid) {
+        if let Some(pid) = pid { kill_tree(pid, true); }
+        let _ = child.kill().await;
+        return None;
+    }
     let stdout = child.stdout.take()?;
     let read = crate::bounded_io::read_capped(stdout, 256 * 1024);
     let (bytes, status) = match tokio::time::timeout(Duration::from_secs(30), async { tokio::join!(read, child.wait()) }).await {
         Ok((Ok(bytes), Ok(status))) => (bytes, status),
         _ => {
+            if let Some(pid) = pid { kill_tree(pid, true); }
             let _ = child.kill().await;
             on_spawn(None);
             return None;
@@ -334,6 +341,15 @@ async fn run_probe(ffprobe: &Path, input: &Path, demuxer: Option<&'static str>, 
 /// Probes the declared video, remembering the answer for a file that has not changed (the
 /// estimate asks again on every choice the user makes).
 pub async fn probe_cached(ffprobe: &Path, video: &VideoProject) -> Option<Probe> {
+    probe_cached_tracked(ffprobe, video, &|_| true).await
+}
+
+/// Same as `probe_cached`, but registers the ffprobe PID while it runs.
+pub async fn probe_cached_tracked(
+    ffprobe: &Path,
+    video: &VideoProject,
+    on_spawn: &(dyn Fn(Option<u32>) -> bool + Sync),
+) -> Option<Probe> {
     use std::{collections::HashMap, sync::OnceLock};
     type Key = (PathBuf, u64, u64);
     static CACHE: OnceLock<Mutex<HashMap<Key, Probe>>> = OnceLock::new();
@@ -343,7 +359,7 @@ pub async fn probe_cached(ffprobe: &Path, video: &VideoProject) -> Option<Probe>
     if let Some(known) = cache.lock().unwrap().get(&key) {
         return Some(known.clone());
     }
-    let probe = probe(ffprobe, &video.path).await?;
+    let probe = run_probe(ffprobe, &video.path, demuxer(&video.path), on_spawn).await?;
     let mut known = cache.lock().unwrap();
     if known.len() >= 32 {
         known.clear();

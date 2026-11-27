@@ -145,32 +145,64 @@ where F: FnMut(Encoder) -> Fut, Fut: std::future::Future<Output = bool> {
 }
 
 pub async fn pick_tested(ffmpeg: &Path, working: &[Encoder], width: u32, height: u32, fps: u32, on_spawn: &(dyn Fn(Option<u32>) -> bool + Sync)) -> Option<Encoder> {
-    pick_tested_with(working, height, fps, |encoder| async move {
-        let source = format!("color=c=black:s={width}x{height}:r={fps}");
-        let mut args: Vec<String> = ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", &source, "-frames:v", "2"].map(str::to_string).into();
-        args.extend(encoder.args(width, height, fps));
-        args.extend(["-f", "null", "-"].map(str::to_string));
-        let mut command = Command::new(ffmpeg);
-        command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
-        #[cfg(windows)]
-        command.creation_flags(0x0800_0000);
-        let Ok(mut child) = command.spawn() else { return false };
-        if !on_spawn(child.id()) { let _ = child.kill().await; return false; }
-        let result = tokio::time::timeout(Duration::from_secs(20), child.wait()).await;
-        if result.is_err() { let _ = child.kill().await; }
-        on_spawn(None);
-        matches!(result, Ok(Ok(status)) if status.success())
+    let aborted = std::sync::atomic::AtomicBool::new(false);
+    pick_tested_with(working, height, fps, |encoder| {
+        let aborted = &aborted;
+        async move {
+            if aborted.load(std::sync::atomic::Ordering::Relaxed) {
+                return false;
+            }
+            let source = format!("color=c=black:s={width}x{height}:r={fps}");
+            let mut args: Vec<String> = ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", &source, "-frames:v", "2"].map(str::to_string).into();
+            args.extend(encoder.args(width, height, fps));
+            args.extend(["-f", "null", "-"].map(str::to_string));
+            let mut command = Command::new(ffmpeg);
+            command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
+            #[cfg(windows)]
+            command.creation_flags(0x0800_0000);
+            let Ok(mut child) = command.spawn() else { return false };
+            let pid = child.id();
+            if !on_spawn(pid) {
+                aborted.store(true, std::sync::atomic::Ordering::Relaxed);
+                if let Some(pid) = pid { crate::downloader::kill_tree(pid, true); }
+                let _ = child.kill().await;
+                return false;
+            }
+            let result = tokio::time::timeout(Duration::from_secs(20), child.wait()).await;
+            if result.is_err() {
+                if let Some(pid) = pid { crate::downloader::kill_tree(pid, true); }
+                let _ = child.kill().await;
+            }
+            on_spawn(None);
+            matches!(result, Ok(Ok(status)) if status.success())
+        }
     }).await
 }
 
 /// Which encoders this FFmpeg can really use on this PC, in probe order. Each is tried with a
 /// short encode; the answer is kept for the life of the app.
 pub async fn available(ffmpeg: &Path) -> Vec<Encoder> {
+    available_tracked(ffmpeg, &|_| true, &|| false).await.unwrap_or_default()
+}
+
+/// Same as `available`, but registers each child PID and stops between probes on cancel.
+/// Returns `None` when cancelled so partial results are never cached.
+pub async fn available_tracked(
+    ffmpeg: &Path,
+    on_spawn: &(dyn Fn(Option<u32>) -> bool + Sync),
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Option<Vec<Encoder>> {
+    if cancelled() {
+        return None;
+    }
     if let Some(known) = cache().lock().unwrap().get(ffmpeg) {
-        return known.clone();
+        return Some(known.clone());
     }
     let mut working = Vec::new();
     for encoder in ORDER {
+        if cancelled() {
+            return None;
+        }
         if encoder == Encoder::X264 {
             working.push(encoder);
             continue;
@@ -179,16 +211,28 @@ pub async fn available(ffmpeg: &Path) -> Vec<Encoder> {
         command.args(probe_args(encoder)).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        let ok = match tokio::time::timeout(Duration::from_secs(20), command.status()).await {
-            Ok(Ok(status)) => status.success(),
-            _ => false,
-        };
-        if ok {
+        let Ok(mut child) = command.spawn() else { continue };
+        let pid = child.id();
+        if !on_spawn(pid) {
+            if let Some(pid) = pid { crate::downloader::kill_tree(pid, true); }
+            let _ = child.kill().await;
+            return None;
+        }
+        let result = tokio::time::timeout(Duration::from_secs(20), child.wait()).await;
+        if result.is_err() {
+            if let Some(pid) = pid { crate::downloader::kill_tree(pid, true); }
+            let _ = child.kill().await;
+        }
+        on_spawn(None);
+        if cancelled() {
+            return None;
+        }
+        if matches!(result, Ok(Ok(status)) if status.success()) {
             working.push(encoder);
         }
     }
     cache().lock().unwrap().insert(ffmpeg.to_path_buf(), working.clone());
-    working
+    Some(working)
 }
 
 #[cfg(test)]

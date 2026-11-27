@@ -823,28 +823,64 @@ pub async fn record_info(kind: &'static str, scene: Option<SceneInfo>, ffmpeg: O
 
 /// Whether FFmpeg can capture a window (`gfxcapture`). Asked once per FFmpeg.
 pub async fn has_gfxcapture(ffmpeg: &Path) -> bool {
+    has_gfxcapture_tracked(ffmpeg, &|_| true, &|| false).await.unwrap_or(false)
+}
+
+/// Same as `has_gfxcapture`, but registers the child PID and returns `None` when cancelled so
+/// a cancelled probe is never cached.
+pub async fn has_gfxcapture_tracked(
+    ffmpeg: &Path,
+    on_spawn: &(dyn Fn(Option<u32>) -> bool + Sync),
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Option<bool> {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
+    if cancelled() {
+        return None;
+    }
     let cache = CACHE.get_or_init(Default::default);
     if let Some(known) = cache.lock().unwrap().get(ffmpeg) {
-        return *known;
+        return Some(*known);
     }
     let mut command = Command::new(ffmpeg);
     command.args(["-hide_banner", "-filters"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let found = if let Ok(mut child) = command.spawn() {
-        if let Some(stdout) = child.stdout.take() {
+        let pid = child.id();
+        if !on_spawn(pid) {
+            if let Some(pid) = pid { kill_tree(pid, true); }
+            let _ = child.kill().await;
+            return None;
+        }
+        let ok = if let Some(stdout) = child.stdout.take() {
             let result = tokio::time::timeout(Duration::from_secs(20), async {
                 let bytes = crate::bounded_io::read_capped(stdout, 512 * 1024).await.ok()?;
                 let status = child.wait().await.ok()?;
                 (status.success() && String::from_utf8_lossy(&bytes).contains("gfxcapture")).then_some(())
             }).await;
-            if !matches!(result, Ok(Some(()))) { let _ = child.kill().await; }
+            if !matches!(result, Ok(Some(()))) {
+                if let Some(pid) = pid { kill_tree(pid, true); }
+                let _ = child.kill().await;
+            }
             matches!(result, Ok(Some(())))
-        } else { let _ = child.kill().await; false }
-    } else { false };
+        } else {
+            if let Some(pid) = pid { kill_tree(pid, true); }
+            let _ = child.kill().await;
+            false
+        };
+        on_spawn(None);
+        if cancelled() {
+            return None;
+        }
+        ok
+    } else {
+        if cancelled() {
+            return None;
+        }
+        false
+    };
     cache.lock().unwrap().insert(ffmpeg.to_path_buf(), found);
-    found
+    Some(found)
 }
 
 #[cfg(test)]
