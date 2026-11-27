@@ -355,7 +355,7 @@ pub(crate) fn lock_engine_path(exe: &Path) -> std::io::Result<Vec<std::fs::File>
 
 /// Runs Wallpaper Engine's command line. It returns as soon as it has passed the order on (or
 /// has become the running Wallpaper Engine itself, which is why it is never waited for).
-fn engine_command(exe: &Path, args: &[&str]) -> std::io::Result<()> {
+pub(crate) fn engine_command(exe: &Path, args: &[&str]) -> std::io::Result<()> {
     #[cfg(windows)]
     let held = lock_engine_path(exe)?;
     #[cfg(windows)]
@@ -480,6 +480,8 @@ pub struct RecordRequest<'a> {
     pub low_space: &'a (dyn Fn() -> bool + Sync),
     /// Which Wallpaper Engine window is open, for shutdown (`None` once it is closed).
     pub announce: &'a (dyn Fn(Option<&str>) + Sync),
+    /// Serializes an open order with cancellation and shutdown.
+    pub open: &'a (dyn Fn(&str, &[&str]) -> std::io::Result<bool> + Sync),
 }
 
 #[derive(Debug, PartialEq)]
@@ -534,11 +536,10 @@ async fn record_inner(request: &RecordRequest<'_>) -> Result<Recorded, RecordFai
     let mut guard = WindowGuard::new(engine, &title, request.announce);
     let project = dunce::canonicalize(request.project_json).map_err(|_| fail("Claws couldn't read this wallpaper's project.", ""))?;
     let (width, height) = (capture.width.to_string(), capture.height.to_string());
-    engine_command(
-        engine,
-        &["-control", "openWallpaper", "-file", &project.to_string_lossy(), "-playInWindow", &title, "-width", &width, "-height", &height],
-    )
-    .map_err(|_| fail("Claws couldn't start Wallpaper Engine.", ""))?;
+    let args = ["-control", "openWallpaper", "-file", &project.to_string_lossy(), "-playInWindow", &title, "-width", &width, "-height", &height];
+    if !(request.open)(&title, &args).map_err(|_| fail("Claws couldn't start Wallpaper Engine.", ""))? {
+        return Ok(Recorded::Cancelled);
+    }
     guard.opened();
 
     // Wait for its window.
@@ -1225,6 +1226,7 @@ mod tests {
             on_spawn: &on_spawn,
             low_space: &low_space,
             announce: &announce,
+            open: &|_, args| engine_command(&engine.exe, args).map(|_| true),
         };
         let started = Instant::now();
         let outcome = record(&request).await?;
@@ -1408,6 +1410,7 @@ mod tests {
                     on_spawn: &on_spawn,
                     low_space: &low_space,
                     announce: &announce,
+                    open: &|_, args| engine_command(&engine.exe, args).map(|_| true),
                 };
                 record(&request).await
             })

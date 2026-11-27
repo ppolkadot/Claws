@@ -389,6 +389,21 @@ pub fn cancel_wallpaper_download(state: State<'_, AppState>) {
     }
 }
 
+/// Keep an open order and its pending window atomic with cancellation/shutdown.
+fn start_recording_window(
+    run: &std::sync::Mutex<Run>, shutting_down: &std::sync::atomic::AtomicBool,
+    engine: &Path, title: &str, launch: impl FnOnce() -> io::Result<()>,
+) -> io::Result<bool> {
+    let mut current = run.lock().unwrap();
+    if current.cancelled || shutting_down.load(Ordering::SeqCst) { return Ok(false); }
+    current.window = Some((engine.to_path_buf(), title.to_owned()));
+    if let Err(error) = launch() {
+        current.window = None;
+        return Err(error);
+    }
+    Ok(true)
+}
+
 /// For shutdown: the FFmpeg process to stop, if one runs.
 pub fn stop_for_shutdown(state: &AppState) -> Option<u32> {
     let mut run = state.workshop.lock().unwrap();
@@ -858,6 +873,7 @@ async fn record_media(
         on_spawn: &on_spawn,
         low_space: &low_space,
         announce: &announce,
+        open: &|title, args| start_recording_window(&state.workshop, &state.shutting_down, &engine.exe, title, || workshop_record::engine_command(&engine.exe, args)),
     };
     let recorded = workshop_record::record(&request).await;
     state.workshop.lock().unwrap().pid = None;
@@ -1449,6 +1465,30 @@ mod tests {
         assert_eq!(export_name("Ocean", 7, 1, "gif"), "Ocean (7) (1).gif");
     }
 
+
+    #[test]
+    fn shutdown_and_open_order_are_serialized() {
+        use std::sync::{Arc, Mutex, atomic::AtomicBool, mpsc};
+        let run = Arc::new(Mutex::new(Run { active: true, ..Run::default() }));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (run2, shutdown2) = (run.clone(), shutdown.clone());
+        let opener = std::thread::spawn(move || start_recording_window(&run2, &shutdown2, Path::new("engine"), "title", || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            Ok(())
+        }).unwrap());
+        entered_rx.recv().unwrap();
+        shutdown.store(true, Ordering::SeqCst);
+        release_tx.send(()).unwrap();
+        assert!(opener.join().unwrap());
+        let mut current = run.lock().unwrap();
+        current.cancelled = true;
+        assert_eq!(current.window.as_ref().map(|w| w.1.as_str()), Some("title"));
+        drop(current);
+        assert!(!start_recording_window(&run, &shutdown, Path::new("engine"), "late", || panic!("must not launch")).unwrap());
+    }
 
     #[test]
     fn exports_the_project_tree_without_replacing_an_existing_backup() {
