@@ -12,6 +12,7 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
+use serde::Serialize;
 use tokio::process::Command;
 
 use crate::{
@@ -180,6 +181,44 @@ fn demuxer(path: &Path) -> Option<&'static str> {
 }
 
 // ---------------------------------------------------------------------------------------
+// What kind of project it is
+
+/// The kind of Wallpaper Engine project, from its own `project.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectKind {
+    Video,
+    Scene,
+    Web,
+    /// Runs its own program inside Wallpaper Engine: only ever archived, never run.
+    Application,
+    /// Only settings for another item.
+    Preset,
+    Unknown,
+}
+
+/// Reads the project's kind. The file is read through a handle that refuses a link, and only up
+/// to the manifest size limit.
+pub fn project_kind(project: &Path) -> ProjectKind {
+    let manifest = project.join("project.json");
+    let Ok(meta) = fs::symlink_metadata(&manifest) else { return ProjectKind::Unknown };
+    if is_link(&meta) || !meta.is_file() || meta.len() == 0 || meta.len() > MAX_PROJECT_JSON {
+        return ProjectKind::Unknown;
+    }
+    let Ok(text) = read_manifest(&manifest) else { return ProjectKind::Unknown };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return ProjectKind::Unknown };
+    match value.get("type").and_then(|kind| kind.as_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("video") => ProjectKind::Video,
+        Some("scene") => ProjectKind::Scene,
+        Some("web") => ProjectKind::Web,
+        Some("application") => ProjectKind::Application,
+        Some(_) => ProjectKind::Unknown,
+        None if value.get("preset").is_some() => ProjectKind::Preset,
+        None => ProjectKind::Unknown,
+    }
+}
+
+// ---------------------------------------------------------------------------------------
 // What the video is
 
 /// What ffprobe reports about the declared video file.
@@ -195,6 +234,8 @@ pub struct Probe {
     pub audio_codec: Option<String>,
     /// ffprobe's container name, such as `mov,mp4,m4a,3gp,3g2,mj2`.
     pub format_name: String,
+    /// The frame count the container records, when it records one.
+    pub frames: Option<u64>,
 }
 
 /// ffprobe's frame rate fields are fractions such as `30000/1001`.
@@ -226,6 +267,7 @@ pub fn parse_probe(json: &[u8]) -> Option<Probe> {
             .filter(|d| d.is_finite() && *d > 0.0),
         audio_codec: audio.and_then(|a| text(a, "codec_name")),
         format_name: format.and_then(|f| f.get("format_name")).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        frames: video.get("nb_frames").and_then(|v| v.as_str().and_then(|s| s.parse::<u64>().ok()).or_else(|| v.as_u64())),
     })
 }
 
@@ -246,13 +288,23 @@ impl Probe {
 /// Runs ffprobe on the declared file: one local input, its own container as the demuxer, and
 /// a bounded reply. `None` when ffprobe cannot read it.
 pub async fn probe(ffprobe: &Path, input: &Path) -> Option<Probe> {
+    run_probe(ffprobe, input, demuxer(input)).await
+}
+
+/// Runs ffprobe on a file Claws wrote itself (a recording under a `.partial` name), letting
+/// ffprobe recognise the container.
+pub async fn probe_file(ffprobe: &Path, file: &Path) -> Option<Probe> {
+    run_probe(ffprobe, file, None).await
+}
+
+async fn run_probe(ffprobe: &Path, input: &Path, demuxer: Option<&'static str>) -> Option<Probe> {
     let mut command = Command::new(ffprobe);
     command.args(["-v", "error", "-hide_banner", "-of", "json", "-protocol_whitelist", "file"]);
     command.args([
         "-show_entries",
-        "stream=codec_type,codec_name,pix_fmt,width,height,avg_frame_rate,r_frame_rate:format=format_name,duration",
+        "stream=codec_type,codec_name,pix_fmt,width,height,avg_frame_rate,r_frame_rate,nb_frames:format=format_name,duration",
     ]);
-    if let Some(demuxer) = demuxer(input) {
+    if let Some(demuxer) = demuxer {
         command.args(["-f", demuxer]);
     }
     command.arg("-i").arg(input).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
@@ -931,6 +983,30 @@ mod tests {
         assert_eq!(done, Outcome::Cancelled, "a killed run is a cancellation");
         assert!(!output.exists());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_kind_of_a_project_comes_from_its_own_manifest() {
+        let kind = |body: &str| {
+            let dir = project("media-kind-of");
+            manifest(&dir, body);
+            let found = project_kind(&dir);
+            std::fs::remove_dir_all(dir).unwrap();
+            found
+        };
+        assert_eq!(kind(r#"{"type":"video","file":"a.mp4"}"#), ProjectKind::Video);
+        assert_eq!(kind(r#"{"type":"Scene","file":"scene.json"}"#), ProjectKind::Scene);
+        assert_eq!(kind(r#"{"type":"WEB","file":"index.html"}"#), ProjectKind::Web);
+        assert_eq!(kind(r#"{"type":"application","file":"a.exe"}"#), ProjectKind::Application);
+        assert_eq!(kind(r#"{"preset":{"x":1},"dependency":"123"}"#), ProjectKind::Preset);
+        assert_eq!(kind(r#"{"type":"something new"}"#), ProjectKind::Unknown);
+        assert_eq!(kind(r#"{}"#), ProjectKind::Unknown);
+        assert_eq!(kind("not json"), ProjectKind::Unknown);
+        assert_eq!(kind(&format!(r#"{{"type":"scene","pad":"{}"}}"#, "x".repeat(MAX_PROJECT_JSON as usize))), ProjectKind::Unknown, "an oversized manifest is not read");
+        let missing = project("media-kind-missing");
+        assert_eq!(project_kind(&missing), ProjectKind::Unknown);
+        std::fs::remove_dir_all(missing).unwrap();
+        assert_eq!(serde_json::to_value(ProjectKind::Scene).unwrap(), "scene");
     }
 
     // ----- what the video is -----

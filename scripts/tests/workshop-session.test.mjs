@@ -14,6 +14,9 @@ import {
   lookupProblem,
   missingForStart,
   offersVideo,
+  recordFps,
+  recordNotes,
+  recordSize,
   savedLine,
   stageFraction,
   stageLine,
@@ -26,7 +29,7 @@ const item = { id: "123", title: "Ocean", previewUrl: null, fileSize: 10, timeUp
 
 /** A library status as the backend sends it. */
 function library(overrides = {}) {
-  return { steam: true, wallpaperEngine: true, found: false, video: false, state: "notInstalled", ...overrides };
+  return { steam: true, wallpaperEngine: true, found: false, video: false, kind: "unknown", state: "notInstalled", ...overrides };
 }
 
 function deps(overrides = {}) {
@@ -42,6 +45,7 @@ function deps(overrides = {}) {
       findInLibrary: async () => library(),
       videoInfo: async () => null,
       estimate: async () => ({ seconds: null, approximate: true, bytes: null }),
+      recordInfo: async () => null,
       describeError: (error) => String(error?.message ?? error),
       ...overrides,
     },
@@ -88,7 +92,7 @@ test("an export sends the link and the chosen format, from the Steam library onl
   session.setFormat("mp4");
   await session.start();
   assert.deepEqual(calls[0], ["download", URL_A, "mp4", {}]);
-  assert.deepEqual(session.state, { phase: "saved", filename: "Ocean (123).zip", path: "C:\\out\\Ocean (123).zip", elapsedMs: 1000, stages: [] });
+  assert.deepEqual(session.state, { phase: "saved", filename: "Ocean (123).zip", path: "C:\\out\\Ocean (123).zip", elapsedMs: 1000, stages: [], note: null });
   assert.equal("source" in session, false, "there is no other source");
 });
 
@@ -168,7 +172,7 @@ test("a saved export keeps its total time and the time in each stage", async () 
   const { deps: d } = deps({ download: async () => ({ status: "saved", filename: "A (1).mp4", path: "C:\\out\\A (1).mp4", elapsedMs: 12300, stages }) });
   const session = new WorkshopSession(URL_A, item, d);
   await session.start();
-  assert.deepEqual(session.state, { phase: "saved", filename: "A (1).mp4", path: "C:\\out\\A (1).mp4", elapsedMs: 12300, stages });
+  assert.deepEqual(session.state, { phase: "saved", filename: "A (1).mp4", path: "C:\\out\\A (1).mp4", elapsedMs: 12300, stages, note: null });
 });
 
 test("the taskbar is told what a running export counts", async () => {
@@ -343,11 +347,12 @@ test("the download percentage never reaches 100 before Steam is done and never g
 
 test("MP4 says whether it saves the original or converts, and only video offers more than a ZIP", () => {
   const copyable = { copyable: true, codec: "h264", width: 3840, height: 2160, fps: 60, durationSeconds: 294, bytes: 5, hasAudio: false };
-  assert.deepEqual(formatChoices(false, null).map((c) => c.label), ["ZIP"]);
-  assert.deepEqual(formatChoices(true, copyable).map((c) => c.label), ["ZIP", "MP4 (original)", "GIF"]);
-  assert.deepEqual(formatChoices(true, { ...copyable, copyable: false, codec: "hevc" }).map((c) => c.label), ["ZIP", "MP4 (converted)", "GIF"]);
-  assert.deepEqual(formatChoices(true, null).map((c) => c.label), ["ZIP", "MP4 (converted)", "GIF"], "unknown means it will convert");
-  assert.deepEqual(formatChoices(true, copyable).map((c) => c.value), ["zip", "mp4", "gif"]);
+  const offer = (video, videoInfo, record = null) => ({ video, videoInfo, record });
+  assert.deepEqual(formatChoices(offer(false, null)).map((c) => c.label), ["ZIP"]);
+  assert.deepEqual(formatChoices(offer(true, copyable)).map((c) => c.label), ["ZIP", "MP4 (original)", "GIF"]);
+  assert.deepEqual(formatChoices(offer(true, { ...copyable, copyable: false, codec: "hevc" })).map((c) => c.label), ["ZIP", "MP4 (converted)", "GIF"]);
+  assert.deepEqual(formatChoices(offer(true, null)).map((c) => c.label), ["ZIP", "MP4 (converted)", "GIF"], "unknown means it will convert");
+  assert.deepEqual(formatChoices(offer(true, copyable)).map((c) => c.value), ["zip", "mp4", "gif"]);
 });
 
 test("a GIF asks for 30 seconds unless the user chose 60", async () => {
@@ -394,4 +399,111 @@ test("waiting for Steam goes on while it is still writing the item", async (t) =
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(session.watching, false);
   session.dispose();
+});
+
+// ----- recording a scene or web wallpaper -----
+
+const size = (height, extra = {}) => ({ width: Math.round((height * 16) / 9 / 2) * 2, height, label: height === 2160 ? "4K" : `${height}p`, available: true, reason: null, beyondDisplay: false, fps: [30, 60], ...extra });
+const recordInfo = (extra = {}) => ({
+  kind: "scene", available: true, reason: null, moves: true, hasAudio: false,
+  sizes: [size(720), size(1080), size(1440, { beyondDisplay: true }), size(2160, { beyondDisplay: true })],
+  defaultHeight: 1080, preRollSeconds: 2, encoder: "h264_nvenc", engineWillStart: false, displayLimit: [3860, 1106], ...extra,
+});
+
+test("a scene offers a recording, a picture and a ZIP; one that cannot be recorded offers only the ZIP", () => {
+  const offer = (record) => ({ video: false, videoInfo: null, record });
+  assert.deepEqual(formatChoices(offer(recordInfo())).map((c) => c.label), ["MP4 (recorded)", "Picture (PNG)", "ZIP"]);
+  assert.deepEqual(formatChoices(offer(recordInfo())).map((c) => c.value), ["mp4", "png", "zip"]);
+  assert.deepEqual(formatChoices(offer(recordInfo({ available: false, reason: "Recording needs Wallpaper Engine." }))).map((c) => c.label), ["ZIP"]);
+  assert.deepEqual(formatChoices(offer(null)).map((c) => c.label), ["ZIP"]);
+});
+
+test("a moving scene defaults to a recording and a still one to a picture", async () => {
+  const sceneLibrary = library({ found: true, kind: "scene", state: "installed" });
+  const moving = new WorkshopSession(URL_A, item, deps({ findInLibrary: async () => sceneLibrary, recordInfo: async () => recordInfo() }).deps);
+  await moving.checkLibrary();
+  assert.equal(moving.format, "mp4");
+  assert.ok(moving.recording);
+  const still = new WorkshopSession(URL_A, item, deps({ findInLibrary: async () => sceneLibrary, recordInfo: async () => recordInfo({ moves: false }) }).deps);
+  await still.checkLibrary();
+  assert.equal(still.format, "png", "This wallpaper does not move");
+  still.setFormat("mp4");
+  assert.equal(still.format, "mp4", "the user can still ask for a recording");
+  const web = new WorkshopSession(URL_A, item, deps({ findInLibrary: async () => library({ found: true, kind: "web", state: "installed" }), recordInfo: async () => recordInfo({ kind: "web", moves: null }) }).deps);
+  await web.checkLibrary();
+  assert.equal(web.format, "mp4", "a web page is assumed to move");
+  const none = new WorkshopSession(URL_A, item, deps({ findInLibrary: async () => sceneLibrary }).deps);
+  await none.checkLibrary();
+  assert.equal(none.format, "zip");
+  assert.equal(none.recording, false);
+});
+
+test("the size is the default until a size that is available is chosen, and the rate follows the size", async () => {
+  const sizes = [size(720), size(1080, { fps: [30] }), size(1440, { available: false, reason: "no encoder", fps: [] })];
+  const { calls, deps: d } = deps({ findInLibrary: async () => library({ found: true, kind: "scene", state: "installed" }), recordInfo: async () => recordInfo({ sizes }) });
+  const session = new WorkshopSession(URL_A, item, d);
+  await session.checkLibrary();
+  assert.equal(session.size.height, 1080);
+  assert.equal(session.fps, 30);
+  session.setRecordHeight(1440);
+  assert.equal(session.size.height, 1080, "a size that is not available is refused");
+  session.setRecordHeight(999);
+  assert.equal(session.size.height, 1080, "so is one that does not exist");
+  session.setRecordFps(60);
+  assert.equal(session.fps, 30, "1080p allows only 30 here");
+  session.setRecordHeight(720);
+  session.setRecordFps(60);
+  assert.deepEqual([session.size.height, session.fps], [720, 60]);
+  session.setRecordHeight(1080);
+  assert.equal(session.fps, 30, "back to a size that cannot do 60: 30 again");
+  session.setRecordHeight(720);
+  session.setRecordLength(90, true);
+  await session.start();
+  assert.deepEqual(calls.at(-1), ["download", URL_A, "mp4", { lengthSeconds: 90, height: 720, fps: 60 }]);
+  session.setFormat("png");
+  await session.start();
+  assert.deepEqual(calls.at(-1), ["download", URL_A, "png", { height: 720 }], "a picture has a size and nothing else");
+});
+
+test("a recording's length is a whole number of seconds from one to ten minutes", async () => {
+  const { deps: d } = deps({ findInLibrary: async () => library({ found: true, kind: "scene", state: "installed" }), recordInfo: async () => recordInfo() });
+  const session = new WorkshopSession(URL_A, item, d);
+  await session.checkLibrary();
+  assert.equal(session.recordLength, 30, "the default");
+  session.setRecordLength(10);
+  assert.deepEqual([session.recordLength, session.lengthCustom], [10, false]);
+  session.setRecordLength(0, true);
+  assert.equal(session.recordLength, 1);
+  session.setRecordLength(100000, true);
+  assert.equal(session.recordLength, 600, "ten minutes at most");
+  session.setRecordLength(42.6, true);
+  assert.equal(session.recordLength, 43);
+  session.setRecordLength(Number.NaN, true);
+  assert.equal(session.recordLength, 43, "not a number: unchanged");
+  session.setLengthCustom(false);
+  assert.equal(session.lengthCustom, false);
+});
+
+test("the notes say what a recording will and will not do", () => {
+  const big = size(2160, { beyondDisplay: true });
+  assert.deepEqual(recordNotes(recordInfo(), "mp4", size(1080)), []);
+  assert.deepEqual(recordNotes(recordInfo({ moves: false }), "png", size(1080)), ["This wallpaper doesn't move."]);
+  assert.match(recordNotes(recordInfo({ moves: false }), "mp4", size(1080))[0], /would be a still video/);
+  assert.deepEqual(recordNotes(recordInfo({ hasAudio: true }), "mp4", size(1080)), ["This scene has sound. The recording is silent."]);
+  assert.deepEqual(recordNotes(recordInfo({ engineWillStart: true }), "mp4", size(1080)), ["Wallpaper Engine will start."]);
+  const beyond = recordNotes(recordInfo(), "mp4", big);
+  assert.equal(beyond.length, 1);
+  assert.ok(beyond[0].startsWith("4K may need a display set to 3840×2160 or larger, such as a 4K monitor or NVIDIA DSR / AMD VSR"), beyond[0]);
+  assert.equal(recordSize(null, 1080), null);
+  assert.equal(recordSize(recordInfo(), 720).height, 720);
+  assert.equal(recordSize(recordInfo(), null).height, 1080);
+  assert.equal(recordFps(size(720), 60), 60);
+  assert.equal(recordFps(size(720, { fps: [30] }), 60), 30);
+  assert.equal(recordFps(null, 60), 30);
+});
+
+test("a scene that cannot be recorded says why in the library line", () => {
+  assert.equal(libraryLine(library({ found: true, state: "installed", kind: "scene" }), 1, false), "Scene found in your Steam library.");
+  assert.equal(libraryLine(library({ found: true, state: "installed", kind: "web" }), 1, false), "Web wallpaper found in your Steam library.");
+  assert.equal(libraryLine(library({ found: true, state: "installed", kind: "application" }), 1, false), "Project found. Claws can save a ZIP.");
 });

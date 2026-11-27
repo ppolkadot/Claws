@@ -7,7 +7,7 @@ import type { JobEvent, JobRemoved, JobsAdded } from "./queue-events.js";
 import type { Resolution, VideoPreset } from "./resolution.js";
 import type { KeptRecord, KeptRepairReport, KeptRevealResult } from "./kept-files.js";
 import type { TranscriptFormat } from "./transcript-options.js";
-import type { ExportEstimate, ExportFormat, ExportOptions, LibraryStatus, VideoInfo, WallpaperOutcome, WorkshopLookup } from "./workshop-session.js";
+import type { ExportEstimate, ExportFormat, ExportOptions, LibraryStatus, RecordInfo, VideoInfo, WallpaperOutcome, WorkshopLookup } from "./workshop-session.js";
 
 export type { DownloadEstimate, DragOutcome, JobEvent, JobRemoved, JobsAdded, KeptRecord, KeptRepairReport, KeptRevealResult, Resolution, TranscriptFormat, VideoPreset };
 
@@ -316,6 +316,7 @@ export const api = {
   findWallpaperInLibrary: (url: string, timeUpdated: number | null) => invoke<LibraryStatus>("find_wallpaper_in_library", { url, timeUpdated }),
   estimateWallpaperExport: (url: string, format: ExportFormat, options: ExportOptions) =>
     invoke<ExportEstimate>("estimate_wallpaper_export", { url, format, options }),
+  wallpaperRecordInfo: (url: string) => invoke<RecordInfo | null>("wallpaper_record_info", { url }),
   wallpaperVideoInfo: (url: string) => invoke<VideoInfo | null>("wallpaper_video_info", { url }),
   downloadWallpaper: (url: string, format: ExportFormat, options: ExportOptions) => invoke<WallpaperOutcome>("download_wallpaper", { url, format, options }),
   cancelWallpaperDownload: () => invoke<void>("cancel_wallpaper_download"),

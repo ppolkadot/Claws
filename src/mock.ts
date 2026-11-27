@@ -471,7 +471,7 @@ function mockLibraryStatus(id: string) {
   const base = { steam: true, wallpaperEngine: engine };
   if (id.endsWith("4")) {
     const bytes = Math.min(31_000_000, Math.floor((Date.now() - mockPageOpened) * 6_000));
-    return { ...base, found: bytes > 5_000_000, video: false, state: "downloading", bytes };
+    return { ...base, found: bytes > 5_000_000, video: false, kind: "scene", state: "downloading", bytes };
   }
   const everything = new URLSearchParams(location.search).get("installed") === "1";
   const found = everything || id.endsWith("6") || id.endsWith("9") || mockSubscribed.has(id);
@@ -479,6 +479,7 @@ function mockLibraryStatus(id: string) {
     ...base,
     found,
     video: found && mockWallpaperType(id) === "Video",
+    kind: mockWallpaperType(id) === "Video" ? "video" : "scene",
     state: !found ? "notInstalled" : id.endsWith("9") ? "updatePending" : "installed",
   };
 }
@@ -508,6 +509,47 @@ function mockWorkshopDetails(url: string) {
   };
 }
 
+/**
+ * What recording a sample scene offers. ?authored=1280x720 changes the size the scene was made at,
+ * ?still=1 makes it a still picture, ?audio=1 gives it sound, ?engine=none removes Wallpaper
+ * Engine, ?engine=stopped has it not running, and ?display=large lets this display hold 4K.
+ */
+function mockRecordInfo() {
+  const params = new URLSearchParams(location.search);
+  const engine = params.get("engine") !== "none";
+  const [width, height] = (params.get("authored") ?? "3840x2160").split("x").map(Number);
+  const heights = [720, 1080, 1440, 2160].filter((h) => h <= height);
+  if (!heights.includes(height) && height < 720) heights.push(height);
+  const sizes = heights.map((h) => ({
+    width: Math.round((h * width) / height / 2) * 2,
+    height: h,
+    label: h === 2160 ? "4K" : `${h}p`,
+    available: true,
+    reason: null,
+    beyondDisplay: h > 1080 && params.get("display") !== "large",
+    fps: [30, 60],
+  }));
+  return {
+    kind: "scene",
+    available: engine,
+    reason: engine ? null : "Recording needs Wallpaper Engine installed in your Steam library.",
+    moves: params.get("still") !== "1",
+    hasAudio: params.get("audio") === "1",
+    sizes,
+    defaultHeight: heights.includes(1080) ? 1080 : heights[heights.length - 1],
+    preRollSeconds: 2,
+    encoder: "h264_nvenc",
+    engineWillStart: params.get("engine") === "stopped",
+    displayLimit: [3860, 1106],
+  };
+}
+
+/** The sample length of a recording, from the options the page sent. */
+function mockRecordLength(options: unknown): number {
+  const seconds = Number((options as { lengthSeconds?: number } | undefined)?.lengthSeconds ?? 30);
+  return Math.min(600, Math.max(1, Number.isFinite(seconds) ? seconds : 30));
+}
+
 /** One progress event, with the numbers the sample run makes up (they are labelled as samples). */
 interface MockStep {
   stage: string;
@@ -532,7 +574,13 @@ const SAMPLE_VIDEO_SECONDS = 294.35;
 const [mockHoldStage, mockHoldStep] = (new URLSearchParams(location.search).get("hold") ?? "").split(":");
 const mockFails = new URLSearchParams(location.search).get("fail") === "1";
 
-function mockEstimate(id: string, format: string) {
+function mockEstimate(id: string, format: string, options?: unknown) {
+  if (mockWallpaperType(id) !== "Video" && (format === "mp4" || format === "png")) {
+    // A recording is the length chosen, the pre-roll and a second to finish: known exactly.
+    if (format === "png") return { seconds: 3.5, approximate: false, bytes: 2_488_320 };
+    const length = mockRecordLength(options);
+    return { seconds: length + 3, approximate: false, bytes: length * 2_000_000 };
+  }
   if (format === "zip") return { seconds: 0.2, approximate: true, bytes: 31_224_037 };
   if (format === "mp4" && !id.endsWith("55")) return { seconds: SAMPLE_VIDEO_BYTES / 200_000_000, approximate: true, bytes: SAMPLE_VIDEO_BYTES };
   // A conversion has no estimate until one has been measured.
@@ -540,7 +588,17 @@ function mockEstimate(id: string, format: string) {
 }
 
 /** The steps of a sample export, by what it does. */
-function mockSteps(id: string, format: string): MockStep[] {
+function mockSteps(id: string, format: string, options?: unknown): MockStep[] {
+  if (mockWallpaperType(id) !== "Video" && (format === "mp4" || format === "png")) {
+    if (format === "png") return [{ stage: "checking" }, { stage: "opening" }, { stage: "loading" }, { stage: "finishing" }];
+    const length = mockRecordLength(options);
+    const steps: MockStep[] = [{ stage: "checking" }, { stage: "opening" }, { stage: "loading" }];
+    for (const share of [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.93]) {
+      const done = length * share;
+      steps.push({ stage: "recording", done, total: length, unit: "seconds", etaMs: Math.round((length - done) * 1000), bytes: Math.round(done * 2_600_000) });
+    }
+    return [...steps, { stage: "finishing" }];
+  }
   if (format === "zip") {
     const total = 31_224_037;
     return [
@@ -572,11 +630,12 @@ function mockSteps(id: string, format: string): MockStep[] {
   ];
 }
 
-async function mockWallpaperDownload(url: string, format: string) {
+async function mockWallpaperDownload(url: string, format: string, options?: unknown) {
   mockWallpaperCancelled = false;
   const id = new URL(url).searchParams.get("id") ?? "";
   const media = format === "mp4" || format === "gif";
-  if (media && mockWallpaperType(id) !== "Video") {
+  const recorded = mockWallpaperType(id) !== "Video" && (format === "mp4" || format === "png");
+  if (media && !recorded && mockWallpaperType(id) !== "Video") {
     return {
       status: "unsupported",
       message: "This Workshop item isn't a video wallpaper, so Claws can only save the project as a ZIP. Choose ZIP and try again.",
@@ -593,7 +652,7 @@ async function mockWallpaperDownload(url: string, format: string) {
   let last = started;
   let current = "checking";
   let inStage = 0;
-  for (const step of mockSteps(id, format)) {
+  for (const step of mockSteps(id, format, options)) {
     inStage = step.stage === current ? inStage + 1 : 1;
     if (mockWallpaperCancelled) return { status: "cancelled" };
     if (step.stage !== current) {
@@ -625,7 +684,7 @@ async function mockWallpaperDownload(url: string, format: string) {
   if (mockWallpaperCancelled) return { status: "cancelled" };
   stages.push({ name: current, ms: Math.round(performance.now() - last) });
   if (format === "gif" || (format === "mp4" && id.endsWith("55"))) mockSpeedKnown = true;
-  const extension = media ? format : "zip";
+  const extension = format === "mp4" || format === "gif" || format === "png" ? format : "zip";
   const filename = `Sample Wallpaper (${id}).${extension}`;
   return { status: "saved", filename, path: `${settings.outputDir}\\${filename}`, elapsedMs: Math.round(performance.now() - started), stages };
 }
@@ -646,9 +705,13 @@ export function installMock() {
           const id = new URL(String(payload.url)).searchParams.get("id") ?? "";
           return mockLibraryStatus(id);
         }
+        case "wallpaper_record_info": {
+          const id = new URL(String(payload.url)).searchParams.get("id") ?? "";
+          return mockLibraryStatus(id).found && mockWallpaperType(id) !== "Video" ? mockRecordInfo() : null;
+        }
         case "estimate_wallpaper_export": {
           const id = new URL(String(payload.url)).searchParams.get("id") ?? "";
-          return mockEstimate(id, String(payload.format ?? "zip"));
+          return mockEstimate(id, String(payload.format ?? "zip"), payload.options);
         }
         case "wallpaper_video_info": {
           const id = new URL(String(payload.url)).searchParams.get("id") ?? "";
@@ -679,7 +742,7 @@ export function installMock() {
           mockLegacyRemoved = true;
           return null;
         case "download_wallpaper":
-          return mockWallpaperDownload(String(payload.url), String(payload.format ?? "zip"));
+          return mockWallpaperDownload(String(payload.url), String(payload.format ?? "zip"), payload.options);
         case "cancel_wallpaper_download":
           mockWallpaperCancelled = true;
           return null;

@@ -25,8 +25,44 @@ export type WorkshopLookup =
   | { kind: "otherApp"; appId: number }
   | { kind: "notFound" };
 
-/** ZIP saves the whole project; MP4 and GIF are converted from a video wallpaper. */
-export type ExportFormat = "zip" | "mp4" | "gif";
+/**
+ * ZIP saves the whole project. For a video wallpaper MP4 and GIF are its own file or a conversion
+ * of it; for a scene or web wallpaper MP4 is a recording and PNG is one picture.
+ */
+export type ExportFormat = "zip" | "mp4" | "gif" | "png";
+
+export type ProjectKind = "video" | "scene" | "web" | "application" | "preset" | "unknown";
+
+/** One size a recording can be made at. */
+export interface SizeOption {
+  width: number;
+  height: number;
+  label: string;
+  available: boolean;
+  /** Why it cannot be chosen. */
+  reason: string | null;
+  /** Larger than the display reports a window can be; Claws still tries and says if it cannot. */
+  beyondDisplay: boolean;
+  /** The frame rates this size can be recorded at. */
+  fps: number[];
+}
+
+/** What Claws knows about recording a scene or web wallpaper on this PC. */
+export interface RecordInfo {
+  kind: "scene" | "web";
+  available: boolean;
+  reason: string | null;
+  /** The scene changes by itself; null for a web page. */
+  moves: boolean | null;
+  hasAudio: boolean;
+  sizes: SizeOption[];
+  defaultHeight: number | null;
+  preRollSeconds: number;
+  encoder: string | null;
+  /** Wallpaper Engine is not running now and will be started. */
+  engineWillStart: boolean;
+  displayLimit: [number, number] | null;
+}
 
 export type WorkshopStage = "checking" | "opening" | "loading" | "recording" | "finishing" | "copying" | "converting" | "zipping";
 
@@ -54,7 +90,7 @@ export interface StageTime {
 }
 
 export type WallpaperOutcome =
-  | { status: "saved"; filename: string; path: string; elapsedMs: number; stages: StageTime[] }
+  | { status: "saved"; filename: string; path: string; elapsedMs: number; stages: StageTime[]; note?: string | null }
   | { status: "failed"; message: string; detail: string | null }
   | { status: "unsupported"; message: string }
   | { status: "cancelled" };
@@ -75,6 +111,8 @@ export type LibraryStatus = {
   found: boolean;
   /** The local manifest names a supported video file. */
   video: boolean;
+  /** What kind of project it is. */
+  kind: ProjectKind;
 } & LibraryItemState;
 
 /** What the video is: whether the original can be saved as it is, and its size and length. */
@@ -92,16 +130,24 @@ export interface VideoInfo {
 
 /** What a video export may be asked for beyond its format. */
 export interface ExportOptions {
-  /** GIF: seconds from the start (30 by default, 60 at most). */
+  /** GIF: seconds from the start (30 by default, 60 at most). Recording: how long (30, 600 at most). */
   lengthSeconds?: number;
+  /** Recording: the height in pixels. */
+  height?: number;
+  /** Recording: 30 or 60. */
+  fps?: number;
 }
+
+/** The lengths offered for a recording, besides a custom one up to ten minutes. */
+export const RECORD_LENGTHS = [10, 30, 60] as const;
+export const RECORD_MAX_SECONDS = 600;
 
 export const GIF_SECONDS = [30, 60] as const;
 
 export type WorkshopState =
   | { phase: "ready" }
   | { phase: "running"; progress: ExportProgress; /** What the bar shows: null is the sheen. */ fraction: number | null }
-  | { phase: "saved"; filename: string; path: string; elapsedMs: number; stages: StageTime[] }
+  | { phase: "saved"; filename: string; path: string; elapsedMs: number; stages: StageTime[]; note?: string | null }
   | { phase: "failed"; message: string; detail: string | null }
   /** The chosen video format does not fit this project; saving the ZIP still works. */
   | { phase: "unsupported"; message: string }
@@ -112,6 +158,7 @@ export interface WorkshopDeps {
   cancel(): Promise<void>;
   findInLibrary(url: string, timeUpdated: number | null): Promise<LibraryStatus>;
   videoInfo(url: string): Promise<VideoInfo | null>;
+  recordInfo(url: string): Promise<RecordInfo | null>;
   estimate(url: string, format: ExportFormat, options: ExportOptions): Promise<ExportEstimate>;
   describeError(error: unknown): string;
 }
@@ -257,7 +304,10 @@ export function libraryLine(library: LibraryStatus | null, fileSize: number | nu
   if (library.state === "downloading") return fraction === null ? "Steam is downloading it…" : `Steam is downloading it… ${Math.round(fraction * 100)}%`;
   if (!library.found) return watching ? "Waiting for Steam to download it…" : "Not in your library yet.";
   if (library.state === "updatePending") return "Steam has an update for this wallpaper. Claws will save the version you have.";
-  return library.video ? "Video found in your Steam library." : "Project found. Claws can save a ZIP. MP4 and GIF need a standalone video.";
+  if (library.video) return "Video found in your Steam library.";
+  if (library.kind === "scene") return "Scene found in your Steam library.";
+  if (library.kind === "web") return "Web wallpaper found in your Steam library.";
+  return "Project found. Claws can save a ZIP.";
 }
 
 export interface FormatChoice {
@@ -266,17 +316,65 @@ export interface FormatChoice {
   title: string;
 }
 
-/** The formats a video wallpaper offers. MP4 says whether it saves the original or converts. */
-export function formatChoices(videoAvailable: boolean, video: VideoInfo | null): FormatChoice[] {
+/** What can be done with the project besides zipping it. */
+export interface FormatOffer {
+  /** The project has a video Claws can save. */
+  video: boolean;
+  videoInfo: VideoInfo | null;
+  /** A scene or web wallpaper that Wallpaper Engine can play for a recording. */
+  record: RecordInfo | null;
+}
+
+/**
+ * The formats offered. A video wallpaper: ZIP, MP4 (its own file when it is H.264, converted
+ * otherwise) and GIF. A scene or web wallpaper that can be recorded: MP4 (recorded), a picture
+ * (PNG) and ZIP. Anything else: ZIP only.
+ */
+export function formatChoices(offer: FormatOffer): FormatChoice[] {
   const zip: FormatChoice = { value: "zip", label: "ZIP", title: "The whole project, as Steam downloaded it" };
-  if (!videoAvailable) return [zip];
+  if (offer.record?.available) {
+    return [
+      { value: "mp4", label: "MP4 (recorded)", title: "Wallpaper Engine plays it in the background and Claws records the video" },
+      { value: "png", label: "Picture (PNG)", title: "One picture of the wallpaper" },
+      zip,
+    ];
+  }
+  if (!offer.video) return [zip];
   return [
     zip,
-    video?.copyable
+    offer.videoInfo?.copyable
       ? { value: "mp4", label: "MP4 (original)", title: "The wallpaper's own video file, saved unchanged" }
       : { value: "mp4", label: "MP4 (converted)", title: "H.264 video with its audio, converted so it plays anywhere" },
     { value: "gif", label: "GIF", title: "A silent looping GIF of the first seconds, at most 720p" },
   ];
+}
+
+/** The size recorded at: the one asked for if it can be had, else the default. */
+export function recordSize(record: RecordInfo | null, height: number | null): SizeOption | null {
+  if (!record) return null;
+  const asked = height === null ? undefined : record.sizes.find((size) => size.height === height && size.available);
+  return asked ?? record.sizes.find((size) => size.height === record.defaultHeight) ?? null;
+}
+
+/** The frame rate recorded at: the one asked for if this size allows it, else 30. */
+export function recordFps(size: SizeOption | null, fps: number): number {
+  return size?.fps.includes(fps) ? fps : 30;
+}
+
+/** The short notes under a recording's options: what it is, and what it will not do. */
+export function recordNotes(record: RecordInfo, format: ExportFormat, size: SizeOption | null): string[] {
+  const notes: string[] = [];
+  if (record.moves === false) {
+    notes.push(format === "png" ? "This wallpaper doesn't move." : "This wallpaper doesn't move, so a recording would be a still video. A picture is better.");
+  }
+  if (record.hasAudio) notes.push("This scene has sound. The recording is silent.");
+  if (size?.beyondDisplay && record.displayLimit) {
+    notes.push(
+      `${size.label} may need a display set to ${size.width}×${size.height} or larger, such as a 4K monitor or NVIDIA DSR / AMD VSR. Claws tells you if the window can't reach it.`,
+    );
+  }
+  if (record.engineWillStart) notes.push("Wallpaper Engine will start.");
+  return notes;
 }
 
 /** How often, and for how long, a subscription in Steam is waited for. */
@@ -287,6 +385,14 @@ export class WorkshopSession {
   library: LibraryStatus | null = null;
   /** What the video is, read once the library has it. */
   video: VideoInfo | null = null;
+  /** What recording a scene or web wallpaper takes, read once the library has it. */
+  record: RecordInfo | null = null;
+  /** The recording length in seconds, and whether the user typed their own. */
+  recordLength: number = RECORD_LENGTHS[1];
+  lengthCustom = false;
+  /** The height asked for (null: the default) and the frame rate. */
+  recordHeight: number | null = null;
+  recordFpsChoice = 30;
   state: WorkshopState = { phase: "ready" };
   /** What the bar last showed, kept after a failure or a cancel (the bar turns red there). */
   lastFraction: number | null = null;
@@ -316,9 +422,35 @@ export class WorkshopSession {
     return this.library?.video === true;
   }
 
+  /** The formats on offer for this project, in the order they are shown. */
+  get choices(): FormatChoice[] {
+    return formatChoices({ video: this.videoAvailable, videoInfo: this.video, record: this.record });
+  }
+
+  /** More to choose than the ZIP: a video's formats, or a recording. */
+  get offersMore(): boolean {
+    return this.choices.length > 1;
+  }
+
   get format(): ExportFormat {
-    if (!this.videoAvailable) return "zip";
-    return this.chosenFormat ?? "mp4";
+    const values = this.choices.map((choice) => choice.value);
+    if (values.length <= 1) return "zip";
+    if (this.chosenFormat && values.includes(this.chosenFormat)) return this.chosenFormat;
+    // A picture that does not move is best as a picture.
+    return this.record?.available && this.record.moves === false ? "png" : "mp4";
+  }
+
+  /** Recording a scene or web wallpaper (MP4 or a picture), rather than saving a video. */
+  get recording(): boolean {
+    return Boolean(this.record?.available) && (this.format === "mp4" || this.format === "png");
+  }
+
+  get size(): SizeOption | null {
+    return recordSize(this.record, this.recordHeight);
+  }
+
+  get fps(): number {
+    return recordFps(this.size, this.recordFpsChoice);
   }
 
   on(listener: () => void): () => void {
@@ -335,7 +467,7 @@ export class WorkshopSession {
     try {
       this.library = await this.deps.findInLibrary(this.url, this.item.timeUpdated);
     } catch {
-      this.library = { steam: false, wallpaperEngine: false, found: false, video: false, state: "notInstalled" };
+      this.library = { steam: false, wallpaperEngine: false, found: false, video: false, kind: "unknown", state: "notInstalled" };
     }
     if (this.library.found && this.library.video && !this.video) {
       try {
@@ -344,13 +476,59 @@ export class WorkshopSession {
         this.video = null;
       }
     }
+    if (this.library.found && (this.library.kind === "scene" || this.library.kind === "web") && !this.record) {
+      try {
+        this.record = await this.deps.recordInfo(this.url);
+      } catch {
+        this.record = null;
+      }
+    }
     this.changed();
     if (this.estimate === null) void this.refreshEstimate();
   }
 
   /** The options that go with the chosen format. */
   get options(): ExportOptions {
-    return this.format === "gif" ? { lengthSeconds: this.gifSeconds } : {};
+    if (this.format === "gif") return { lengthSeconds: this.gifSeconds };
+    if (this.recording && this.format === "png") return { height: this.size?.height };
+    if (this.recording) return { lengthSeconds: this.recordLength, height: this.size?.height, fps: this.fps };
+    return {};
+  }
+
+  private optionChanged() {
+    this.estimate = null;
+    if (this.state.phase !== "ready") this.state = { phase: "ready" };
+    this.changed();
+    void this.refreshEstimate();
+  }
+
+  /** A recording's length, a whole number of seconds from one to ten minutes. */
+  setRecordLength(seconds: number, custom = false) {
+    if (this.running || !Number.isFinite(seconds)) return;
+    const next = Math.min(RECORD_MAX_SECONDS, Math.max(1, Math.round(seconds)));
+    if (next === this.recordLength && custom === this.lengthCustom) return;
+    this.recordLength = next;
+    this.lengthCustom = custom;
+    this.optionChanged();
+  }
+
+  /** Switches between the lengths on offer and typing one's own. */
+  setLengthCustom(custom: boolean) {
+    if (this.running || this.lengthCustom === custom) return;
+    this.lengthCustom = custom;
+    this.optionChanged();
+  }
+
+  setRecordHeight(height: number) {
+    if (this.running || this.recordHeight === height || !this.record?.sizes.some((size) => size.height === height && size.available)) return;
+    this.recordHeight = height;
+    this.optionChanged();
+  }
+
+  setRecordFps(fps: number) {
+    if (this.running || this.recordFpsChoice === fps || !this.size?.fps.includes(fps)) return;
+    this.recordFpsChoice = fps;
+    this.optionChanged();
   }
 
   /**
@@ -382,7 +560,7 @@ export class WorkshopSession {
 
   /** Switches the export format, clearing an old outcome so the panel starts fresh. */
   setFormat(format: ExportFormat) {
-    if (this.running || (format !== "zip" && !this.videoAvailable)) return;
+    if (this.running || !this.choices.some((choice) => choice.value === format)) return;
     if (this.chosenFormat === format) return;
     this.chosenFormat = format;
     this.estimate = null;
@@ -441,7 +619,7 @@ export class WorkshopSession {
     }
     this.state =
       outcome.status === "saved"
-        ? { phase: "saved", filename: outcome.filename, path: outcome.path, elapsedMs: outcome.elapsedMs, stages: outcome.stages }
+        ? { phase: "saved", filename: outcome.filename, path: outcome.path, elapsedMs: outcome.elapsedMs, stages: outcome.stages, note: outcome.note ?? null }
         : outcome.status === "failed"
           ? { phase: "failed", message: outcome.message, detail: outcome.detail }
           : outcome.status === "unsupported"

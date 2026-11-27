@@ -323,6 +323,7 @@ export const mountDownload: MountView = (container, ctx) => {
     cancel: api.cancelWallpaperDownload,
     findInLibrary: api.findWallpaperInLibrary,
     videoInfo: api.wallpaperVideoInfo,
+    recordInfo: api.wallpaperRecordInfo,
     estimate: api.estimateWallpaperExport,
     describeError: errorMessage,
   };

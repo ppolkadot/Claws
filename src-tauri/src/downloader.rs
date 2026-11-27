@@ -1135,6 +1135,8 @@ pub fn shutdown(app: &AppHandle) {
     for pid in stopping.iter().filter_map(|s| s.1).chain(lookups).chain(exporting) {
         kill_tree(pid, true);
     }
+    // A recording's Wallpaper Engine window must not outlive Claws.
+    crate::workshop::close_recording_window(&state);
 
     // Bounded: a worker stuck behind a tool install cannot finish; the fix-up covers it.
     let deadline = Instant::now() + Duration::from_secs(5);

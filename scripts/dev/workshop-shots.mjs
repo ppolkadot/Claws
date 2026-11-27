@@ -19,7 +19,7 @@ const chrome =
 if (!chrome) throw new Error("No Chrome or Edge found; set CHROME");
 const port = 9333;
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), "claws-shots-"));
-const browser = spawn(chrome, [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, "--headless=new", "--no-first-run", "--window-size=1040,820", "about:blank"], {
+const browser = spawn(chrome, [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, "--headless=new", "--no-first-run", "--window-size=1040,980", "about:blank"], {
   stdio: "ignore",
 });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -91,6 +91,17 @@ const states = [
   { name: "saved", id: COPY, query: "", reach: "saved" },
   { name: "failed", id: COPY, query: "fail=1", reach: "failed" },
   { name: "cancelled", id: COPY, query: "hold=copying:3", reach: "cancelled" },
+  // Scenes and web wallpapers: recording.
+  { name: "scene-recording-options", id: SCENE, query: "", reach: "estimate" },
+  { name: "scene-4k-may-not-fit", id: SCENE, query: "", reach: "estimate", act: 'clickButton("4K")' },
+  { name: "scene-still-picture", id: SCENE, query: "still=1", reach: "estimate" },
+  { name: "scene-sound-and-engine-starts", id: SCENE, query: "audio=1&engine=stopped", reach: "estimate" },
+  { name: "scene-no-wallpaper-engine", id: SCENE, query: "engine=none", reach: "library" },
+  { name: "recording-opening", id: SCENE, query: "hold=opening", reach: "start", text: "Opening" },
+  { name: "recording-loading", id: SCENE, query: "hold=loading", reach: "start", text: "Loading" },
+  { name: "recording-time-left", id: SCENE, query: "hold=recording:4", reach: "start", text: "Recording 0:1" },
+  { name: "recording-finishing", id: SCENE, query: "hold=finishing", reach: "start", text: "Finishing" },
+  { name: "recording-saved", id: SCENE, query: "", reach: "saved" },
 ];
 
 /** The looks each state is shot in: theme, Transparency (glass intensity) and Reduce motion. */
@@ -110,7 +121,7 @@ const extraLooks = [
 ];
 
 async function shoot(state, look) {
-  await send("Emulation.setDeviceMetricsOverride", { width: 1040, height: 820, deviceScaleFactor: 1, mobile: false });
+  await send("Emulation.setDeviceMetricsOverride", { width: 1040, height: 980, deviceScaleFactor: 1, mobile: false });
   await send("Emulation.setEmulatedMedia", {
     features: [
       { name: "prefers-color-scheme", value: look.dark ? "dark" : "light" },
@@ -127,8 +138,14 @@ async function shoot(state, look) {
   await waitFor('document.querySelector(".workshop-panel")');
   await waitFor('document.querySelector(".workshop-panel .actions .btn-primary:not([disabled])")');
   await sleep(500);
-  if (state.reach === "estimate") {
+  if (state.reach === "library") {
+    await waitFor('document.querySelector(".workshop-panel .row-note")?.textContent.length > 0');
+  } else if (state.reach === "estimate") {
     await waitFor('document.querySelector(".workshop-estimate") && document.querySelector(".workshop-estimate").textContent.length > 0');
+    if (state.act) {
+      await evaluate(`const clickButton = (label) => [...document.querySelectorAll(".workshop-panel .seg-item")].find((b) => b.textContent.trim() === label)?.click(); ${state.act}`);
+      await sleep(500);
+    }
   } else {
     await evaluate('document.querySelector(".workshop-panel .actions .btn-primary").click()');
     if (state.reach === "start") await waitFor('document.querySelector(".workshop-progress:not([hidden]) .job-status") && document.querySelector(".workshop-progress .job-status").textContent.length > 0');

@@ -22,8 +22,10 @@ use crate::{
     error::{AppError, Result},
     export_progress::{self, Stage, StageTime, Tracker, Unit},
     state::AppState,
+    scene_pkg,
     steam::{library_folders, library_project, locate_item, steam_root, ItemState},
-    workshop_media::{self, MediaError, MediaFormat},
+    workshop_media::{self, MediaError, MediaFormat, ProjectKind},
+    workshop_record,
     AppHandle,
 };
 
@@ -59,6 +61,9 @@ pub struct Run {
     pub cancelled: bool,
     /// The process id while FFmpeg runs.
     pub pid: Option<u32>,
+    /// The Wallpaper Engine window a recording has open (its program and title), so a shutdown
+    /// can close it.
+    pub window: Option<(PathBuf, String)>,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -255,6 +260,8 @@ pub struct LibraryStatus {
     pub found: bool,
     /// True only when the installed project declares a supported video file.
     pub video: bool,
+    /// What kind of project it is: video, scene, web, application, preset or unknown.
+    pub kind: ProjectKind,
     /// What Steam says about it: installed, downloading (with the bytes on disk) or with an
     /// update pending. Flattened: `state`, and `bytes` while downloading.
     #[serde(flatten)]
@@ -268,7 +275,7 @@ pub async fn find_wallpaper_in_library(url: String, time_updated: Option<i64>) -
     let id = item_id(&url)?;
     tauri::async_runtime::spawn_blocking(move || {
         let Some(root) = steam_root() else {
-            return LibraryStatus { steam: false, wallpaper_engine: false, found: false, video: false, item: ItemState::NotInstalled };
+            return LibraryStatus { steam: false, wallpaper_engine: false, found: false, video: false, kind: ProjectKind::Unknown, item: ItemState::NotInstalled };
         };
         let libraries = library_folders(&root);
         let located = locate_item(&libraries, id, time_updated);
@@ -277,6 +284,7 @@ pub async fn find_wallpaper_in_library(url: String, time_updated: Option<i64>) -
             wallpaper_engine: crate::steam::wallpaper_engine_exe(&libraries, &root).is_some(),
             found: located.project.is_some(),
             video: located.project.as_deref().is_some_and(|path| workshop_media::video_file(path).is_ok()),
+            kind: located.project.as_deref().map_or(ProjectKind::Unknown, workshop_media::project_kind),
             item: located.state,
         }
     })
@@ -293,8 +301,11 @@ pub async fn find_wallpaper_in_library(url: String, time_updated: Option<i64>) -
 #[serde(rename_all = "camelCase")]
 pub enum ExportFormat {
     Zip,
+    /// A video wallpaper's MP4 (copied or converted), or a scene or web wallpaper recorded.
     Mp4,
     Gif,
+    /// One picture of a scene or web wallpaper.
+    Png,
 }
 
 impl ExportFormat {
@@ -303,6 +314,7 @@ impl ExportFormat {
             Self::Zip => None,
             Self::Mp4 => Some(MediaFormat::Mp4),
             Self::Gif => Some(MediaFormat::Gif),
+            Self::Png => None,
         }
     }
 }
@@ -312,15 +324,20 @@ impl ExportFormat {
 #[derive(Deserialize, Default, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ExportOptions {
-    /// GIF: how many seconds from the start (default 30, at most 60).
+    /// GIF: how many seconds from the start (default 30, at most 60). Recording: how long (default
+    /// 30, at most 600).
     pub length_seconds: Option<u32>,
+    /// Recording: the height in pixels (default 1080, or the largest the wallpaper has).
+    pub height: Option<u32>,
+    /// Recording: 30 or 60.
+    pub fps: Option<u32>,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
 #[serde(tag = "status", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum WallpaperOutcome {
     /// `elapsed_ms` is the whole export, `stages` the time in each part of it.
-    Saved { filename: String, path: String, elapsed_ms: u64, stages: Vec<StageTime> },
+    Saved { filename: String, path: String, elapsed_ms: u64, stages: Vec<StageTime>, note: Option<String> },
     Failed { message: String, detail: Option<String> },
     /// A video format was asked for, but the project has no video Claws can convert.
     Unsupported { message: String },
@@ -339,7 +356,7 @@ impl<'a> RunGuard<'a> {
         if state.shutting_down.load(Ordering::SeqCst) {
             return Err(AppError::msg("Claws is closing."));
         }
-        *run = Run { active: true, cancelled: false, pid: None };
+        *run = Run { active: true, cancelled: false, pid: None, window: None };
         Ok(Self(state))
     }
 
@@ -430,18 +447,34 @@ async fn export(app: &AppHandle, state: &AppState, tracker: &Tracker, id: u64, f
     };
 
     let title = item.title.clone();
-    let saved = match format.media() {
-        Some(media_format) => convert_media(app, state, tracker, &project, &output, (id, &title), media_format, options).await?,
-        None => zip_project(app, state, tracker, &project, &output, id, &title).await?,
+    let kind = tauri::async_runtime::spawn_blocking({
+        let project = project.clone();
+        move || workshop_media::project_kind(&project)
+    })
+    .await?;
+    let recordable = matches!(kind, ProjectKind::Scene | ProjectKind::Web);
+    let saved = match (format, format.media()) {
+        (ExportFormat::Zip, _) => zip_project(app, state, tracker, &project, &output, id, &title).await?,
+        (ExportFormat::Mp4 | ExportFormat::Png, _) if recordable => record_media(app, state, tracker, &project, &output, (id, &title), format, options).await?,
+        (ExportFormat::Gif, _) if recordable => SaveResult::Unsupported("A scene or web wallpaper can be recorded as an MP4 or a picture, not as a GIF. Choose MP4.".into()),
+        (ExportFormat::Png, _) => SaveResult::Unsupported("A picture can be taken of a scene or web wallpaper only. Choose another format.".into()),
+        (_, Some(media_format)) => convert_media(app, state, tracker, &project, &output, (id, &title), media_format, options).await?,
+        (_, None) => zip_project(app, state, tracker, &project, &output, id, &title).await?,
+    };
+    let saved_note = match &saved {
+        SaveResult::DoneWithNote(_, note) => Some(note.clone()),
+        _ => None,
     };
     Ok(match saved {
-        SaveResult::Done(filename) => {
+        SaveResult::Done(filename) | SaveResult::DoneWithNote(filename, _) => {
+            let note = saved_note;
             let summary = tracker.finish();
             WallpaperOutcome::Saved {
                 path: output.join(&filename).to_string_lossy().into_owned(),
                 filename,
                 elapsed_ms: summary.elapsed_ms,
                 stages: summary.stages,
+                note,
             }
         }
         SaveResult::Cancelled => WallpaperOutcome::Cancelled,
@@ -453,6 +486,8 @@ async fn export(app: &AppHandle, state: &AppState, tracker: &Tracker, id: u64, f
 /// How a ZIP or media save ended.
 enum SaveResult {
     Done(String),
+    /// Saved, with something the user should know (a note under the result).
+    DoneWithNote(String, String),
     Cancelled,
     /// The project is not a video Claws can convert.
     Unsupported(String),
@@ -595,6 +630,29 @@ fn remember_speed(state: &AppState, key: &str, speed: f64) {
     });
 }
 
+/// A recording's time is its length, the pre-roll and a second or so to finish: exact enough to
+/// say, and not "about" the length the user chose.
+async fn estimate_recording(app: &AppHandle, kind: ProjectKind, scene: Option<&scene_pkg::SceneInfo>, picture: bool, options: &ExportOptions) -> Estimate {
+    let pre_roll = workshop_record::pre_roll_seconds(scene.map_or(0, |scene| scene.package_bytes));
+    let Some(ffmpeg) = crate::tools::find_ffmpeg(app) else { return Estimate { seconds: None, approximate: true, bytes: None } };
+    let working = encoder::available(&ffmpeg).await;
+    let works = |candidate: Encoder| working.contains(&candidate);
+    let authored = scene.map_or(scene_pkg::Authored::Perspective, |scene| scene.authored);
+    let sizes = workshop_record::size_options(authored, crate::win_window::display(), &works);
+    let Ok(size) = workshop_record::choose_size(&sizes, options.height) else { return Estimate { seconds: None, approximate: true, bytes: None } };
+    let _ = kind;
+    if picture {
+        return Estimate { seconds: Some(f64::from(pre_roll) + 1.5), approximate: false, bytes: Some(workshop_record::expected_picture_bytes(size.width, size.height)) };
+    }
+    let length = options.length_seconds.unwrap_or(workshop_record::DEFAULT_LENGTH).clamp(1, workshop_record::MAX_LENGTH);
+    let fps = options.fps.unwrap_or(30);
+    Estimate {
+        seconds: Some(workshop_record::expected_seconds(length, pre_roll)),
+        approximate: false,
+        bytes: Some(workshop_record::expected_video_bytes((size.width, size.height), fps, length)),
+    }
+}
+
 /// The time and size an export would take, from what is known now: nothing is run.
 #[tauri::command]
 pub async fn estimate_wallpaper_export(
@@ -609,6 +667,10 @@ pub async fn estimate_wallpaper_export(
     let Some(project) = library_project_of(id).await? else {
         return Ok(Estimate { seconds: None, approximate: true, bytes: None });
     };
+    let (kind, scene, _) = inspect_project(&project).await?;
+    if matches!(kind, ProjectKind::Scene | ProjectKind::Web) && matches!(format, ExportFormat::Mp4 | ExportFormat::Png) {
+        return Ok(estimate_recording(&app, kind, scene.as_ref(), format == ExportFormat::Png, &options).await);
+    }
     let Some(media) = format.media() else {
         let bytes = tauri::async_runtime::spawn_blocking(move || disk_budget::bytes_in(&project)).await.unwrap_or(0);
         return Ok(estimate_copy(bytes));
@@ -634,6 +696,206 @@ pub async fn estimate_wallpaper_export(
     let speed = state.settings.lock().unwrap().workshop_speeds.get(&speed_key(media, probe.height)).copied();
     let bytes = (media == MediaFormat::Mp4).then_some(video.bytes);
     Ok(estimate_conversion(media_seconds, speed, bytes))
+}
+
+// ---------------------------------------------------------------------------------------
+// Recording a scene or web wallpaper
+
+/// What a scene's package says, when it can be read: the package, else a loose `scene.json`.
+fn read_scene(project: &Path) -> std::result::Result<Option<scene_pkg::SceneInfo>, scene_pkg::PkgError> {
+    let package = project.join("scene.pkg");
+    if fs::symlink_metadata(&package).is_ok_and(|meta| meta.is_file()) {
+        return scene_pkg::analyze_file(&package).map(Some);
+    }
+    let loose = project.join("scene.json");
+    if fs::symlink_metadata(&loose).is_ok_and(|meta| meta.is_file()) {
+        return scene_pkg::analyze_loose_scene(&loose).map(Some);
+    }
+    Ok(None)
+}
+
+const UNREADABLE_SCENE: &str = "Claws couldn't read this scene's files, so it can't record it. Save the ZIP instead.";
+
+/// What the Download panel needs to offer recording for a scene or web wallpaper. `None` for any
+/// other kind of project.
+#[tauri::command]
+pub async fn wallpaper_record_info(app: AppHandle, url: String) -> Result<Option<workshop_record::RecordInfo>> {
+    let id = item_id(&url)?;
+    let Some(project) = library_project_of(id).await? else { return Ok(None) };
+    let inspected = project.clone();
+    let (kind, scene) = tauri::async_runtime::spawn_blocking(move || {
+        let kind = workshop_media::project_kind(&inspected);
+        let scene = (kind == ProjectKind::Scene).then(|| read_scene(&inspected));
+        (kind, scene)
+    })
+    .await
+    .map_err(|_| AppError::msg("Couldn't check the Steam library."))?;
+    let label = match kind {
+        ProjectKind::Scene => "scene",
+        ProjectKind::Web => "web",
+        _ => return Ok(None),
+    };
+    let (info, unreadable) = match scene {
+        Some(Ok(info)) => (info, false),
+        Some(Err(_)) => (None, true),
+        None => (None, false),
+    };
+    let ffmpeg = crate::tools::find_ffmpeg(&app);
+    let mut found = workshop_record::record_info(label, info, ffmpeg.as_deref()).await;
+    if unreadable {
+        found.available = false;
+        found.reason = Some(UNREADABLE_SCENE.to_string());
+    }
+    Ok(Some(found))
+}
+
+/// The project's kind and, for a scene, what its files say.
+type Inspected = (ProjectKind, Option<scene_pkg::SceneInfo>, Option<scene_pkg::PkgError>);
+
+async fn inspect_project(project: &Path) -> Result<Inspected> {
+    let inspected = project.to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || {
+        let kind = workshop_media::project_kind(&inspected);
+        if kind != ProjectKind::Scene {
+            return (kind, None, None);
+        }
+        match read_scene(&inspected) {
+            Ok(info) => (kind, info, None),
+            Err(error) => (kind, None, Some(error)),
+        }
+    })
+    .await
+    .map_err(|_| AppError::msg("Couldn't check the Steam library."))
+}
+
+/// Records the wallpaper through Wallpaper Engine and publishes the file.
+#[allow(clippy::too_many_arguments)]
+async fn record_media(
+    app: &AppHandle,
+    state: &AppState,
+    tracker: &Tracker,
+    project: &Path,
+    output: &Path,
+    item: (u64, &str),
+    format: ExportFormat,
+    options: &ExportOptions,
+) -> Result<SaveResult> {
+    const NO_FFMPEG: &str = "Recording a wallpaper needs FFmpeg. Install it in Settings, then try again.";
+    let (id, title) = item;
+    let Some(ffmpeg) = crate::tools::find_ffmpeg(app) else {
+        return Ok(SaveResult::Failed { message: NO_FFMPEG.to_string(), detail: None });
+    };
+    if !workshop_record::has_gfxcapture(&ffmpeg).await {
+        return Ok(SaveResult::Failed { message: "This FFmpeg can't capture a window. Update FFmpeg in Settings → Tools, then try again.".into(), detail: None });
+    }
+    let engine = match tauri::async_runtime::spawn_blocking(workshop_record::find_engine).await? {
+        Ok(engine) => engine,
+        Err(problem) => return Ok(SaveResult::Failed { message: problem.message().to_string(), detail: None }),
+    };
+    let (kind, scene, problem) = inspect_project(project).await?;
+    if problem.is_some() {
+        return Ok(SaveResult::Failed { message: UNREADABLE_SCENE.to_string(), detail: None });
+    }
+    let authored = scene.as_ref().map_or(scene_pkg::Authored::Perspective, |scene| scene.authored);
+    let working = encoder::available(&ffmpeg).await;
+    let works = |candidate: Encoder| working.contains(&candidate);
+    let sizes = workshop_record::size_options(authored, crate::win_window::display(), &works);
+    let size = match workshop_record::choose_size(&sizes, options.height) {
+        Ok(size) => size,
+        Err(message) => return Ok(SaveResult::Failed { message, detail: None }),
+    };
+    let picture = format == ExportFormat::Png;
+    let fps = if picture { 30 } else { options.fps.unwrap_or(30) };
+    if !size.fps.contains(&fps) {
+        return Ok(SaveResult::Failed {
+            message: format!("{fps} frames per second isn't available at {} on this PC. Choose 30.", size.label),
+            detail: None,
+        });
+    }
+    let Some(chosen) = encoder::pick_for(&works, size.height, fps) else {
+        return Ok(SaveResult::Failed { message: "This PC has no video encoder that can record at that size.".into(), detail: None });
+    };
+    let length = options.length_seconds.unwrap_or(workshop_record::DEFAULT_LENGTH).clamp(1, workshop_record::MAX_LENGTH);
+    let pre_roll = workshop_record::pre_roll_seconds(scene.as_ref().map_or(0, |scene| scene.package_bytes));
+    let needed = if picture { workshop_record::expected_picture_bytes(size.width, size.height) } else { workshop_record::expected_video_bytes((size.width, size.height), fps, length) };
+    if let Some(message) = space_shortfall(state, output, needed / 100 * SPACE_ROOM_PERCENT, "the download folder's drive") {
+        return Ok(SaveResult::Failed { message, detail: None });
+    }
+
+    let capture = workshop_record::Capture {
+        width: size.width,
+        height: size.height,
+        fps,
+        kind: if picture { workshop_record::CaptureKind::Picture } else { workshop_record::CaptureKind::Video { length, encoder: chosen } },
+    };
+    let partial = output.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
+    let cancelled = || state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst);
+    let on_spawn = |pid: Option<u32>| {
+        let mut current = state.workshop.lock().unwrap();
+        if current.cancelled || state.shutting_down.load(Ordering::SeqCst) {
+            false
+        } else {
+            current.pid = pid;
+            true
+        }
+    };
+    let low_space = || low_on_space(state, output);
+    let announce = |window: Option<&str>| {
+        state.workshop.lock().unwrap().window = window.map(|title| (engine.exe.clone(), title.to_string()));
+    };
+    let project_json = project.join("project.json");
+    let ffprobe = crate::tools::find_ffprobe(app);
+    // Holds the engine so an install cannot replace FFmpeg while it records.
+    let _engine = state.engine.read().await;
+    let request = workshop_record::RecordRequest {
+        ffmpeg: &ffmpeg,
+        ffprobe: ffprobe.as_deref(),
+        engine: &engine,
+        project_json: &project_json,
+        partial: &partial,
+        capture,
+        pre_roll,
+        moves: kind == ProjectKind::Scene && scene.as_ref().is_some_and(|scene| scene.moves),
+        tracker,
+        cancelled: &cancelled,
+        on_spawn: &on_spawn,
+        low_space: &low_space,
+        announce: &announce,
+    };
+    let recorded = workshop_record::record(&request).await;
+    state.workshop.lock().unwrap().pid = None;
+    let repeated = match recorded {
+        Ok(workshop_record::Recorded::Done { repeated_percent }) => repeated_percent,
+        Ok(workshop_record::Recorded::Cancelled) => return Ok(SaveResult::Cancelled),
+        Ok(workshop_record::Recorded::LowSpace) => return Ok(SaveResult::Failed { message: LOW_SPACE.into(), detail: None }),
+        Err(failure) => {
+            if cancelled() {
+                return Ok(SaveResult::Cancelled);
+            }
+            let detail = redact(&failure.detail);
+            return Ok(SaveResult::Failed { message: failure.message, detail: (!detail.trim().is_empty()).then_some(detail) });
+        }
+    };
+    let (output_dir, title) = (output.to_path_buf(), title.to_string());
+    let extension = if picture { "png" } else { "mp4" };
+    let published = tauri::async_runtime::spawn_blocking(move || publish_media(&partial, &output_dir, id, &title, extension)).await?;
+    match published {
+        Ok(filename) if repeated > 5.0 => Ok(SaveResult::DoneWithNote(
+            filename,
+            format!("About {repeated:.0}% of the frames are repeats: the PC was too busy to capture every frame. Record again while it is quieter for a smoother result."),
+        )),
+        Ok(filename) => Ok(SaveResult::Done(filename)),
+        Err(_) if cancelled() => Ok(SaveResult::Cancelled),
+        Err(error) => Err(error),
+    }
+}
+
+/// For shutdown: closes the Wallpaper Engine window a recording has open, if there is one.
+pub fn close_recording_window(state: &AppState) {
+    let window = state.workshop.lock().unwrap().window.clone();
+    if let Some((engine, title)) = window {
+        workshop_record::close_window(&engine, &title);
+    }
 }
 
 /// Whether the drive that holds `folder` is below the reserve the download queue keeps.
@@ -709,7 +971,7 @@ async fn convert_media(
             Ok(workshop_media::CopyOutcome::Cancelled) => Ok(SaveResult::Cancelled),
             Ok(workshop_media::CopyOutcome::Done) => {
                 let (output, title) = (output.to_path_buf(), title.to_string());
-                let published = tauri::async_runtime::spawn_blocking(move || publish_media(&partial, &output, id, &title, MediaFormat::Mp4)).await?;
+                let published = tauri::async_runtime::spawn_blocking(move || publish_media(&partial, &output, id, &title, "mp4")).await?;
                 match published {
                     Ok(filename) => Ok(SaveResult::Done(filename)),
                     Err(_) if cancelled() => Ok(SaveResult::Cancelled),
@@ -816,7 +1078,7 @@ async fn convert_media(
 
     tracker.stage(Stage::Finishing, None);
     let (partial_for_task, output_for_task, title) = (partial.clone(), output.to_path_buf(), title.to_string());
-    let published = tauri::async_runtime::spawn_blocking(move || publish_media(&partial_for_task, &output_for_task, id, &title, format)).await?;
+    let published = tauri::async_runtime::spawn_blocking(move || publish_media(&partial_for_task, &output_for_task, id, &title, format.extension())).await?;
     match published {
         Ok(filename) => Ok(SaveResult::Done(filename)),
         Err(_) if cancelled() => Ok(SaveResult::Cancelled),
@@ -826,7 +1088,7 @@ async fn convert_media(
 
 /// Moves a finished conversion into the output folder under the next free name. A missing,
 /// linked or empty file is refused, and a failed publish removes the partial copy.
-fn publish_media(partial: &Path, output: &Path, id: u64, title: &str, format: MediaFormat) -> Result<String> {
+fn publish_media(partial: &Path, output: &Path, id: u64, title: &str, extension: &str) -> Result<String> {
     let result = (|| -> Result<String> {
         let meta = fs::symlink_metadata(partial)?;
         if !meta.is_file() || is_link(&meta) || meta.len() == 0 {
@@ -834,7 +1096,7 @@ fn publish_media(partial: &Path, output: &Path, id: u64, title: &str, format: Me
         }
         OpenOptions::new().write(true).open(partial)?.sync_all()?;
         for copy in 0..1000 {
-            let name = export_name(title, id, copy, format.extension());
+            let name = export_name(title, id, copy, extension);
             match move_no_replace(partial, &output.join(&name)) {
                 Ok(()) => return Ok(name),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -1140,10 +1402,11 @@ mod tests {
         assert_eq!(serde_json::to_value(ExportFormat::Zip).unwrap(), "zip");
         assert_eq!(serde_json::to_value(ExportFormat::Mp4).unwrap(), "mp4");
         assert_eq!(serde_json::to_value(ExportFormat::Gif).unwrap(), "gif");
-        let saved = WallpaperOutcome::Saved { filename: "f".into(), path: "p".into(), elapsed_ms: 63_000, stages: vec![StageTime { name: "copying", ms: 62_000 }] };
+        assert_eq!(serde_json::to_value(ExportFormat::Png).unwrap(), "png");
+        let saved = WallpaperOutcome::Saved { filename: "f".into(), path: "p".into(), elapsed_ms: 63_000, stages: vec![StageTime { name: "copying", ms: 62_000 }], note: None };
         assert_eq!(
             serde_json::to_value(saved).unwrap(),
-            serde_json::json!({"status":"saved","filename":"f","path":"p","elapsedMs":63000,"stages":[{"name":"copying","ms":62000}]})
+            serde_json::json!({"status":"saved","filename":"f","path":"p","elapsedMs":63000,"stages":[{"name":"copying","ms":62000}],"note":null})
         );
     }
 
@@ -1235,14 +1498,14 @@ mod tests {
 
         // Empty: refused, the partial removed, nothing published.
         fs::write(&partial, b"").unwrap();
-        assert!(publish_media(&partial, &output, 5, "Loop", MediaFormat::Gif).is_err());
+        assert!(publish_media(&partial, &output, 5, "Loop", "gif").is_err());
         assert!(!partial.exists());
         assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
 
         // Complete: the next free name, and the existing export stays untouched.
         fs::write(output.join("Loop (5).mp4"), b"existing").unwrap();
         fs::write(&partial, b"video").unwrap();
-        let name = publish_media(&partial, &output, 5, "Loop", MediaFormat::Mp4).unwrap();
+        let name = publish_media(&partial, &output, 5, "Loop", "mp4").unwrap();
         assert_eq!(name, "Loop (5) (1).mp4");
         assert_eq!(fs::read(output.join("Loop (5).mp4")).unwrap(), b"existing");
         assert_eq!(fs::read(output.join(&name)).unwrap(), b"video");
@@ -1281,7 +1544,7 @@ mod tests {
             let partial = output.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
             let done = workshop_media::convert(&ffmpeg, &video.path, &partial, &workshop_media::ConvertPlan::basic(format), |_| true, &|| false, &|_| {}).await;
             assert_eq!(done, Ok(workshop_media::Outcome::Done), "{format:?}");
-            let name = publish_media(&partial, &output, 9, "Loop", format).unwrap();
+            let name = publish_media(&partial, &output, 9, "Loop", format.extension()).unwrap();
             assert_eq!(name, expected);
             assert!(fs::metadata(output.join(&name)).unwrap().len() > 0);
         }
@@ -1382,6 +1645,76 @@ mod tests {
         for stage in [Stage::Checking, Stage::Opening, Stage::Loading, Stage::Recording, Stage::Finishing, Stage::Copying, Stage::Converting, Stage::Zipping] {
             assert_eq!(serde_json::to_value(stage).unwrap(), stage.name());
         }
+    }
+
+    /// Live, end to end: `CLAWS_TEST_EXPORT` is `id;format;length;height;fps` (the last three may be
+    /// left out; several runs are separated by `|`). Runs the real export, with a lookup at Valve's
+    /// public API, the Steam library, Wallpaper Engine and Claws' FFmpeg, into a temporary folder.
+    /// Prints what the interface would have been told and checks the published file.
+    #[tokio::test]
+    async fn runs_real_exports_end_to_end_when_given() {
+        use tauri::Manager;
+        let Some(plan) = std::env::var_os("CLAWS_TEST_EXPORT") else { return };
+        let tools = crate::download_tests::ffmpeg_dir().expect("needs Claws' ffmpeg and ffprobe");
+        let dir = crate::download_tests::temp_dir("live-export");
+        let out = dir.join("out");
+        let bin = dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        for name in ["ffmpeg.exe", "ffprobe.exe"] {
+            // A link, not a copy, and the originals stay where they are.
+            let source = tools.join(name);
+            if fs::hard_link(&source, bin.join(name)).is_err() {
+                fs::copy(&source, bin.join(name)).unwrap();
+            }
+        }
+        let app = tauri::test::mock_builder().build(tauri::test::mock_context(tauri::test::noop_assets())).expect("mock app");
+        let settings = crate::settings::Settings { output_dir: out.to_string_lossy().into_owned(), ..Default::default() };
+        let writer = crate::downloader::start_queue_writer(app.handle());
+        app.manage(AppState::new(dir.clone(), settings, Vec::new(), Vec::new(), writer, false));
+        let state = app.state::<AppState>();
+
+        for run in plan.to_string_lossy().split('|').filter(|run| !run.is_empty()) {
+            let mut parts = run.split(';');
+            let id: u64 = parts.next().unwrap().parse().expect("an item id");
+            let format = match parts.next().unwrap_or("mp4") {
+                "zip" => ExportFormat::Zip,
+                "gif" => ExportFormat::Gif,
+                "png" => ExportFormat::Png,
+                _ => ExportFormat::Mp4,
+            };
+            let number = |part: Option<&str>| part.and_then(|part| part.parse::<u32>().ok());
+            let options = ExportOptions { length_seconds: number(parts.next()), height: number(parts.next()), fps: number(parts.next()) };
+            let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<export_progress::ProgressEvent>::new()));
+            let sink = events.clone();
+            let tracker = Tracker::new("live", move |event| sink.lock().unwrap().push(event));
+            let guard = RunGuard::begin(&state).expect("no other export is running");
+            let started = Instant::now();
+            let outcome = export(app.handle(), &state, &tracker, id, format, &options).await.expect("the export ends in an outcome");
+            drop(guard);
+            let took = started.elapsed();
+            let events = events.lock().unwrap().clone();
+            let stages = events.iter().map(|event| event.stage.name()).fold(Vec::<&str>::new(), |mut seen, stage| {
+                if seen.last() != Some(&stage) {
+                    seen.push(stage);
+                }
+                seen
+            });
+            match outcome {
+                WallpaperOutcome::Saved { filename, path, elapsed_ms, stages: times, note } => {
+                    let size = fs::metadata(&path).expect("the file was published").len();
+                    eprintln!("export {run}: saved {filename} ({size} bytes) in {:.1}s (reported {:.1}s), stages {stages:?}, times {:?}, note {note:?}", took.as_secs_f64(), elapsed_ms as f64 / 1000.0, times.iter().map(|t| (t.name, t.ms)).collect::<Vec<_>>());
+                    assert!(size > 0);
+                    assert!(elapsed_ms as f64 / 1000.0 <= took.as_secs_f64() + 0.5);
+                    assert_eq!(times.iter().map(|t| t.ms).sum::<u64>(), elapsed_ms);
+                    let progress: Vec<f64> = events.iter().filter_map(|event| event.done).collect();
+                    eprintln!("  {} events, {} with a count", events.len(), progress.len());
+                }
+                other => panic!("export {run} did not save: {other:?}"),
+            }
+        }
+        let leftovers: Vec<_> = fs::read_dir(&out).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with(PARTIAL_PREFIX)).collect();
+        assert!(leftovers.is_empty(), "no partial file may remain: {leftovers:?}");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

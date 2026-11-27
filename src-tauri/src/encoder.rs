@@ -2,7 +2,6 @@
 //! preferred, because libx264 at its `veryfast` preset encodes real 4K at about 0.84 times real
 //! time. Availability is decided by running a tiny encode once per FFmpeg build, never by
 //! reading a version string, and the first working encoder in a fixed order wins.
-#![allow(dead_code)] // some of this is used only by the recorder, which lands in a later commit
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -113,11 +112,6 @@ pub fn typical_bitrate_kbps(height: u32, fps: u32) -> u32 {
     }
 }
 
-/// The first encoder in probe order that `works`.
-pub fn choose(works: impl Fn(Encoder) -> bool) -> Encoder {
-    ORDER.into_iter().find(|encoder| *encoder == Encoder::X264 || works(*encoder)).unwrap_or(Encoder::X264)
-}
-
 /// The best encoder that can handle this picture, from those that work. `None` when only
 /// software works and the picture is too large or too fast for it.
 pub fn pick_for(works: &dyn Fn(Encoder) -> bool, height: u32, fps: u32) -> Option<Encoder> {
@@ -173,11 +167,12 @@ mod tests {
 
     #[test]
     fn the_first_working_encoder_in_order_wins_and_software_is_the_floor() {
-        assert_eq!(choose(|_| true), Encoder::Nvenc);
-        assert_eq!(choose(|e| e != Encoder::Nvenc), Encoder::Amf);
-        assert_eq!(choose(|e| matches!(e, Encoder::Qsv | Encoder::MediaFoundation)), Encoder::Qsv);
-        assert_eq!(choose(|e| e == Encoder::MediaFoundation), Encoder::MediaFoundation);
-        assert_eq!(choose(|_| false), Encoder::X264);
+        let first = |works: &dyn Fn(Encoder) -> bool| pick_for(works, 720, 30);
+        assert_eq!(first(&|_| true), Some(Encoder::Nvenc));
+        assert_eq!(first(&|e| e != Encoder::Nvenc), Some(Encoder::Amf));
+        assert_eq!(first(&|e| matches!(e, Encoder::Qsv | Encoder::MediaFoundation)), Some(Encoder::Qsv));
+        assert_eq!(first(&|e| e == Encoder::MediaFoundation), Some(Encoder::MediaFoundation));
+        assert_eq!(first(&|_| false), Some(Encoder::X264), "software is always there");
         assert_eq!(ORDER.map(Encoder::name), ["h264_nvenc", "h264_amf", "h264_qsv", "h264_mf", "libx264"]);
     }
 

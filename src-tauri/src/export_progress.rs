@@ -5,7 +5,6 @@
 //! The rule is the product's honest-progress rule: a number is reported only when it can be
 //! backed. Nothing here invents a fraction, and the time left is `None` until there is enough
 //! data to stand behind it.
-#![allow(dead_code)] // some of this is used only by the export tracker, which lands in a later commit
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
@@ -179,6 +178,8 @@ pub struct ProgressEvent {
     /// The time left rests on a measured rate, not on a known length.
     pub approximate: bool,
     pub elapsed_ms: u64,
+    /// Recording: the size of the video written so far (FFmpeg's own count, which trails a little).
+    pub bytes: Option<u64>,
 }
 
 /// How long an export spent in one stage.
@@ -194,6 +195,10 @@ pub struct StageTime {
 pub struct Summary {
     pub elapsed_ms: u64,
     pub stages: Vec<StageTime>,
+}
+
+fn whole_ms(time: Duration) -> Duration {
+    Duration::from_millis(time.as_millis() as u64)
 }
 
 /// At most this many events per second, plus one at every change of stage.
@@ -248,7 +253,7 @@ impl Tracker {
             emit: Arc::new(emit),
             clock: Arc::new(clock),
         };
-        tracker.send(&mut tracker.inner.lock().unwrap(), None, None, None, None, false);
+        tracker.send(&mut tracker.inner.lock().unwrap(), None, None, None, None, false, None);
         tracker
     }
 
@@ -256,7 +261,8 @@ impl Tracker {
         (self.clock)()
     }
 
-    fn send(&self, inner: &mut Inner, done: Option<f64>, total: Option<f64>, unit: Option<Unit>, eta: Option<f64>, approximate: bool) {
+    #[allow(clippy::too_many_arguments)]
+    fn send(&self, inner: &mut Inner, done: Option<f64>, total: Option<f64>, unit: Option<Unit>, eta: Option<f64>, approximate: bool, bytes: Option<u64>) {
         let now = (self.clock)();
         inner.last_emit = Some(now);
         (self.emit)(ProgressEvent {
@@ -268,6 +274,7 @@ impl Tracker {
             eta_ms: eta.filter(|eta| eta.is_finite()).map(|eta| (eta.max(0.0) * 1000.0).round() as u64),
             approximate: approximate && eta.is_some(),
             elapsed_ms: now.as_millis() as u64,
+            bytes,
         });
     }
 
@@ -275,7 +282,8 @@ impl Tracker {
     /// (`None` for a stage with nothing to count yet).
     pub fn stage(&self, stage: Stage, start: Option<(f64, f64, Unit)>) {
         let mut inner = self.inner.lock().unwrap();
-        let now = (self.clock)();
+        // Whole milliseconds, so the stages always add up to the total.
+        let now = whole_ms((self.clock)());
         if inner.stage != stage {
             let spent = now.saturating_sub(inner.stage_started);
             let name = inner.stage.name();
@@ -289,7 +297,7 @@ impl Tracker {
             Some((done, total, unit)) => (Some(done), Some(total), Some(unit)),
             None => (None, None, None),
         };
-        self.send(&mut inner, done, total, unit, None, false);
+        self.send(&mut inner, done, total, unit, None, false, None);
     }
 
     /// Whether an update may be sent now (not more than four a second).
@@ -303,13 +311,14 @@ impl Tracker {
         let mut inner = self.inner.lock().unwrap();
         let since = (self.clock)().saturating_sub(inner.stage_started);
         inner.rate.push(since, done);
-        if !self.due(&inner) {
+        // The last byte is always reported, so the bar reaches the end of the count.
+        if !self.due(&inner) && done < total {
             return;
         }
         let shown = (done as f64).max(inner.done).min(total as f64);
         inner.done = shown;
         let eta = eta_from_rate(shown as u64, total, inner.rate.rate(), since, BYTES_MIN_ELAPSED);
-        self.send(&mut inner, Some(shown), Some(total as f64), Some(Unit::Bytes), eta, true);
+        self.send(&mut inner, Some(shown), Some(total as f64), Some(Unit::Bytes), eta, true, None);
     }
 
     /// Converting: seconds of media encoded of the seconds to encode, with the time left from
@@ -323,12 +332,12 @@ impl Tracker {
         let shown = done_seconds.max(inner.done).min(total_seconds);
         inner.done = shown;
         let eta = eta_from_speed(shown, total_seconds, speed, since, SPEED_MIN_ELAPSED);
-        self.send(&mut inner, Some(shown), Some(total_seconds), Some(Unit::Seconds), eta, true);
+        self.send(&mut inner, Some(shown), Some(total_seconds), Some(Unit::Seconds), eta, true, None);
     }
 
     /// Recording: seconds since FFmpeg's first captured frame, of the length chosen. The time
     /// left is exact. It stops 0.2 s short of the end until FFmpeg itself has finished.
-    pub fn recording(&self, seconds_since_first_frame: f64, length: f64) {
+    pub fn recording(&self, seconds_since_first_frame: f64, length: f64, bytes: Option<u64>) {
         let mut inner = self.inner.lock().unwrap();
         if !self.due(&inner) {
             return;
@@ -336,13 +345,13 @@ impl Tracker {
         let cap = (length - RECORDING_HOLD_BACK).max(0.0);
         let shown = seconds_since_first_frame.clamp(0.0, cap).max(inner.done.min(cap));
         inner.done = shown;
-        self.send(&mut inner, Some(shown), Some(length), Some(Unit::Seconds), Some(length - shown), false);
+        self.send(&mut inner, Some(shown), Some(length), Some(Unit::Seconds), Some(length - shown), false, bytes);
     }
 
     /// Ends the export: the time in each stage, and the whole of it.
     pub fn finish(&self) -> Summary {
         let mut inner = self.inner.lock().unwrap();
-        let now = (self.clock)();
+        let now = whole_ms((self.clock)());
         let spent = now.saturating_sub(inner.stage_started);
         let name = inner.stage.name();
         inner.stages.push(StageTime { name, ms: spent.as_millis() as u64 });
@@ -459,15 +468,16 @@ mod tracker_tests {
         let rig = Rig::new();
         rig.tracker.stage(Stage::Recording, Some((0.0, 60.0, Unit::Seconds)));
         rig.wait(1000);
-        rig.tracker.recording(42.0, 60.0);
+        rig.tracker.recording(42.0, 60.0, Some(163_577_856));
         let event = rig.last();
         assert_eq!((event.done, event.total, event.eta_ms), (Some(42.0), Some(60.0), Some(18_000)));
+        assert_eq!(event.bytes, Some(163_577_856));
         assert!(!event.approximate, "the length was chosen: the time left is exact");
         rig.wait(1000);
-        rig.tracker.recording(61.0, 60.0);
+        rig.tracker.recording(61.0, 60.0, None);
         assert!((rig.last().done.unwrap() - 59.8).abs() < 1e-9, "0.2 s short of the end until FFmpeg exits");
         rig.wait(1000);
-        rig.tracker.recording(10.0, 60.0);
+        rig.tracker.recording(10.0, 60.0, None);
         assert!((rig.last().done.unwrap() - 59.8).abs() < 1e-9, "never back");
     }
 
@@ -498,10 +508,11 @@ mod tracker_tests {
             eta_ms: Some(58_500),
             approximate: false,
             elapsed_ms: 3_000,
+            bytes: Some(1024),
         };
         assert_eq!(
             serde_json::to_value(&event).unwrap(),
-            serde_json::json!({"url":"u","stage":"recording","done":1.5,"total":60.0,"unit":"seconds","etaMs":58500,"approximate":false,"elapsedMs":3000})
+            serde_json::json!({"url":"u","stage":"recording","done":1.5,"total":60.0,"unit":"seconds","etaMs":58500,"approximate":false,"elapsedMs":3000,"bytes":1024})
         );
         let idle = ProgressEvent { stage: Stage::Checking, done: None, total: None, unit: None, eta_ms: None, ..event };
         let json = serde_json::to_value(&idle).unwrap();

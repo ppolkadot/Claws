@@ -9,11 +9,13 @@ import { group, progressBar, row, sectionTitle, setProgress } from "../ui/layout
 import { progressMotion, type ProgressState } from "../ui/progress-motion";
 import {
   estimateLine,
-  formatChoices,
   GIF_SECONDS,
   libraryLine,
   longRunMessage,
   missingForStart,
+  RECORD_LENGTHS,
+  RECORD_MAX_SECONDS,
+  recordNotes,
   savedLine,
   stageLine,
   type ExportFormat,
@@ -87,7 +89,7 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
   let formatKey = "";
   let formatSeg: SegmentedHandle<ExportFormat> | null = null;
   function paintFormats() {
-    const choices = formatChoices(session.videoAvailable, session.video);
+    const choices = session.choices;
     const key = choices.map((choice) => `${choice.value}:${choice.label}`).join("|");
     if (key !== formatKey) {
       formatKey = key;
@@ -108,7 +110,55 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
   );
   const gifRow = row("GIF length", gifSeg.el, "The first seconds of the loop, at most 720p.");
 
-  const options = group(libraryRow, formatRow, gifRow);
+  // Recording a scene or web wallpaper: how long, how large, how smooth. Each choice is made from
+  // what this PC can really do (the backend says which sizes and rates), and a size that is not
+  // available stays visible with the reason.
+  const lengthSeg = segmented<string>(
+    "Recording length",
+    [...RECORD_LENGTHS.map((seconds) => ({ value: String(seconds), label: `${seconds} s` })), { value: "custom", label: "Custom" }],
+    String(session.recordLength),
+    (next) => (next === "custom" ? session.setLengthCustom(true) : session.setRecordLength(Number(next), false)),
+  );
+  const lengthRow = row("Length", lengthSeg.el);
+  const customLength = h("input", {
+    class: "text-input",
+    attrs: { id: "workshop-length", type: "number", min: 1, max: RECORD_MAX_SECONDS, step: 5, inputmode: "numeric", value: String(session.recordLength) },
+  });
+  customLength.addEventListener("change", () => session.setRecordLength(Number(customLength.value), true));
+  const customRow = row("Custom length", h("div", { class: "inline" }, customLength, h("span", { class: "row-note", text: "seconds, up to 10 minutes" })), undefined, "workshop-length");
+  const sizeControl = h("div", { class: "row-control-slot" });
+  let sizeKey = "";
+  let sizeSeg: SegmentedHandle<string> | null = null;
+  function paintSizes() {
+    const sizes = session.record?.sizes ?? [];
+    const key = sizes.map((size) => `${size.height}:${size.available}`).join("|");
+    if (key !== sizeKey) {
+      sizeKey = key;
+      sizeSeg = segmented<string>(
+        "Size",
+        sizes.map((size) => ({ value: String(size.height), label: size.label, disabled: !size.available, title: size.reason ?? `${size.width}×${size.height}` })),
+        String(session.size?.height ?? ""),
+        (next) => session.setRecordHeight(Number(next)),
+      );
+      replace(sizeControl, sizeSeg.el);
+    }
+    sizeSeg?.set(String(session.size?.height ?? ""));
+    sizeSeg?.el.querySelectorAll("button").forEach((b) => b.setAttribute("aria-disabled", session.running || b.getAttribute("aria-disabled") === "true" ? "true" : "false"));
+  }
+  const sizeRow = row("Size", sizeControl, h("span", { class: "row-note", attrs: { id: "workshop-size-note" } }));
+  const fpsSeg = segmented<string>(
+    "Frame rate",
+    [
+      { value: "30", label: "30 fps" },
+      { value: "60", label: "60 fps" },
+    ],
+    "30",
+    (next) => session.setRecordFps(Number(next)),
+  );
+  const fpsRow = row("Frame rate", fpsSeg.el);
+  const recordNote = h("div", { class: "workshop-notes", attrs: { role: "note" } });
+
+  const options = group(libraryRow, formatRow, gifRow, lengthRow, customRow, sizeRow, fpsRow);
 
   // Actions and status
   const reason = h("span", { class: "row-hint workshop-reason" });
@@ -146,7 +196,7 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
         h(
           "div",
           { class: "notice", attrs: { role: "status" } },
-          h("span", { class: "notice-text", text: state.filename }),
+          h("span", { class: "notice-text" }, h("strong", { text: state.filename }), state.note ? h("span", { text: state.note }) : null),
           button({ label: "Show in folder", variant: "secondary", size: "small", onClick: () => void api.openOutputDir().catch((e) => toast(errorMessage(e), { tone: "error" })) }),
         ),
       );
@@ -238,23 +288,48 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
   function paint() {
     const busy = session.running;
     const library = session.library;
-    formatRow.hidden = !session.videoAvailable;
+    formatRow.hidden = !session.offersMore;
     paintFormats();
     formatHint.textContent =
       session.format === "zip"
         ? "Keeps the whole project, as Steam downloaded it."
-        : session.format === "mp4" && session.video?.copyable
-          ? "Saves the wallpaper's own video file, unchanged."
-          : session.format === "mp4"
-            ? "Converts the wallpaper's video with FFmpeg; the project itself isn't kept."
-            : "A silent looping GIF; the project itself isn't kept.";
+        : session.recording && session.format === "png"
+          ? "One picture of the wallpaper, after it has loaded."
+          : session.recording
+            ? "Wallpaper Engine plays it in the background and Claws records it. You can keep using your PC."
+            : session.format === "mp4" && session.video?.copyable
+              ? "Saves the wallpaper's own video file, unchanged."
+              : session.format === "mp4"
+                ? "Converts the wallpaper's video with FFmpeg; the project itself isn't kept."
+                : "A silent looping GIF; the project itself isn't kept.";
     estimate.textContent = busy ? "" : estimateLine(session.estimate);
     estimate.hidden = !estimate.textContent;
     gifRow.hidden = !session.videoAvailable || session.format !== "gif";
+    const recording = session.recording;
+    const video = recording && session.format === "mp4";
+    lengthRow.hidden = !video;
+    customRow.hidden = !video || !session.lengthCustom;
+    fpsRow.hidden = !video;
+    sizeRow.hidden = !recording;
+    lengthSeg.set(session.lengthCustom ? "custom" : String(session.recordLength));
+    if (document.activeElement !== customLength) customLength.value = String(session.recordLength);
+    lengthSeg.el.querySelectorAll("button").forEach((b) => b.setAttribute("aria-disabled", busy ? "true" : "false"));
+    paintSizes();
+    const fps60 = session.size?.fps.includes(60) ?? false;
+    fpsSeg.set(String(session.fps));
+    fpsSeg.el.querySelectorAll("button").forEach((b, index) => b.setAttribute("aria-disabled", busy || (index === 1 && !fps60) ? "true" : "false"));
+    fpsSeg.el.querySelectorAll("button")[1]?.setAttribute("title", fps60 ? "" : "60 fps at this size needs a hardware video encoder");
+    const notes = session.record && recording ? recordNotes(session.record, session.format, session.size) : [];
+    replace(recordNote, ...notes.map((note) => h("p", { class: "row-hint", text: note })));
+    recordNote.hidden = notes.length === 0;
     gifSeg.set(String(session.gifSeconds));
     gifSeg.el.querySelectorAll("button").forEach((b) => b.setAttribute("aria-disabled", busy ? "true" : "false"));
 
     libraryText.textContent = libraryLine(library, session.item.fileSize, session.watching);
+    // A scene or web wallpaper that cannot be recorded says why in one line.
+    if (library?.found && session.record && !session.record.available && session.record.reason) {
+      libraryText.textContent = `${libraryText.textContent} ${session.record.reason}`;
+    }
     const waiting = library !== null && library.steam && !library.found && library.state !== "downloading";
     subscribe.hidden = !library || !waiting || session.watching || !library.wallpaperEngine;
     viewInSteam.hidden = !library || (library.steam && (library.found || library.wallpaperEngine || library.state === "downloading"));
@@ -275,7 +350,7 @@ export function mountWorkshop(session: WorkshopSession): WorkshopView {
     paintOutcome();
   }
 
-  const el = h("section", { class: "workshop-panel" }, preview, required, sectionTitle("Options"), options, running, actions, outcome);
+  const el = h("section", { class: "workshop-panel" }, preview, required, sectionTitle("Options"), options, recordNote, running, actions, outcome);
   const off = [session.on(paint), store.on("settings", paint)];
   paint();
   if (!session.library) void session.checkLibrary();

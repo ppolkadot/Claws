@@ -5,7 +5,6 @@
 //! the file's real size before it is used: a version string of at most 32 bytes, at most 100,000
 //! entries, names of at most 1 KB, every entry inside the file, a `scene.json` of at most 4 MB,
 //! and only the first bytes of each texture. Nothing in a package is ever run.
-#![allow(dead_code)] // the recorder that reads these lands in the next commit
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},

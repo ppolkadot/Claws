@@ -253,7 +253,7 @@ mod notice_tests {
     #[test]
     fn a_wallpaper_export_is_news_only_after_thirty_seconds_and_only_when_saved() {
         use crate::workshop::WallpaperOutcome;
-        let saved = |elapsed_ms| WallpaperOutcome::Saved { filename: "Ocean (1).mp4".into(), path: "p".into(), elapsed_ms, stages: Vec::new() };
+        let saved = |elapsed_ms| WallpaperOutcome::Saved { filename: "Ocean (1).mp4".into(), path: "p".into(), elapsed_ms, stages: Vec::new(), note: None };
         assert_eq!(export_notice(&saved(30_000)), Some(("Wallpaper saved", "Ocean (1).mp4".to_string())));
         assert_eq!(export_notice(&saved(29_999)), None, "a short export finished while the user watched");
         assert_eq!(export_notice(&WallpaperOutcome::Cancelled), None);

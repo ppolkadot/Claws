@@ -34,9 +34,11 @@ mod store;
 mod tools;
 mod transcript;
 mod transfer_progress;
+mod win_window;
 mod window;
 mod workshop;
 mod workshop_media;
+mod workshop_record;
 
 #[cfg(not(test))]
 pub(crate) type Runtime = tauri::Wry;
@@ -195,6 +197,7 @@ pub fn run() {
             workshop::workshop_item_details,
             workshop::find_wallpaper_in_library,
             workshop::wallpaper_video_info,
+            workshop::wallpaper_record_info,
             workshop::estimate_wallpaper_export,
             workshop::download_wallpaper,
             workshop::cancel_wallpaper_download,
