@@ -6,7 +6,7 @@ Use these documents for the current project:
 - [Developer handoff](HANDOFF.md): architecture, safety contracts, build/test commands and manual acceptance.
 - [User guide](../README.md): installation, features, settings and troubleshooting.
 - [Product brief](../PRODUCT.md) and [design system](../DESIGN.md): product scope and visual rules.
-- [Next release notes (draft)](releases/next-draft.md) and the [Wallpaper Engine study](wallpaper-engine-local-library-study.md): SteamCMD removal, original-video copy, the export tracker and scene recording, with the measurements behind them. Tracker screenshots from the dev mock are in [performance/2026-11-26-export-tracker](performance/2026-11-26-export-tracker/).
+- [1.0.9f build notes](releases/1.0.9f.md) and the [Wallpaper Engine study](wallpaper-engine-local-library-study.md): SteamCMD removal, original-video copy, the export tracker and scene recording, with the measurements behind them. Tracker screenshots from the dev mock are in [performance/2026-11-26-export-tracker](performance/2026-11-26-export-tracker/).
 - [1.0.9e build notes](releases/1.0.9e.md): SteamCMD signature fix and MP4/GIF export for video wallpapers.
 - [1.0.9c build notes](releases/1.0.9c.md): SteamCMD installed by Claws, Steam account detection and the window-button fix.
 - [1.0.9b build notes](releases/1.0.9b.md): Windows installer on `main`, the Steam library and SteamCMD sources, and verification.

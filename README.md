@@ -14,7 +14,7 @@ Paste a link, choose a quality, and the file lands on your disk. Built with nati
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-34C759?logo=opensourceinitiative&logoColor=white)
 
-[**Download 1.0.9e for Windows**](https://github.com/ppolkadot/Claws/releases/download/v1.0.9e/Claws_1.0.9e_x64-setup.exe) · [Documentation](docs/README.md) · [1.0.9e build notes](docs/releases/1.0.9e.md)
+[**Download 1.0.9f for Windows**](https://github.com/ppolkadot/Claws/releases/download/v1.0.9f/Claws_1.0.9f_x64-setup.exe) · [Documentation](docs/README.md) · [1.0.9f build notes](docs/releases/1.0.9f.md)
 
 <!--
 Screenshot slot. Add high-DPI captures at docs/assets/screenshot-dark.png and
@@ -49,7 +49,7 @@ docs/assets/screenshot-light.png, then replace this comment with:
 
 ## Quick start
 
-1. Download the [1.0.9e Windows installer](https://github.com/ppolkadot/Claws/releases/download/v1.0.9e/Claws_1.0.9e_x64-setup.exe) and run it.
+1. Download the [1.0.9f Windows installer](https://github.com/ppolkadot/Claws/releases/download/v1.0.9f/Claws_1.0.9f_x64-setup.exe) and run it.
 2. Press **Set up everything** on first launch to install yt-dlp, ffmpeg and Deno.
 3. Paste a link with <kbd>Ctrl</kbd>+<kbd>V</kbd>, pick a quality, press **Download**.
 
@@ -132,8 +132,8 @@ The desktop shows through the window, blurred by the Windows composition API; th
 
 ### Windows installer
 
-1. Download [Claws 1.0.9e for Windows x64](https://github.com/ppolkadot/Claws/releases/download/v1.0.9e/Claws_1.0.9e_x64-setup.exe) from GitHub Releases. See the [SHA-256 checksum](installers/Claws_1.0.9e_x64-setup.exe.sha256) and [build notes](docs/releases/1.0.9e.md).
-2. Verify the checksum and run the installer. The installer is unsigned. Windows reports version `1.0.9`, and Claws shows the `1.0.9e` nickname in the sidebar.
+1. Download [Claws 1.0.9f for Windows x64](https://github.com/ppolkadot/Claws/releases/download/v1.0.9f/Claws_1.0.9f_x64-setup.exe) from GitHub Releases. See the [SHA-256 checksum](installers/Claws_1.0.9f_x64-setup.exe.sha256) and [build notes](docs/releases/1.0.9f.md).
+2. Verify the checksum and run the installer. The installer is unsigned. Windows reports version `1.0.9`, and Claws shows the `1.0.9f` nickname in the sidebar.
 3. On first launch the Download page lists the tools that are missing: yt-dlp, ffmpeg and a JavaScript runtime (Deno). **Set up everything** downloads each into its own folder from its project's GitHub releases and verifies it against the published SHA-256 before use. Nothing is fetched until you press the button, a tool already on your `PATH` counts as ready, and ffmpeg and Deno can be skipped with **Not now**.
 
 Claws uses the same app data location for this build. The [GitHub Releases page](https://github.com/ppolkadot/Claws/releases) carries the separately published releases.

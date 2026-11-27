@@ -2,13 +2,13 @@
 
 ## Version and delivery
 
-**1.0.9e** is the Windows build on `main` and [GitHub Releases](https://github.com/ppolkadot/Claws/releases/tag/v1.0.9e). The npm, Cargo and Tauri version files stay `1.0.9`, which is also the version Windows reports. See the [1.0.9e build notes](releases/1.0.9e.md) for the installer, checksum and verification evidence.
+**1.0.9f** is the Windows build on `main` and [GitHub Releases](https://github.com/ppolkadot/Claws/releases/tag/v1.0.9f). The npm, Cargo and Tauri version files stay `1.0.9`, which is also the version Windows reports. See the [1.0.9f build notes](releases/1.0.9f.md) for the installer, checksum and verification evidence.
 
 The earlier [1.0.9 GitHub release](https://github.com/ppolkadot/Claws/releases/tag/v1.0.9) has its own [release notes](releases/1.0.9.md) and installer.
 
-## In development (after 1.0.9e)
+## What 1.0.9f adds
 
-Follows [the 2026-11-26 plan](superpowers/plans/2026-11-26-wallpaper-recording-progress-steamcmd-removal.md); measurements and the places the work differs from the plan are in the [Wallpaper Engine study](wallpaper-engine-local-library-study.md#implementation-results-2026-11-26). The version files stay `1.0.9`. No installer has been built from this work.
+Follows [the 2026-11-26 plan](superpowers/plans/2026-11-26-wallpaper-recording-progress-steamcmd-removal.md); measurements and the places the work differs from the plan are in the [Wallpaper Engine study](wallpaper-engine-local-library-study.md#implementation-results-2026-11-26).
 
 - **SteamCMD is gone.** The Steam library is the only Wallpaper Engine source: no install, sign-in, account name or Steam account detection. Settings files from 1.0.9e that still hold the old fields load, and the fields are dropped on the next save. A leftover SteamCMD folder in Claws' tools folder is offered for removal in Settings → Wallpaper Engine, never deleted without confirmation.
 - **Steam's state is shown.** Installed, still downloading (a real percentage from the bytes on disk against Valve's size) or an update pending, from `appworkshop_431960.acf` and the downloads folder.

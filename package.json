@@ -2,7 +2,7 @@
   "name": "claws",
   "private": true,
   "version": "1.0.9",
-  "buildName": "1.0.9e",
+  "buildName": "1.0.9f",
   "type": "module",
   "scripts": {
     "dev": "vite",
