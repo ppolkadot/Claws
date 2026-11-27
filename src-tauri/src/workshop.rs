@@ -407,7 +407,10 @@ fn publish_if_active(state: &AppState, partial: &Path, target: &Path) -> io::Res
 }
 
 pub fn wait_for_export_cleanup(state: &AppState) {
-    while state.workshop.lock().unwrap().active { std::thread::sleep(Duration::from_millis(25)); }
+    let active_deadline = Instant::now() + Duration::from_secs(5);
+    while state.workshop.lock().unwrap().active && Instant::now() < active_deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let partial = state.workshop.lock().unwrap().partial.clone();
@@ -1670,6 +1673,31 @@ mod tests {
         assert_eq!(state.workshop.lock().unwrap().partial.as_deref(), Some(partial.as_path()));
         drop(held);
         wait_for_export_cleanup(&state);
+        assert!(!partial.exists());
+        assert!(state.workshop.lock().unwrap().partial.is_none());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn wait_for_export_cleanup_bounds_a_stuck_export_and_still_removes_partial() {
+        use tauri::Manager;
+        let dir = crate::download_tests::temp_dir("export-cleanup-timeout");
+        let app = tauri::test::mock_builder().build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
+        let writer = crate::downloader::start_queue_writer(app.handle());
+        app.manage(AppState::new(dir.clone(), Default::default(), Vec::new(), Vec::new(), writer, false));
+        let state = app.state::<AppState>();
+        let partial = dir.join("stuck.partial");
+        fs::write(&partial, b"partial").unwrap();
+        {
+            let mut run = state.workshop.lock().unwrap();
+            run.active = true;
+            run.partial = Some(partial.clone());
+        }
+        let started = Instant::now();
+        wait_for_export_cleanup(&state);
+        let elapsed = started.elapsed();
+        assert!(elapsed >= Duration::from_secs(5), "waited {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(8), "timed out too late: {elapsed:?}");
         assert!(!partial.exists());
         assert!(state.workshop.lock().unwrap().partial.is_none());
         let _ = fs::remove_dir_all(dir);
