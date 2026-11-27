@@ -294,7 +294,7 @@ pub fn looks_frozen(differences: &[f64]) -> bool {
 
 /// Looks at three short stretches of the recording for any change between frames. `None` when it
 /// could not be checked: a check that fails is never a reason to throw a recording away.
-async fn frozen_capture(ffmpeg: &Path, file: &Path, length: u32) -> Option<bool> {
+async fn frozen_capture(ffmpeg: &Path, file: &Path, length: u32, on_spawn: &(dyn Fn(Option<u32>) -> bool + Sync)) -> Option<bool> {
     let mut differences = Vec::new();
     for share in [0.25, 0.5, 0.75] {
         let start = (f64::from(length) * share - 1.0).max(0.0);
@@ -311,12 +311,20 @@ async fn frozen_capture(ffmpeg: &Path, file: &Path, length: u32) -> Option<bool>
             .kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        let output = tokio::time::timeout(Duration::from_secs(60), command.output()).await.ok()?.ok()?;
-        if !output.status.success() {
-            return None;
-        }
+        let mut child = command.spawn().ok()?;
+        if !on_spawn(child.id()) { let _ = child.kill().await; return None; }
+        let stdout = child.stdout.take()?;
+        let result = tokio::time::timeout(Duration::from_secs(60), async {
+            tokio::join!(crate::bounded_io::read_capped(stdout, 256 * 1024), child.wait())
+        }).await;
+        on_spawn(None);
+        let (bytes, status) = match result {
+            Ok((Ok(bytes), Ok(status))) if status.success() => (bytes, status),
+            _ => { let _ = child.kill().await; return None; }
+        };
+        let _ = status;
         // The first difference is against nothing; the rest are frame against frame.
-        let mut values = parse_yavg(&String::from_utf8_lossy(&output.stdout));
+        let mut values = parse_yavg(&String::from_utf8_lossy(&bytes));
         if !values.is_empty() {
             values.remove(0);
         }
@@ -687,13 +695,13 @@ async fn record_inner(request: &RecordRequest<'_>) -> Result<Recorded, RecordFai
         // Not fatal: the recording is complete. The guard tries again when it is dropped.
     }
     if let Some(ffprobe) = request.ffprobe {
-        if let Some(probe) = crate::workshop_media::probe_file(ffprobe, request.partial).await {
+        if let Some(probe) = crate::workshop_media::probe_file_tracked(ffprobe, request.partial, request.on_spawn).await {
             check_probe(&probe, capture).map_err(|message| fail(message, ""))?;
         }
     }
     if request.moves {
         if let CaptureKind::Video { length, .. } = capture.kind {
-            if frozen_capture(request.ffmpeg, request.partial, length).await == Some(true) {
+            if frozen_capture(request.ffmpeg, request.partial, length, request.on_spawn).await == Some(true) {
                 return Err(fail(FROZEN, ""));
             }
         }
@@ -1277,7 +1285,7 @@ mod tests {
         // A moving scene: the motion check inside record() has already accepted it; prove it here too.
         let tools = crate::download_tests::ffmpeg_dir().unwrap();
         let ffmpeg = tools.join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX));
-        assert_eq!(frozen_capture(&ffmpeg, &run.file, 3).await, Some(false), "a moving scene is not frozen");
+        assert_eq!(frozen_capture(&ffmpeg, &run.file, 3, &|_| true).await, Some(false), "a moving scene is not frozen");
         eprintln!("recorded {item}: {} frames, {} bytes, {:.1}s total, events {}", frames, run.bytes, run.elapsed.as_secs_f64(), run.events.len());
         for event in &run.events {
             eprintln!("  {:>6} ms  {:<9}  done {:?} / {:?}  eta {:?}  bytes {:?}", event.elapsed_ms, event.stage.name(), event.done, event.total, event.eta_ms, event.bytes);

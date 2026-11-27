@@ -288,16 +288,21 @@ impl Probe {
 /// Runs ffprobe on the declared file: one local input, its own container as the demuxer, and
 /// a bounded reply. `None` when ffprobe cannot read it.
 pub async fn probe(ffprobe: &Path, input: &Path) -> Option<Probe> {
-    run_probe(ffprobe, input, demuxer(input)).await
+    run_probe(ffprobe, input, demuxer(input), &|_| true).await
 }
 
 /// Runs ffprobe on a file Claws wrote itself (a recording under a `.partial` name), letting
 /// ffprobe recognise the container.
+#[cfg(test)]
 pub async fn probe_file(ffprobe: &Path, file: &Path) -> Option<Probe> {
-    run_probe(ffprobe, file, None).await
+    run_probe(ffprobe, file, None, &|_| true).await
 }
 
-async fn run_probe(ffprobe: &Path, input: &Path, demuxer: Option<&'static str>) -> Option<Probe> {
+pub async fn probe_file_tracked(ffprobe: &Path, file: &Path, on_spawn: &(dyn Fn(Option<u32>) -> bool + Sync)) -> Option<Probe> {
+    run_probe(ffprobe, file, None, on_spawn).await
+}
+
+async fn run_probe(ffprobe: &Path, input: &Path, demuxer: Option<&'static str>, on_spawn: &(dyn Fn(Option<u32>) -> bool + Sync)) -> Option<Probe> {
     let mut command = Command::new(ffprobe);
     command.args(["-v", "error", "-hide_banner", "-of", "json", "-protocol_whitelist", "file"]);
     command.args([
@@ -311,15 +316,18 @@ async fn run_probe(ffprobe: &Path, input: &Path, demuxer: Option<&'static str>) 
     #[cfg(windows)]
     command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let mut child = command.spawn().ok()?;
+    if !on_spawn(child.id()) { let _ = child.kill().await; return None; }
     let stdout = child.stdout.take()?;
     let read = crate::bounded_io::read_capped(stdout, 256 * 1024);
     let (bytes, status) = match tokio::time::timeout(Duration::from_secs(30), async { tokio::join!(read, child.wait()) }).await {
         Ok((Ok(bytes), Ok(status))) => (bytes, status),
         _ => {
             let _ = child.kill().await;
+            on_spawn(None);
             return None;
         }
     };
+    on_spawn(None);
     status.success().then(|| parse_probe(&bytes)).flatten()
 }
 
@@ -1222,6 +1230,17 @@ mod tests {
         // The default plan is what it always was.
         let basic = export_args(Path::new("a.mp4"), Path::new("b.partial"), &ConvertPlan::basic(MediaFormat::Mp4));
         assert!(basic.windows(2).any(|pair| pair == ["-crf", "20"]));
+    }
+
+    #[tokio::test]
+    async fn recording_probe_registers_and_releases_its_child() {
+        let Some(tools) = crate::download_tests::ffmpeg_dir() else { return };
+        let ffprobe = tools.join(format!("ffprobe{}", std::env::consts::EXE_SUFFIX));
+        let events = Mutex::new(Vec::new());
+        let _ = probe_file_tracked(&ffprobe, Path::new("missing-recording"), &|pid| { events.lock().unwrap().push(pid); true }).await;
+        let events = events.lock().unwrap();
+        assert!(events.first().is_some_and(Option::is_some));
+        assert_eq!(events.last(), Some(&None));
     }
 
     // ----- live: copy and convert the owner's kinds of file -----

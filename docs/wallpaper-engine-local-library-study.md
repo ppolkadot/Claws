@@ -329,3 +329,5 @@ Measured on the owner's PC while implementing [the plan](superpowers/plans/2026-
 `CLAWS_TEST_WALLPAPER_ENGINE_CANCEL=1272964419 cargo test a_cancelled_recording_leaves_nothing_behind_when_given -- --nocapture` passed on this PC. Cancel during opening, loading, recording and shutdown-like cancellation during recording each reported success; the test checked that its window, FFmpeg process and temporary partial were gone. This does not cover a launch that appears at the deadline or a refused close; those paths have deterministic tests.
 
 The same live cancel test passed again after serializing the open order with shutdown (2026-11-27): opening, loading, recording, and shutdown-like recording cancellation all passed the window, child, and partial cleanup assertions. The shutdown/open interleaving itself is covered by a deterministic test.
+
+After adding export cleanup ownership and tracking verification children, the same live cancellation test passed all four cases again (2026-11-27), including its checks that the window, capture process, and temporary partial were gone.

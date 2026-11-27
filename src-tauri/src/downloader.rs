@@ -1137,6 +1137,7 @@ pub fn shutdown(app: &AppHandle) {
     }
     // A recording's Wallpaper Engine window must not outlive Claws.
     crate::workshop::close_recording_window(&state);
+    crate::workshop::wait_for_export_cleanup(&state);
 
     // Bounded: a worker stuck behind a tool install cannot finish; the fix-up covers it.
     let deadline = Instant::now() + Duration::from_secs(5);

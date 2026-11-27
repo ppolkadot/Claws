@@ -61,6 +61,7 @@ pub struct Run {
     pub cancelled: bool,
     /// The process id while FFmpeg runs.
     pub pid: Option<u32>,
+    pub partial: Option<PathBuf>,
     /// The Wallpaper Engine window a recording has open (its program and title), so a shutdown
     /// can close it.
     pub window: Option<(PathBuf, String)>,
@@ -356,7 +357,7 @@ impl<'a> RunGuard<'a> {
         if state.shutting_down.load(Ordering::SeqCst) {
             return Err(AppError::msg("Claws is closing."));
         }
-        *run = Run { active: true, cancelled: false, pid: None, window: None };
+        *run = Run { active: true, cancelled: false, pid: None, partial: None, window: None };
         Ok(Self(state))
     }
 
@@ -368,10 +369,31 @@ impl<'a> RunGuard<'a> {
 
 impl Drop for RunGuard<'_> {
     fn drop(&mut self) {
+        let partial = self.0.workshop.lock().unwrap().partial.take();
+        if let Some(partial) = partial { let _ = fs::remove_file(partial); }
         let mut run = self.0.workshop.lock().unwrap();
         let window = run.window.take();
         *run = Run { window, ..Run::default() };
     }
+}
+
+fn register_partial(state: &AppState, partial: &Path) -> bool {
+    let mut run = state.workshop.lock().unwrap();
+    if run.cancelled || state.shutting_down.load(Ordering::SeqCst) { return false; }
+    run.partial = Some(partial.to_path_buf());
+    true
+}
+
+fn publish_if_active(state: &AppState, partial: &Path, target: &Path) -> io::Result<()> {
+    let run = state.workshop.lock().unwrap();
+    if run.cancelled || state.shutting_down.load(Ordering::SeqCst) {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "Export cancelled"));
+    }
+    move_no_replace(partial, target)
+}
+
+pub fn wait_for_export_cleanup(state: &AppState) {
+    while state.workshop.lock().unwrap().active { std::thread::sleep(Duration::from_millis(25)); }
 }
 
 #[tauri::command]
@@ -522,6 +544,8 @@ async fn zip_project(app: &AppHandle, state: &AppState, tracker: &Tracker, proje
         return Ok(SaveResult::Failed { message, detail: None });
     }
     tracker.stage(Stage::Zipping, Some((0.0, needed as f64, Unit::Bytes)));
+    let partial = output.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
+    if !register_partial(state, &partial) { return Ok(SaveResult::Cancelled); }
     let (export_project, export_output, title) = (project.to_path_buf(), output.to_path_buf(), title.to_string());
     let cancel_app = app.clone();
     let tracker = tracker.clone();
@@ -529,12 +553,13 @@ async fn zip_project(app: &AppHandle, state: &AppState, tracker: &Tracker, proje
         use tauri::Manager;
         let state = cancel_app.state::<AppState>();
         let cancelled = || state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst);
-        save_project(&export_project, &export_output, id, &title, |done, total| tracker.bytes(done, total), || tracker.stage(Stage::Finishing, None), cancelled)
+        save_project(&export_project, &export_output, &partial, id, &title, |done, total| tracker.bytes(done, total), || tracker.stage(Stage::Finishing, None), cancelled, |from, to| publish_if_active(&state, from, to))
     })
     .await?;
     match saved {
         Ok(Some(filename)) => Ok(SaveResult::Done(filename)),
         Ok(None) => Ok(SaveResult::Cancelled),
+        Err(_) if state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst) => Ok(SaveResult::Cancelled),
         Err(error) => Err(error),
     }
 }
@@ -841,10 +866,14 @@ async fn record_media(
         kind: if picture { workshop_record::CaptureKind::Picture } else { workshop_record::CaptureKind::Video { length, encoder: chosen } },
     };
     let partial = output.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
+    if !register_partial(state, &partial) { return Ok(SaveResult::Cancelled); }
     let cancelled = || state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst);
     let on_spawn = |pid: Option<u32>| {
         let mut current = state.workshop.lock().unwrap();
-        if current.cancelled || state.shutting_down.load(Ordering::SeqCst) {
+        if pid.is_none() {
+            current.pid = None;
+            true
+        } else if current.cancelled || state.shutting_down.load(Ordering::SeqCst) {
             false
         } else {
             current.pid = pid;
@@ -891,7 +920,12 @@ async fn record_media(
     };
     let (output_dir, title) = (output.to_path_buf(), title.to_string());
     let extension = if picture { "png" } else { "mp4" };
-    let published = tauri::async_runtime::spawn_blocking(move || publish_media(&partial, &output_dir, id, &title, extension)).await?;
+    let publish_app = app.clone();
+    let published = tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let state = publish_app.state::<AppState>();
+        publish_media(&partial, &output_dir, id, &title, extension, |from, to| publish_if_active(&state, from, to))
+    }).await?;
     match published {
         Ok(filename) if repeated > 5.0 => Ok(SaveResult::DoneWithNote(
             filename,
@@ -967,6 +1001,7 @@ async fn convert_media(
         None => None,
     };
     let partial = output.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
+    if !register_partial(state, &partial) { return Ok(SaveResult::Cancelled); }
     let cancelled = || state.workshop.lock().unwrap().cancelled || state.shutting_down.load(Ordering::SeqCst);
 
     if format == MediaFormat::Mp4 && probe.as_ref().is_some_and(|probe| probe.can_copy(&video.path)) {
@@ -989,7 +1024,12 @@ async fn convert_media(
             Ok(workshop_media::CopyOutcome::Cancelled) => Ok(SaveResult::Cancelled),
             Ok(workshop_media::CopyOutcome::Done) => {
                 let (output, title) = (output.to_path_buf(), title.to_string());
-                let published = tauri::async_runtime::spawn_blocking(move || publish_media(&partial, &output, id, &title, "mp4")).await?;
+                let publish_app = app.clone();
+                let published = tauri::async_runtime::spawn_blocking(move || {
+                    use tauri::Manager;
+                    let state = publish_app.state::<AppState>();
+                    publish_media(&partial, &output, id, &title, "mp4", |from, to| publish_if_active(&state, from, to))
+                }).await?;
                 match published {
                     Ok(filename) => Ok(SaveResult::Done(filename)),
                     Err(_) if cancelled() => Ok(SaveResult::Cancelled),
@@ -1096,7 +1136,12 @@ async fn convert_media(
 
     tracker.stage(Stage::Finishing, None);
     let (partial_for_task, output_for_task, title) = (partial.clone(), output.to_path_buf(), title.to_string());
-    let published = tauri::async_runtime::spawn_blocking(move || publish_media(&partial_for_task, &output_for_task, id, &title, format.extension())).await?;
+    let publish_app = app.clone();
+    let published = tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let state = publish_app.state::<AppState>();
+        publish_media(&partial_for_task, &output_for_task, id, &title, format.extension(), |from, to| publish_if_active(&state, from, to))
+    }).await?;
     match published {
         Ok(filename) => Ok(SaveResult::Done(filename)),
         Err(_) if cancelled() => Ok(SaveResult::Cancelled),
@@ -1106,7 +1151,7 @@ async fn convert_media(
 
 /// Moves a finished conversion into the output folder under the next free name. A missing,
 /// linked or empty file is refused, and a failed publish removes the partial copy.
-fn publish_media(partial: &Path, output: &Path, id: u64, title: &str, extension: &str) -> Result<String> {
+fn publish_media(partial: &Path, output: &Path, id: u64, title: &str, extension: &str, mut publish: impl FnMut(&Path, &Path) -> io::Result<()>) -> Result<String> {
     let result = (|| -> Result<String> {
         let meta = fs::symlink_metadata(partial)?;
         if !meta.is_file() || is_link(&meta) || meta.len() == 0 {
@@ -1115,7 +1160,7 @@ fn publish_media(partial: &Path, output: &Path, id: u64, title: &str, extension:
         OpenOptions::new().write(true).open(partial)?.sync_all()?;
         for copy in 0..1000 {
             let name = export_name(title, id, copy, extension);
-            match move_no_replace(partial, &output.join(&name)) {
+            match publish(partial, &output.join(&name)) {
                 Ok(()) => return Ok(name),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(e.into()),
@@ -1231,14 +1276,17 @@ pub(crate) fn open_plain(path: &Path) -> io::Result<File> {
 }
 
 /// Zips the project into the output folder. `Ok(None)` when cancelled.
+#[allow(clippy::too_many_arguments)]
 fn save_project(
     project: &Path,
     output: &Path,
+    partial: &Path,
     id: u64,
     title: &str,
     mut report: impl FnMut(u64, u64),
     on_finish: impl FnOnce(),
     cancelled: impl Fn() -> bool,
+    mut publish: impl FnMut(&Path, &Path) -> io::Result<()>,
 ) -> Result<Option<String>> {
     let meta = fs::symlink_metadata(project.join("project.json"))
         .map_err(|_| AppError::msg("The download doesn't contain a Wallpaper Engine project."))?;
@@ -1252,8 +1300,7 @@ fn save_project(
         return Err(AppError::msg("This wallpaper is too large to export."));
     }
 
-    let partial = output.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
-    let file = OpenOptions::new().write(true).create_new(true).open(&partial)?;
+    let file = OpenOptions::new().write(true).create_new(true).open(partial)?;
     let result = (|| -> Result<Option<String>> {
         let mut zip = zip::ZipWriter::new(BufWriter::with_capacity(256 * 1024, file));
         let mut buffer = vec![0u8; 256 * 1024];
@@ -1295,7 +1342,7 @@ fn save_project(
         for copy in 0..1000 {
             let name = export_name(title, id, copy, "zip");
             if cancelled() { return Ok(None); }
-            match move_no_replace(&partial, &output.join(&name)) {
+            match publish(partial, &output.join(&name)) {
                 Ok(()) => return Ok(Some(name)),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(e.into()),
@@ -1304,7 +1351,7 @@ fn save_project(
         Err(AppError::msg("Too many copies of this wallpaper in the download folder."))
     })();
     if !matches!(result, Ok(Some(_))) {
-        let _ = fs::remove_file(&partial);
+        let _ = fs::remove_file(partial);
     }
     result
 }
@@ -1467,6 +1514,27 @@ mod tests {
 
 
     #[test]
+    fn shutdown_cancellation_refuses_publish_and_owner_removes_partial() {
+        use tauri::Manager;
+        let dir = crate::download_tests::temp_dir("export-owner");
+        let app = tauri::test::mock_builder().build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
+        let writer = crate::downloader::start_queue_writer(app.handle());
+        app.manage(AppState::new(dir.clone(), Default::default(), Vec::new(), Vec::new(), writer, false));
+        let state = app.state::<AppState>();
+        let guard = RunGuard::begin(&state).unwrap();
+        let partial = dir.join("owned.partial");
+        let target = dir.join("saved.mp4");
+        assert!(register_partial(&state, &partial));
+        fs::write(&partial, b"video").unwrap();
+        stop_for_shutdown(&state);
+        assert_eq!(publish_if_active(&state, &partial, &target).unwrap_err().kind(), io::ErrorKind::Interrupted);
+        drop(guard);
+        wait_for_export_cleanup(&state);
+        assert!(!partial.exists() && !target.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn shutdown_and_open_order_are_serialized() {
         use std::sync::{Arc, Mutex, atomic::AtomicBool, mpsc};
         let run = Arc::new(Mutex::new(Run { active: true, ..Run::default() }));
@@ -1506,7 +1574,7 @@ mod tests {
         assert_eq!(project, fs::canonicalize(dir.join("steamapps/workshop/content/431960/123")).unwrap());
         let mut steps: Vec<(u64, u64)> = Vec::new();
         let mut finished = false;
-        let name = save_project(&project, &output, 123, "Fixture", |done, total| steps.push((done, total)), || finished = true, || false).unwrap().unwrap();
+        let name = save_project(&project, &output, &output.join("test.partial"), 123, "Fixture", |done, total| steps.push((done, total)), || finished = true, || false, move_no_replace).unwrap().unwrap();
         assert!(finished, "the finishing step is announced once every byte is written");
         assert_eq!(name, "Fixture (123) (1).zip");
         let total = steps.last().unwrap().1;
@@ -1528,11 +1596,11 @@ mod tests {
 
         // Cancellation during ZIP finalisation must prevent publication.
         let cancel = std::cell::Cell::new(false);
-        assert!(save_project(&project, &output, 123, "Fixture", |_, _| {}, || cancel.set(true), || cancel.get()).unwrap().is_none());
+        assert!(save_project(&project, &output, &output.join("test.partial"), 123, "Fixture", |_, _| {}, || cancel.set(true), || cancel.get(), move_no_replace).unwrap().is_none());
         assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
 
         // Cancelled part-way: nothing new is left in the folder.
-        assert!(save_project(&project, &output, 123, "Fixture", |_, _| {}, || {}, || true).unwrap().is_none());
+        assert!(save_project(&project, &output, &output.join("test.partial"), 123, "Fixture", |_, _| {}, || {}, || true, move_no_replace).unwrap().is_none());
         assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1546,14 +1614,20 @@ mod tests {
 
         // Empty: refused, the partial removed, nothing published.
         fs::write(&partial, b"").unwrap();
-        assert!(publish_media(&partial, &output, 5, "Loop", "gif").is_err());
+        assert!(publish_media(&partial, &output, 5, "Loop", "gif", move_no_replace).is_err());
+        assert!(!partial.exists());
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
+
+        // Cancellation during the final flush: the publish callback refuses the move.
+        fs::write(&partial, b"video").unwrap();
+        assert!(publish_media(&partial, &output, 5, "Loop", "mp4", |_, _| Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))).is_err());
         assert!(!partial.exists());
         assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
 
         // Complete: the next free name, and the existing export stays untouched.
         fs::write(output.join("Loop (5).mp4"), b"existing").unwrap();
         fs::write(&partial, b"video").unwrap();
-        let name = publish_media(&partial, &output, 5, "Loop", "mp4").unwrap();
+        let name = publish_media(&partial, &output, 5, "Loop", "mp4", move_no_replace).unwrap();
         assert_eq!(name, "Loop (5) (1).mp4");
         assert_eq!(fs::read(output.join("Loop (5).mp4")).unwrap(), b"existing");
         assert_eq!(fs::read(output.join(&name)).unwrap(), b"video");
@@ -1592,7 +1666,7 @@ mod tests {
             let partial = output.join(format!("{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}", uuid::Uuid::new_v4()));
             let done = workshop_media::convert(&ffmpeg, &video.path, &partial, &workshop_media::ConvertPlan::basic(format), |_| true, &|| false, &|_| {}).await;
             assert_eq!(done, Ok(workshop_media::Outcome::Done), "{format:?}");
-            let name = publish_media(&partial, &output, 9, "Loop", format.extension()).unwrap();
+            let name = publish_media(&partial, &output, 9, "Loop", format.extension(), move_no_replace).unwrap();
             assert_eq!(name, expected);
             assert!(fs::metadata(output.join(&name)).unwrap().len() > 0);
         }
